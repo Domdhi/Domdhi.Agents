@@ -119,24 +119,24 @@ If you only need a coding assistant for an in-progress feature, the first-party 
 
 ## Getting Started
 
-Full walkthrough with a concrete sample project: [**docs/reference/getting-started.md**](./docs/reference/getting-started.md) — about thirty minutes from clone to specialized, implementation-ready project.
+Full walkthrough with a concrete sample project: [**docs/reference/agents/getting-started.md**](./docs/reference/agents/getting-started.md) — about thirty minutes from clone to specialized, implementation-ready project.
 
 ## Customize for Your Stack
 
-- [`docs/reference/guides/specialize.md`](./docs/reference/guides/specialize.md) — `/review:specialize` reads your architecture doc, appends stack context to every baseline agent, and generates new stack-specific agents
-- [`docs/reference/guides/personalize.md`](./docs/reference/guides/personalize.md) — `/review:personalize` gives your agents names, personas, and soul-level identities — cosmetic until you work at scale, then it becomes how you think about the team
+- [`docs/reference/agents/guides/specialize.md`](./docs/reference/agents/guides/specialize.md) — `/review:specialize` reads your architecture doc, appends stack context to every baseline agent, and generates new stack-specific agents
+- [`docs/reference/agents/guides/personalize.md`](./docs/reference/agents/guides/personalize.md) — `/review:personalize` gives your agents names, personas, and soul-level identities — cosmetic until you work at scale, then it becomes how you think about the team
 
 ## Documentation
 
 See [`docs/README.md`](./docs/README.md) for the full index — three reading orders by role (newcomer / adopter / contributor). Highlights:
 
-- **Concepts** — [commands](./docs/reference/concepts/commands.md), [agents](./docs/reference/concepts/agents.md), [skills](./docs/reference/concepts/skills.md), [memory](./docs/reference/concepts/memory.md), [hooks](./docs/reference/concepts/hooks.md)
-- **Reference** — [commands](./docs/reference/commands.md), [system-map](./docs/reference/system-map.md), [customization](./docs/reference/customization.md), [memory-flow](./docs/reference/memory-flow.md)
-- **Guides** — [specialize](./docs/reference/guides/specialize.md), [personalize](./docs/reference/guides/personalize.md), [contributing](./docs/reference/guides/contributing.md)
+- **Concepts** — [commands](./docs/reference/agents/concepts/commands.md), [agents](./docs/reference/agents/concepts/agents.md), [skills](./docs/reference/agents/concepts/skills.md), [memory](./docs/reference/agents/concepts/memory.md), [hooks](./docs/reference/agents/concepts/hooks.md)
+- **Reference** — [commands](./docs/reference/agents/commands.md), [system-map](./docs/reference/agents/system-map.md), [customization](./docs/reference/agents/customization.md), [memory-flow](./docs/reference/agents/memory-flow.md)
+- **Guides** — [specialize](./docs/reference/agents/guides/specialize.md), [personalize](./docs/reference/agents/guides/personalize.md), [contributing](./docs/reference/agents/guides/contributing.md)
 
 ## Contributing
 
-To extend the system with a new agent, command, or skill without breaking the three-tier architecture, see [`docs/reference/guides/contributing.md`](./docs/reference/guides/contributing.md). The decision gate at the top of that guide — *agent vs. skill vs. command* — is the highest-leverage choice in any contribution.
+To extend the system with a new agent, command, or skill without breaking the three-tier architecture, see [`docs/reference/agents/guides/contributing.md`](./docs/reference/agents/guides/contributing.md). The decision gate at the top of that guide — *agent vs. skill vs. command* — is the highest-leverage choice in any contribution.
 
 ## License
 

@@ -165,7 +165,7 @@ Different callers have different information to emphasize. Fill the template wit
 - **Files over 20kb (~5k tokens).** Line-range annotations (`:47-89`) do NOT save tokens — `/prime` Step 2 explicitly ignores them and reads the whole file. If a heavy file is genuinely needed for resume, split it: smaller live file + archive on disk. Reference precedent: `docs/.output/evolution/agents.md` 38kb → 1kb live + 37kb archive on 2026-04-25. <!-- path-lint:keep -->
 - **TODO files for closed epics.** Once the epic's final wave commits, the TODO becomes historical record. Replace with a one-line summary in Decisions & Context: *"Epic X complete — N stories, see commit Y."* Drop the file from Key Files on the same `/end` that closes the epic.
 - **Source files past their story commit.** During active structural work on `routes/login.tsx` (or any source file), listing it as a Key File is correct — the next session needs the full file to resume. After the story closes, drop it. Source-file Key Files carrying 2-3 sessions past completion add 2-5k tokens of cold-start detail with zero resumption value.
-- **Large reference docs** (`docs/reference/commands.md`, system maps, etc.) outside the specific session's scope. They're CLAUDE.md-equivalent overviews — useful when researching commands, noise on every other session.
+- **Large reference docs** (`docs/reference/agents/commands.md`, system maps, etc.) outside the specific session's scope. They're CLAUDE.md-equivalent overviews — useful when researching commands, noise on every other session.
 
 ### Legitimate Key Files
 

@@ -294,9 +294,9 @@ function buildDigest(root = resolveRoot()) {
         // two sources can coexist without double-counting.
         gateRuns: readGateRuns(root),
         // S-PI.5: secret-scanner commit blocks as a distinct digest line.
-        // Source: guardrail-events.jsonl where source==='secret-scanner'.
-        // Returns 0 until secret-scanner.cjs emits those events (see TODO in
-        // readScannerBlocks). Field is always present so the digest contract is stable.
+        // Source: guardrail-events.jsonl where source==='secret-scanner',
+        // emitted by secret-scanner.cjs recordScannerBlock() since 2026-06-13.
+        // Field is always present so the digest contract is stable.
         scannerBlocks: readScannerBlocks(root),
         commands: readCommandUsage(root),
         hooks: readHookEvents(root),
@@ -353,8 +353,8 @@ function renderMarkdown(d) {
     if (topRules.length) L.push(`  - top rules: ${topRules.map(([k, v]) => `${v}× ${k.length > 50 ? k.slice(0, 47) + '…' : k}`).join('; ')}`);
     L.push('');
     // S-PI.5: Scanner blocks — distinct from Bash-guardrail hits; sourced from
-    // guardrail-events.jsonl entries tagged source==='secret-scanner'. Returns 0
-    // until secret-scanner.cjs emits those events (see readScannerBlocks TODO).
+    // guardrail-events.jsonl entries tagged source==='secret-scanner'
+    // (emitted by secret-scanner.cjs recordScannerBlock() on every block).
     L.push('### Scanner blocks');
     L.push(`- scanner-blocks: **${d.scannerBlocks ?? 0}** (Write/Edit + commit blocks by secret-scanner)`);
     L.push('');

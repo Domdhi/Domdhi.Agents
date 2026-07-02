@@ -18,7 +18,7 @@ When updating the template (via subtree, copy, or future update mechanism), some
 | `.claude/agents/*.md` (project-added) | **Project** | **Preserve** — agents added by `/specialize` or manually |
 | `.claude/settings.json` | **Project** | **Preserve** — project-specific permissions, env vars, hook paths |
 | `.claude/update-config.json` | **Project** | **Preserve** — per-project updater config (`skillExclude`); read by the updater to skip opted-out skills |
-| `docs/reference/customization.md` | Template | **Overwrite** — this file |
+| `docs/reference/agents/customization.md` | Template | **Overwrite** — this file |
 | `CLAUDE.md` (target's root) | **Project** | **Never touch** — projects own their root Claude Code instructions |
 | Source `CLAUDE.md` → target `.claude/README.md` | Doc redirect | **Overwrite** — template self-documentation co-located with the files it documents |
 | `.githooks/` | Template | **Overwrite** |

@@ -1,7 +1,7 @@
 /**
  * Zone Classifier — classifies paths relative to .claude/ into template/project/mixed zones.
  *
- * Zone definitions mirror the zone map in docs/reference/customization.md:
+ * Zone definitions mirror the zone map in docs/reference/agents/customization.md:
  *   Template zone  — overwrite in target (commands, core, hooks, skills, templates, etc.)
  *                    Skill .md files have a --merge escape hatch in template-updater.js: a
  *                    target copy carrying a <!-- @@project-additions --> tail is merged, not

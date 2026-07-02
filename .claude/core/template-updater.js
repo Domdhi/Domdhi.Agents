@@ -3,7 +3,7 @@
 /**
  * Template Updater — copies Template-zone files from this repo's .claude/ to a target project.
  *
- * Zone boundaries (docs/reference/customization.md):
+ * Zone boundaries (docs/reference/agents/customization.md):
  *   Template zone  — overwrite (commands, core, hooks, skills, templates, etc.)
  *                    Skill files (skills/<name>/*.md) get an escape hatch under --merge:
  *                    a target copy carrying a <!-- @@project-additions --> tail is merged

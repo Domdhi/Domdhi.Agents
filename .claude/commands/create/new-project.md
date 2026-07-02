@@ -347,7 +347,7 @@ Answer the self-review honestly from this run (friction, what broke, one change 
 
 Recommended next commands:
 
-1. **`/review:personalize`** — give your specialized agents names, personas, and soul-level identity. Makes the team memorable and easier to reference by name. See `docs/reference/guides/personalize.md` for the walkthrough.
+1. **`/review:personalize`** — give your specialized agents names, personas, and soul-level identity. Makes the team memorable and easier to reference by name. See `docs/reference/agents/guides/personalize.md` for the walkthrough.
 2. **`/do {first-story-id}`** — implement the first story from the backlog.
 3. **`/run-todo docs/work/todo/TODO_{project}.md`** — if the per-project TODO was generated, execute the whole checklist end-to-end.
 4. **`/prime`** — in a new session, reload context from the handoff.
