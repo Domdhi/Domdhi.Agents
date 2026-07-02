@@ -40,7 +40,7 @@ IF INPUT is a file path:
 Also gather:
 - `git log --oneline -10` — what changed recently
 - `git status --short` — current state
-- Read recent agent issues from `docs/.output/evolution/agents/` — the newest few day-scoped files (`{YYYY-MM-DD}.md`, sorted descending). Fall back to the legacy flat `docs/.output/evolution/agents.md` if the folder is absent (pre-rotation projects).
+- Read recent agent issues from `docs/.output/evolution/agents/` — the newest few day-scoped files (`{YYYY-MM-DD}.md`, sorted descending). Fall back to the legacy flat `docs/.output/evolution/agents.md` if the folder is absent (pre-rotation projects). <!-- path-lint:keep -->
 
 ### 2. Investigate — Map the Blast Radius
 

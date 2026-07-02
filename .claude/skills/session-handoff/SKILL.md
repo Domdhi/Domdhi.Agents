@@ -24,10 +24,10 @@ The session handoff is the file `/prime` reads on cold start to resume work. Thi
 Handoffs are **per-session, stamped, and branch-tagged**:
 
 ```
-docs/.output/handoffs/{stamp}-{caller}-{branch}.md
+docs/.output/handoffs/{YYYY-MM}/{stamp}-{caller}-{branch}.md
 ```
 
-`{stamp}` = the run's `YYMMDD-HHMM` (computed once per command run), `{caller}` ∈ `end|do|run-todo|run-tests|todo`, `{branch}` = the slugified current branch. Example: `docs/.output/handoffs/260607-1745-end-main.md`.
+`{stamp}` = the run's `YYMMDD-HHMM` (computed once per command run), `{YYYY-MM}` = the stamp's month bucket (ADR 0006 — the resolver derives it; readers also accept legacy flat files), `{caller}` ∈ `end|do|run-todo|run-tests|todo`, `{branch}` = the slugified current branch. Example: `docs/.output/handoffs/2026-06/260607-1745-end-main.md`. Never hand-build this path — call `handoff-path.js write <caller>`.
 
 **Why not one fixed `docs/__handoff.md`:** a single overwritten path is rewritten by every session, so it conflicts on every PR when agents work in parallel branches. A uniquely-named per-run file never collides. The files are **tracked** (the `.output` gitignore block excludes memories/telemetry/sessions, NOT `handoffs/`), so `git pull` carries your handoffs across machines — conflict-free *and* portable.
 
@@ -162,7 +162,7 @@ Different callers have different information to emphasize. Fill the template wit
 
 - **`CLAUDE.md` and `docs/CLAUDE.md`.** Both auto-load at session start. Listing them causes `/prime` to read them again — pure waste. Measured cost: 116k tokens of redundant loading over 14 days on Agents (21 occurrences × 5.5k tokens each).
 - **Raw telemetry: `*.jsonl`, hook-events logs, command-usage logs.** Append-only data files, not session-resumption context. `hook-events.jsonl` alone added 20.7k tokens to a single `/prime` in the audit window. If telemetry needs analysis, the next session can read it on demand — not at cold start.
-- **Files over 20kb (~5k tokens).** Line-range annotations (`:47-89`) do NOT save tokens — `/prime` Step 2 explicitly ignores them and reads the whole file. If a heavy file is genuinely needed for resume, split it: smaller live file + archive on disk. Reference precedent: `docs/.output/evolution/agents.md` 38kb → 1kb live + 37kb archive on 2026-04-25.
+- **Files over 20kb (~5k tokens).** Line-range annotations (`:47-89`) do NOT save tokens — `/prime` Step 2 explicitly ignores them and reads the whole file. If a heavy file is genuinely needed for resume, split it: smaller live file + archive on disk. Reference precedent: `docs/.output/evolution/agents.md` 38kb → 1kb live + 37kb archive on 2026-04-25. <!-- path-lint:keep -->
 - **TODO files for closed epics.** Once the epic's final wave commits, the TODO becomes historical record. Replace with a one-line summary in Decisions & Context: *"Epic X complete — N stories, see commit Y."* Drop the file from Key Files on the same `/end` that closes the epic.
 - **Source files past their story commit.** During active structural work on `routes/login.tsx` (or any source file), listing it as a Key File is correct — the next session needs the full file to resume. After the story closes, drop it. Source-file Key Files carrying 2-3 sessions past completion add 2-5k tokens of cold-start detail with zero resumption value.
 - **Large reference docs** (`docs/reference/commands.md`, system maps, etc.) outside the specific session's scope. They're CLAUDE.md-equivalent overviews — useful when researching commands, noise on every other session.
@@ -344,6 +344,6 @@ Default to `/remember` for fleeting captures you want off your mental stack. Use
 - Template origin: originally lived inline in `.claude/commands/end.md`, extracted here for reuse.
 - Path resolver: `.claude/core/handoff-path.js` (`write <caller>` / `latest` / `branch`) — single source of stamp + branch slug + newest-for-branch resolution.
 - Reads: `git status`, `git log`, `docs/.output/plans/**/*.md` (for unfinished plans check)
-- Produces: `docs/.output/handoffs/{stamp}-{caller}-{branch}.md` (one per run, overwrite-within-run)
+- Produces: `docs/.output/handoffs/{YYYY-MM}/{stamp}-{caller}-{branch}.md` (one per run, overwrite-within-run, month-bucketed by the resolver)
 - Writes: structured memories to `docs/.output/.memory/{category}/{slug}.json` via `memory-manager.js create` (Step 6, 0–3 per session)
-- Consumed by: `/prime` (reads the resolver's `latest` + its Key Files on cold start) and `pre-compaction-archive.cjs` (snapshots `latest`)
+- Consumed by: `/prime` (reads the resolver's `latest` — branch-preferred — AND `latest --any` for cross-branch recall on cold start, plus its Key Files) and `pre-compaction-archive.cjs` (snapshots `latest`)

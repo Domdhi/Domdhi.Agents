@@ -199,6 +199,8 @@ The description determines whether Claude invokes the skill at all. After creati
 
 If distributing the skill as a file: `node .claude/skills/skill-creator/scripts/package-skill.js <skill-dir>` (zips to `<name>.skill`, falls back to tar). In THIS repo, skills usually ship via the template/publish pipeline, not as standalone `.skill` files — packaging is mainly for handing a skill to an external agent.
 
+**External skills are first-class targets.** The Create/Eval/Improve loop is empirically validated on skills this toolkit does NOT own: `ciso-nist-advisor` (external, 2026-06-25) improved +14.6 then +62.5 pass-rate points across two IMPROVE rounds, each gated by the differential eval. Don't treat non-toolkit skills as an unproven case — the same evidence-first + differential-eval doctrine applies unchanged; only the ship path differs (hand the improved skill back as a packaged `.skill`/PR instead of the template pipeline).
+
 ## Reference files
 
 - `agents/grader.md` — grade assertions against outputs → `grading.json`

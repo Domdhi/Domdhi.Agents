@@ -164,7 +164,7 @@ function gather(repoRoot) {
 }
 
 function main() {
-  const repoRoot = path.resolve(__dirname, '..', '..');
+  const repoRoot = process.env.CLAUDE_PROJECT_DIR || path.resolve(__dirname, '..', '..');
   const { adrs, badNames, orphans } = gather(repoRoot);
   const { errors, warns } = lint(adrs, badNames, orphans);
 
@@ -182,6 +182,6 @@ function main() {
   console.log(`\nOK: ADR lint clean — ${adrs.length} ADRs checked${warns.length ? ` (${warns.length} warning(s))` : ''}.\n`);
 }
 
-module.exports = { readStatus, supersedesRefs, saysSuperseded, lint, gather, looksLikeAdr, ADR_FILE_RE };
+module.exports = { readStatus, supersedesRefs, saysSuperseded, lint, gather, looksLikeAdr, ADR_FILE_RE, main };
 
 if (require.main === module) main();

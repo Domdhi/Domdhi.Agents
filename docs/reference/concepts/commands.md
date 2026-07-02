@@ -35,7 +35,7 @@ Thirteen commands. Run them in roughly that order the first time you drop this t
 | `/do` | Execute one task — size-aware (main-agent direct or Sonnet delegate), gate, AC verify, commit |
 | `/run-todo` | Execute an entire checklist — wave-based parallel execution with AC gates and auto-commit |
 | `/run-tests` | Manual/E2E testing with parallel playwright agents, screenshots, status protocol |
-| `/end` | Save handoff context → `docs/.output/handoffs/{stamp}-{caller}-{branch}.md` |
+| `/end` | Save handoff context → `docs/.output/handoffs/{YYYY-MM}/{stamp}-{caller}-{branch}.md` |
 
 Six commands, used dozens of times per session. Every session starts with `/prime` and ends with `/end`. Between them, `/do` and `/run-todo` are the workhorses.
 

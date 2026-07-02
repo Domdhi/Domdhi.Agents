@@ -57,6 +57,52 @@ function renderMemoryHealthBox(mm) {
 }
 
 /**
+ * Build-gate status box from the latest gate run summary
+ * (_latest-summary.json via _lib/gate-summary.readSummary). PASS/FAIL
+ * traffic-light; test counts and duration in the hover title.
+ *
+ * @param {{ overall: boolean, mode?: string, stack?: string, durationMs?: number, test?: { passed?: number, failed?: number, total?: number } }|null} gs
+ * @returns {string}  HTML fragment or empty string
+ */
+function renderGateStatusBox(gs) {
+    if (!gs || typeof gs.overall !== 'boolean') return '';
+    const color = gs.overall ? '#3fb950' : '#da3633';
+    const titleParts = [];
+    if (gs.mode) titleParts.push(esc(gs.mode));
+    if (gs.stack) titleParts.push(esc(gs.stack));
+    if (gs.test && typeof gs.test.total === 'number' && gs.test.total > 0) {
+        titleParts.push(`${gs.test.passed ?? 0}/${gs.test.total} tests passed`);
+    }
+    if (typeof gs.durationMs === 'number') titleParts.push(`${(gs.durationMs / 1000).toFixed(1)}s`);
+    return `<div class="summary-box" title="${titleParts.join(' • ')}">
+          <div class="number" style="color:${color}">${gs.overall ? 'PASS' : 'FAIL'}</div>
+          <div class="label">Build Gate</div>
+        </div>`;
+}
+
+/**
+ * Code-size box from _lib/code-metrics.loadCodeMetrics — a point-in-time
+ * LOC snapshot (no history is kept, so no trend line). Top directories
+ * in the hover title.
+ *
+ * @param {{ loc: number, fileCount: number, byDir: Record<string, number> }|null} cm
+ * @returns {string}  HTML fragment or empty string
+ */
+function renderCodeSizeBox(cm) {
+    if (!cm || cm.fileCount === 0) return '';
+    const topDirs = Object.entries(cm.byDir)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 3)
+        .map(([k, v]) => `${esc(k)}: ${v.toLocaleString('en-US')}`)
+        .join(' • ');
+    const title = `${cm.fileCount} source files${topDirs ? ` • ${topDirs}` : ''}`;
+    return `<div class="summary-box" title="${title}">
+          <div class="number">${cm.loc.toLocaleString('en-US')}</div>
+          <div class="label">Lines of Code</div>
+        </div>`;
+}
+
+/**
  * Generate the full project status HTML dashboard.
  *
  * @param {Array}  files      Parsed TODO file objects from parseTodoFile()
@@ -66,9 +112,13 @@ function renderMemoryHealthBox(mm) {
  * @param {object|null} [memMetrics] Memory metrics from loadMemoryMetrics() —
  *   `{ total, byCategory, healthScore, staleCount }`. When null/empty, the
  *   memory box is omitted (backward-compat with pre-P2.4-followup callers).
+ * @param {object|null} [gateSummary] Latest gate run from readSummary() —
+ *   renders a PASS/FAIL Build Gate box; omitted when null.
+ * @param {object|null} [codeMetrics] Snapshot from loadCodeMetrics() —
+ *   renders a Lines of Code box; omitted when null/empty.
  * @returns {string}  Complete HTML page as a string
  */
-function generateHtml(files, telemetry, gitMetrics, outputDir, memMetrics = null) {
+function generateHtml(files, telemetry, gitMetrics, outputDir, memMetrics = null, gateSummary = null, codeMetrics = null) {
     const timestamp = new Date().toISOString().replace('T', ' ').slice(0, 19);
 
     // Dedup master vs per-epic before aggregating — a master index already
@@ -190,6 +240,8 @@ function generateHtml(files, telemetry, gitMetrics, outputDir, memMetrics = null
           <div class="number">${sessions}</div>
           <div class="label">Sessions</div>
         </div>
+        ${renderGateStatusBox(gateSummary)}
+        ${renderCodeSizeBox(codeMetrics)}
         ${renderMemoryHitRateBox(memoryBenchmark)}
         ${renderMemoryHealthBox(memMetrics)}
       </div>
@@ -288,4 +340,4 @@ ${metricsCard}
 </html>`;
 }
 
-module.exports = { generateHtml, renderMemoryHitRateBox, renderMemoryHealthBox, esc };
+module.exports = { generateHtml, renderMemoryHitRateBox, renderMemoryHealthBox, renderGateStatusBox, renderCodeSizeBox, esc };

@@ -50,7 +50,10 @@ describe('processEvent', () => {
             expect(result.block).toBe(true);
             expect(typeof result.feedback).toBe('string');
             expect(result.feedback).toContain('AWS Access Key');
-            expect(result.exitCode).toBe(1);
+            // Claude Code only BLOCKS a PreToolUse call on exit 2 — exit 1 is a
+            // non-blocking error and the secret write would proceed. This once
+            // shipped as exitCode 1 and the hook silently failed to block.
+            expect(result.exitCode).toBe(2);
         });
 
         it('processEvent_writeWithCleanContent_returnsNull', () => {
@@ -103,6 +106,98 @@ describe('processEvent', () => {
             };
             const result = processEvent(event);
             expect(result).toBeNull();
+        });
+    });
+
+    // settings.json wires the scanner on MultiEdit and NotebookEdit too — those
+    // payloads carry content in edits[].new_string / new_source, which the old
+    // Write/Edit-only gate let through unscanned.
+    describe('processEvent_multiEditAndNotebookEvents', () => {
+        it('processEvent_multiEditWithSecretInEdits_returnsBlockResponse', () => {
+            const event = {
+                tool_name: 'MultiEdit',
+                tool_input: {
+                    file_path: '/project/config.js',
+                    edits: [
+                        { old_string: 'a', new_string: 'const x = 1;' },
+                        { old_string: 'b', new_string: `const key = "${fakeAwsKey()}";` },
+                    ],
+                },
+            };
+            const result = processEvent(event);
+            expect(result).not.toBeNull();
+            expect(result.block).toBe(true);
+            expect(result.exitCode).toBe(2);
+        });
+
+        it('processEvent_notebookEditWithSecretInNewSource_returnsBlockResponse', () => {
+            const event = {
+                tool_name: 'NotebookEdit',
+                tool_input: {
+                    notebook_path: '/project/analysis.ipynb',
+                    new_source: `token = "${fakeGitHubPAT()}"`,
+                },
+            };
+            const result = processEvent(event);
+            expect(result).not.toBeNull();
+            expect(result.block).toBe(true);
+            expect(result.feedback).toContain('GitHub Token');
+        });
+
+        it('processEvent_multiEditCleanEdits_returnsNull', () => {
+            const event = {
+                tool_name: 'MultiEdit',
+                tool_input: {
+                    file_path: '/project/config.js',
+                    edits: [{ old_string: 'a', new_string: 'const x = 1;' }],
+                },
+            };
+            expect(processEvent(event)).toBeNull();
+        });
+
+        it('processEvent_multiEditSecretInSecondEdit_findingLabelsTheEdit', () => {
+            // Line numbers must refer to the edit the secret was found in, not
+            // a concatenated pseudo-document that misreports file positions.
+            const event = {
+                tool_name: 'MultiEdit',
+                tool_input: {
+                    file_path: '/project/config.js',
+                    edits: [
+                        { old_string: 'a', new_string: 'line one\nline two\nline three' },
+                        { old_string: 'b', new_string: `const key = "${fakeAwsKey()}";` },
+                    ],
+                },
+            };
+            const result = processEvent(event);
+            expect(result).not.toBeNull();
+            expect(result.feedback).toContain('edit #2');
+            // The secret sits on line 1 OF ITS EDIT — a concatenated scan
+            // would have reported line 4+.
+            expect(result.feedback).toContain(':1');
+        });
+    });
+
+    describe('processEvent_highRiskFilename', () => {
+        it('processEvent_whitespaceOnlyWriteToHighRiskFile_stillFlagsPath', () => {
+            // The HIGH_RISK_FILE finding derives from the path alone. A
+            // whitespace-only Write to id_rsa must still be flagged — an
+            // `!content.trim()` early-return once skipped this check.
+            const event = {
+                tool_name: 'Write',
+                tool_input: { file_path: '/home/user/.ssh/id_rsa', content: ' \n' },
+            };
+            const result = processEvent(event);
+            expect(result).not.toBeNull();
+            expect(result.feedback).toContain('Sensitive file type');
+        });
+
+        it('processEvent_emptyContentWrite_returnsNull', () => {
+            // Truly empty content has never been scanned — preserve that.
+            const event = {
+                tool_name: 'Write',
+                tool_input: { file_path: '/home/user/.ssh/id_rsa', content: '' },
+            };
+            expect(processEvent(event)).toBeNull();
         });
     });
 
@@ -324,5 +419,68 @@ describe('recordScannerBlock', () => {
 
     it('never throws (telemetry is best-effort, must not break the scanner exit code)', () => {
         expect(() => recordScannerBlock()).not.toThrow();
+    });
+});
+
+// ─── Hook mode, end-to-end (spawned process) ─────────────────────────────────
+// The REAL PreToolUse surface: JSON event on stdin → exit code + stderr.
+// This layer is where the exit-1 bug lived for months while every unit test
+// stayed green — Claude Code only blocks a PreToolUse call on exit 2, so the
+// spawn-level exit code IS the security contract. Do not remove these.
+
+describe('runClaudeHook (spawned process)', () => {
+    const scannerPath = path.resolve(
+        fileURLToPath(import.meta.url),
+        '..', '..', 'secret-scanner.cjs'
+    );
+
+    function runHook(event, envRoot) {
+        try {
+            const stdout = execFileSync('node', [scannerPath], {
+                input: JSON.stringify(event),
+                env: { ...process.env, CLAUDE_PROJECT_DIR: envRoot },
+                stdio: 'pipe',
+            });
+            return { exitCode: 0, stdout: stdout.toString(), stderr: '' };
+        } catch (err) {
+            return {
+                exitCode: err.status,
+                stdout: err.stdout?.toString() || '',
+                stderr: err.stderr?.toString() || '',
+            };
+        }
+    }
+
+    it('hookMode_secretWriteEventOnStdin_exits2WithBannerOnStderr', () => {
+        const tmp = createTmpDir('scanner-hook-mode');
+        try {
+            const result = runHook({
+                tool_name: 'Write',
+                tool_input: {
+                    file_path: '/project/config.js',
+                    content: `const key = "${fakeAwsKey()}";`,
+                },
+            }, tmp.root);
+            expect(result.exitCode).toBe(2);
+            expect(result.stderr).toContain('AWS Access Key');
+        } finally {
+            tmp.cleanup();
+        }
+    });
+
+    it('hookMode_cleanWriteEventOnStdin_exits0', () => {
+        const tmp = createTmpDir('scanner-hook-mode');
+        try {
+            const result = runHook({
+                tool_name: 'Write',
+                tool_input: {
+                    file_path: '/project/hello.js',
+                    content: 'console.log("hello");\n',
+                },
+            }, tmp.root);
+            expect(result.exitCode).toBe(0);
+        } finally {
+            tmp.cleanup();
+        }
     });
 });

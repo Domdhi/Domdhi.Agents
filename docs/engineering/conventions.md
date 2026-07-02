@@ -76,6 +76,33 @@ Consequence: anything hardcoded in a `__tests__/` file — an absolute path, a u
 
 *Why:* the inline changelog had grown to span v4.59→v4.80 in one string (2026-06-14), bloating every adopter's `version.json`.
 
+### After every sync: reconcile agent `skills:` frontmatter against real skill dirs
+
+`template-updater.js` is additive: it never deletes, and `--merge` **UNIONS** an agent's `skills:` list with the template's rather than replacing it (deliberately — that preserves skills added by `/review:specialize`). Two consequences compound over a long-lived adopter:
+
+- A template **rename/consolidation** (e.g. `architecture-writer`→`architecture`, `code-reviewer`→`code-review`) leaves the agent referencing BOTH names, and the orphaned old skill dir (or command) accretes forever.
+- Finishing a rename migration therefore requires hand-work: strip the stale `skills:` lines from agent frontmatter, verify every declared skill resolves to an existing `skills/<name>/` dir, and only then delete the orphan dir.
+
+*Rules:* after any `template-updater`/`fleet:sync` pass — (1) set-diff the target's `skills/` and `commands/` against the source to surface orphans (`fleet:sync` reports them; `--prune-orphans` deletes), (2) verify every agent `skills:` entry resolves to a real dir (`/review:check-templates` checks this).
+
+*Why:* field-proven twice on 2026-06-07 (Doomstick + Platform: agents carried both `architecture` and `architecture-writer` after `--merge`) and 2026-06-06 (Dispatch v4.46→4.47: `--merge` historically REBUILT frontmatter and silently stripped `/review:specialize`-added skills — the union behavior is the fix, the reconcile pass is its cost). Promoted from memories `template-updater-merge-unions-agent-skills` + `reconcile-agent-skills-after-template-sync` (/sweep 2026-07-02).
+
+## Shell-instruction conventions (command prose)
+
+Commands and skills contain shell the agent executes verbatim — review it like code. Both rules below are field-proven data-loss/no-op classes.
+
+### An unexpanded glob passed to `git mv`/`rm` aborts atomically — or worse, survives literally
+
+In an archive/move step (`git mv docs/todo/TODO_epic*.md <archive>/`), a glob with zero matches is passed as a **literal** to git, which errors **atomically** — the other named files in the same `git mv` are not moved either. If a later step regenerates those files in place, the un-archived originals are silently overwritten: data loss from an *archive* command. (Under zsh the failure mode differs — an unmatched glob can vanish entirely, degrading `ls -1t <glob>` into a bare `ls` of the CWD, whose files then get deleted by the downstream loop.)
+
+*Rules:* move each path individually in a loop with a per-file `[ -e ]` guard; assert the destination is populated before any step that regenerates sources; never feed a glob to a destructive command without an expansion guard.
+
+### Anchor filename matches on the full token boundary; keep prune pipelines POSIX
+
+Two `/sweep` 2026-07-02 findings on the handoff-prune shell (both live-reproduced):
+- A **suffix glob** over multi-token filenames (`*-${BR}.md` against `{stamp}-{caller}-{branch}.md`) also matches any *other* branch whose slug merely ends in `-$BR` — pruning `foo` deletes `bar-foo`'s handoffs. Anchor with a `grep -E` that mirrors the canonical resolver regex (`handoff-path.js` `FILE_RE`: stamp shape + caller alternation + branch + extension), and keep it in sync with the resolver.
+- `find -printf` is **GNU-only**; on macOS/BSD `find` it fails, and with stderr discarded the pipeline silently yields nothing — the prune no-ops forever. For newest-N over run-stamped files, sort by **basename** instead: the `{YYMMDD-HHMM}` prefix is chronological, and `awk -F/ + sort -r + tail -n +K + cut` are all POSIX.
+
 ## Working discipline
 
 ### Resolve it or don't report it

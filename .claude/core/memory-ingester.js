@@ -303,9 +303,12 @@ ${decisionsBlock}
      * Extract objectives/tomorrow items as in-progress work.
      */
     extractObjectives(body) {
-        // Find "Objectives for Tomorrow" or similar section
+        // Find "Objectives for Tomorrow" or similar section. The terminator
+        // must include bare end-of-input: JS `$` (no /m) only matches absolute
+        // end, so a `\n$` lookahead silently dropped the whole section whenever
+        // it was last in a file with no trailing newline.
         const objectivesMatch = body.match(
-            /##\s+(?:🔮\s+)?Objectives for Tomorrow\s*\n([\s\S]*?)(?=\n##\s|\n---|\n$)/i
+            /##\s+(?:🔮\s+)?Objectives for Tomorrow\s*\n([\s\S]*?)(?=\n##\s|\n---|\s*$)/i
         );
         if (!objectivesMatch) return [];
 

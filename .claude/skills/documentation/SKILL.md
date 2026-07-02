@@ -64,3 +64,4 @@ Write for the person who arrives next — developer, user, or architect. The aud
 - If the codebase calls it a "workspace," docs never call it a "project"
 - Same concept = same term everywhere, always
 - Update adjacent docs when a change ripples — new endpoint means updating API reference, README, and architecture summary
+- **Constants live in code; prose references the constant's NAME.** When a numeric default (cap, threshold, timeout) appears in command/skill/doc prose, phrase it as "the `MEMORY_MAX_PER_CATEGORY` default" (naming where it's defined), not a restated literal — or make ONE prose location canonical and link the rest to it. Restated literals rot: a cap change once left the same file saying both 50 and 100, and a careful two-of-three fix still missed the third instance in the same pass.

@@ -92,7 +92,16 @@ git branch -d <feature-branch>
 # Clean up the merged branch's session handoffs (per-branch files under
 # docs/.output/handoffs/) so the base branch doesn't accumulate dead handoffs.
 # The work itself lives in commits + plan files; the handoff was a pointer.
-git rm -q docs/.output/handoffs/*-<feature-branch-slug>.md 2>/dev/null && \
+# NOTE: handoffs are month-nested (YYYY-MM/...-<slug>.md), so a FLAT glob
+# (docs/.output/handoffs/*-<slug>.md) matches nothing and silently prunes nothing
+# (and under zsh an unmatched glob vanishes). Use `find` + a path-prefix guard.
+# The grep anchors on the {stamp}-{caller}- boundary (handoff-path.js FILE_RE):
+# a bare "*-<slug>.md" suffix match also hits OTHER branches whose slug merely
+# ends in -<slug> (deleting branch `foo`'s handoffs must not touch `bar-foo`'s).
+find docs/.output/handoffs -type f -name "*-<feature-branch-slug>.md" 2>/dev/null \
+  | grep -E '/[0-9]{6}-[0-9]{4}-(run-todo|run-tests|end|do|todo)-<feature-branch-slug>\.md$' \
+  | while read -r f; do case "$f" in docs/.output/handoffs/*) git rm -q "$f" 2>/dev/null || true ;; esac; done
+[ -n "$(git diff --cached --name-only -- docs/.output/handoffs/)" ] && \
   (printf 'chore: drop merged-branch handoffs (<feature-branch>)\n' > docs/.output/.state/.commit-msg && node .claude/core/commit.js) || true
 ```
 

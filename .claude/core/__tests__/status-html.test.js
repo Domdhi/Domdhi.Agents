@@ -24,6 +24,8 @@ const {
     generateHtml,
     renderMemoryHitRateBox,
     renderMemoryHealthBox,
+    renderGateStatusBox,
+    renderCodeSizeBox,
     esc,
 } = require('../_lib/status-html');
 
@@ -177,6 +179,83 @@ describe('status-html', () => {
             });
             expect(html).toContain('12 memories');
             expect(html).toContain('4 stale');
+        });
+    });
+
+    // ── renderGateStatusBox ───────────────────────────────────────────────────
+
+    describe('renderGateStatusBox', () => {
+        it('returns empty string when gs is null', () => {
+            expect(renderGateStatusBox(null)).toBe('');
+        });
+
+        it('returns empty string when overall is missing (malformed summary)', () => {
+            expect(renderGateStatusBox({ stack: 'node' })).toBe('');
+        });
+
+        it('renders green PASS box with test counts and duration in title', () => {
+            const html = renderGateStatusBox({
+                overall: true,
+                mode: 'BUILD + TEST',
+                stack: 'node',
+                durationMs: 13045,
+                test: { passed: 2811, failed: 0, total: 2812 },
+            });
+            expect(html).toContain('PASS');
+            expect(html).toContain('#3fb950');
+            expect(html).toContain('Build Gate');
+            expect(html).toContain('2811/2812 tests passed');
+            expect(html).toContain('13.0s');
+        });
+
+        it('renders red FAIL box', () => {
+            const html = renderGateStatusBox({ overall: false, stack: 'node' });
+            expect(html).toContain('FAIL');
+            expect(html).toContain('#da3633');
+        });
+
+        it('omits test counts when total is 0 (build-only run)', () => {
+            const html = renderGateStatusBox({
+                overall: true,
+                stack: 'node',
+                test: { passed: 0, failed: 0, total: 0 },
+            });
+            expect(html).not.toContain('tests passed');
+        });
+    });
+
+    // ── renderCodeSizeBox ─────────────────────────────────────────────────────
+
+    describe('renderCodeSizeBox', () => {
+        it('returns empty string when cm is null', () => {
+            expect(renderCodeSizeBox(null)).toBe('');
+        });
+
+        it('returns empty string when fileCount is 0', () => {
+            expect(renderCodeSizeBox({ loc: 0, fileCount: 0, byDir: {} })).toBe('');
+        });
+
+        it('renders LOC with thousands separator and file count in title', () => {
+            const html = renderCodeSizeBox({
+                loc: 24481,
+                fileCount: 142,
+                byDir: { src: 20000, tools: 4481 },
+            });
+            expect(html).toContain('24,481');
+            expect(html).toContain('Lines of Code');
+            expect(html).toContain('142 source files');
+        });
+
+        it('includes top 3 directories in title, largest first', () => {
+            const html = renderCodeSizeBox({
+                loc: 100,
+                fileCount: 4,
+                byDir: { a: 10, b: 40, c: 30, d: 20 },
+            });
+            expect(html).toContain('b: 40');
+            expect(html).toContain('c: 30');
+            expect(html).toContain('d: 20');
+            expect(html).not.toContain('a: 10');
         });
     });
 
@@ -373,6 +452,21 @@ describe('status-html', () => {
                 expect(html).toContain('Memory Health');
                 expect(html).toContain('58');
                 expect(html).toContain('/70');
+            } finally {
+                fs.rmSync(tmpDir, { recursive: true, force: true });
+            }
+        });
+
+        it('renders Build Gate and Lines of Code boxes when 6th/7th args are provided', () => {
+            const tmpDir = makeTmpDir();
+            const gateSummary = { overall: true, stack: 'node', durationMs: 5000, test: { passed: 10, failed: 0, total: 10 } };
+            const codeMetrics = { loc: 1234, fileCount: 9, byDir: { src: 1234 } };
+            try {
+                const html = generateHtml([], { commands: {}, gates: {}, sessions: 0, memoryBenchmark: null }, null, tmpDir, null, gateSummary, codeMetrics);
+                expect(html).toContain('Build Gate');
+                expect(html).toContain('PASS');
+                expect(html).toContain('Lines of Code');
+                expect(html).toContain('1,234');
             } finally {
                 fs.rmSync(tmpDir, { recursive: true, force: true });
             }

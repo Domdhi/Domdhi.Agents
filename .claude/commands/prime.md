@@ -33,17 +33,23 @@ TASK_DESCRIPTION: CONTEXT
 
 ### Step 1: Read the handoff + git reality (parallel)
 
-Resolve the handoff path first — handoffs are per-session/per-branch files under `docs/.output/handoffs/`, and the resolver returns the newest one for the current branch (falling back to the newest overall):
+Resolve the handoff path first — handoffs are per-session/per-branch files under `docs/.output/handoffs/`. Resolve BOTH the branch-preferred pick and the global newest (the resolver prefers the current branch by design, so a fresher session that ended on *another* branch — a just-merged feature, a parallel worktree — is only visible via `--any`):
 ```
-HANDOFF=$(node .claude/core/handoff-path.js latest)
+HANDOFF=$(node .claude/core/handoff-path.js latest)         # newest for THIS branch (falls back to newest overall if branch has none)
+NEWEST=$(node .claude/core/handoff-path.js latest --any)    # newest across ALL branches
 ```
-Then read it alongside git reality:
+Then read alongside git reality:
 ```
 Read $HANDOFF        # the resolved handoff (skip if empty — none yet)
+Read $NEWEST         # ONLY if different from $HANDOFF — a more recent session ended on another branch; treat it as the freshest context and $HANDOFF as this branch's thread
 git log --oneline -20
 git status --short
 ```
-The handoff has decisions, intent, blockers, and next actions from the previous session. Git is the source of truth — do NOT trust the handoff over git. If `$HANDOFF` is empty (no handoff exists yet), scan `docs/work/backlog.md` instead.
+The handoff has decisions, intent, blockers, and next actions from the previous session. Git is the source of truth — do NOT trust the handoff over git.
+
+**Fallbacks, in order:**
+1. `$HANDOFF` empty (no handoff file in the working tree) → before giving up, check for handoffs committed on **unmerged branches** (a worktree session's handoff lives only on its branch until merged): `git log --all --oneline -5 -- docs/.output/handoffs/`. If a commit exists there, list its handoff file(s) with `git show --name-only --format= <hash> -- docs/.output/handoffs/` and read the newest via `git show <hash>:<path>` — do NOT check the branch out.
+2. Still nothing → scan `docs/work/backlog.md` instead.
 
 ### Step 2: Read Key Files + forward-looking memory (one parallel batch)
 

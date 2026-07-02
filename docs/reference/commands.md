@@ -879,7 +879,7 @@ flowchart TD
 
 ## /end
 
-Save session context for the next conversation. Reads plans for unfinished items, runs `organize.cjs`, refreshes `work/timeline.md` if stale, gathers live git state, writes this session's handoff (`docs/.output/handoffs/{stamp}-{caller}-{branch}.md`, via the session-handoff skill), and commits the handoff.
+Save session context for the next conversation. Reads plans for unfinished items, runs `organize.cjs`, refreshes `work/timeline.md` if stale, gathers live git state, writes this session's handoff (`docs/.output/handoffs/{YYYY-MM}/{stamp}-{caller}-{branch}.md`, via the session-handoff skill), and commits the handoff.
 
 ```mermaid
 flowchart TD

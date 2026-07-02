@@ -124,12 +124,16 @@ function auditBranch(branch, ctx) {
   // backup/* are deliberate recovery snapshots — never propose for deletion.
   if (PROTECTED.has(branch) || /^backup\//.test(branch)) return { branch, verdict: 'KEEP', reason: 'protected' };
 
-  // upstream tracking state (gone = PR auto-deleted source = merged)
-  const upstream = gitSafe(`rev-parse --abbrev-ref --symbolic-full-name ${branch}@{u}`);
+  // Upstream tracking state (gone = PR auto-deleted source = merged). Bug fix:
+  // `rev-parse branch@{u}` throws OUTRIGHT once the tracking ref is pruned (the
+  // exact "gone" case), so gitSafe swallowed it to '' and this always reported
+  // 'none' — the documented corroborating signal could never fire. for-each-ref's
+  // %(upstream:track) survives a pruned ref and reports the literal "[gone]".
+  const track = gitSafe(`for-each-ref --format='%(upstream:track)' refs/heads/${branch}`).replace(/'/g, '');
+  const hasUpstreamConfig = gitOk(`config --get branch.${branch}.merge`);
   let upstreamState = 'none';
-  if (upstream) {
-    upstreamState = gitOk(`rev-parse --verify ${upstream}`) ? 'tracking' : 'gone';
-  }
+  if (track.includes('[gone]')) upstreamState = 'gone';
+  else if (hasUpstreamConfig) upstreamState = 'tracking';
 
   const ahead = gitSafe(`rev-list --count ${BASE}..${branch}`) || '0';
 
@@ -272,6 +276,7 @@ function main(argv) {
 module.exports = {
   classifyPath, branchVerdictFromCode, worktreeVerdictFromDirty, codeFileSignature,
   CODE_RE, DISPOSABLE_RE,
+  git, gitSafe, gitOk, auditBranch, listWorktrees, auditWorktree, main,
 };
 
 if (require.main === module) main(process.argv.slice(2));

@@ -304,7 +304,7 @@ function runUpdate(targetPath, options) {
     // The .claude walk above syncs the INERT .claude/templates/root/gitignore,
     // but the ACTIVE root .gitignore is a separate file scaffold.js seeds once at
     // setup time. Without this step, ignore-rule changes (e.g. v4.63 untracking
-    // docs/.output/memories/) never reach existing adopters on sync. Merge the
+    // docs/.output/memories/ — path-lint:keep) never reach existing adopters on sync. Merge the
     // managed block here — idempotent: replaces an existing block in place,
     // appends one if absent, and leaves the adopter's own rules untouched.
     const gitignoreSrc = path.join(sourceClaudeDir, 'templates', 'root', 'gitignore');

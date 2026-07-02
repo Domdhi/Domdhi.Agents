@@ -125,14 +125,10 @@ function readGateRuns(root) {
  * blocks Bash commands) and the AC explicitly permits a distinct line.
  *
  * SOURCE: guardrail-events.jsonl entries where `source === 'secret-scanner'`.
- * The secret-scanner hook does NOT currently emit these events — it blocks
- * silently via exit-code. When a future story wires the scanner to emit a
- * guardrail event with `source: 'secret-scanner'`, this reader will pick them
- * up automatically. Until then this returns 0 (documented gap).
- *
- * TODO (future story): update secret-scanner.cjs to call emitGuardrailHit with
- * { decision:'block', rule:'secret-scanner', source:'secret-scanner' } so
- * blocks are counted here.
+ * secret-scanner.cjs emits these via recordScannerBlock() → emitGuardrailHit
+ * on both block paths (Claude Write/Edit hook and --git-precommit), so this
+ * counter reflects real blocks. A 0 means no blocks occurred (or telemetry
+ * predates the wiring, 2026-06-13).
  *
  * @param {string} root  Absolute project root
  * @returns {number}

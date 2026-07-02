@@ -427,23 +427,33 @@ function main(argv) {
             console.log('[SKILL-EVOLUTION] no runs yet.');
             return;
         }
-        // Run-dirs are named {YYYY-MM-DD} and sit either flat under base (native write)
-        // or one level deep under a {YYYY-MM}/ month dir (homed). List both.
-        const runs = [];
+        // Run-dirs are named {YYYY-MM-DD} and sit either flat under base (native
+        // write) or one level deep under a {YYYY-MM}/ month dir (homed). A
+        // no-date intake run writes to `latest/` — the reader must list it too
+        // (the writer's own default output, line ~405). Sort newest-first by
+        // run DATE (the basename), not the relative path — sorting mixed
+        // flat/nested paths puts location, not date, in the tiebreaker slot
+        // ('-' < '/'), listing month-nested runs above newer flat runs.
+        const runs = new Map(); // run date -> display path ('/' separator, cross-platform output)
+        const addRun = (date, rel) => { if (!runs.has(date)) runs.set(date, rel); };
         for (const ent of fs.readdirSync(base, { withFileTypes: true })) {
             if (!ent.isDirectory()) continue;
-            if (/^\d{4}-\d{2}-\d{2}$/.test(ent.name)) {
-                if (fs.existsSync(path.join(base, ent.name, 'intake.md'))) runs.push(ent.name);
+            if (/^\d{4}-\d{2}-\d{2}$/.test(ent.name) || ent.name === 'latest') {
+                if (fs.existsSync(path.join(base, ent.name, 'intake.md'))) addRun(ent.name, ent.name);
             } else if (/^\d{4}-\d{2}$/.test(ent.name)) {
                 const monthDir = path.join(base, ent.name);
                 for (const d of fs.readdirSync(monthDir)) {
                     if (/^\d{4}-\d{2}-\d{2}$/.test(d) && fs.existsSync(path.join(monthDir, d, 'intake.md'))) {
-                        runs.push(path.join(ent.name, d));
+                        addRun(d, `${ent.name}/${d}`);
                     }
                 }
             }
         }
-        for (const r of runs.sort().reverse()) console.log(`- ${r}/intake.md`);
+        // Ascending sort puts date-named runs first and 'latest' (0x6C > 0x39)
+        // last; after reverse, 'latest' — the newest unstamped run — tops the list.
+        for (const date of [...runs.keys()].sort().reverse()) {
+            console.log(`- ${runs.get(date)}/intake.md`);
+        }
         return;
     }
 

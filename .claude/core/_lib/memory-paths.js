@@ -3,7 +3,7 @@
 /**
  * memory-paths.js — the single accessor for the SPLIT memory store (ADR 0006
  * Amendment 2). The store used to be one gitignored tree at
- * docs/.output/memories/ (JSON source + derived db + transient drafts/logs,
+ * docs/.output/memories/ (JSON source + derived db + transient drafts/logs,  // path-lint:keep
  * colocated). It is now split along the source / index / transient lifecycle:
  *
  *   .memory/                       curated JSON SOURCE      — TRACKED (syncs over git)

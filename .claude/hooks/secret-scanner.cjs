@@ -14,8 +14,13 @@
  *   Manual:       node secret-scanner.cjs --file <path>
  *
  * Exit codes:
- *   0 = clean (or no scannable content)
- *   1 = secrets found (blocks the action)
+ *   Claude hook mode:  0 = clean/allow, 2 = secrets found (BLOCKS the tool call —
+ *                      Claude Code only blocks a PreToolUse call on exit 2; any
+ *                      other non-zero is a non-blocking error and the write
+ *                      would proceed. Do NOT "normalize" this back to 1.)
+ *   CLI modes (--git-precommit, --file):  0 = clean, 1 = secrets found
+ *                      (conventional CLI failure; commit.js treats non-zero as
+ *                      a failed pre-commit gate)
  *
  * Known limitations:
  *   - Base64 or hex-encoded secrets are not detected
@@ -79,31 +84,60 @@ function recordScannerBlock() {
 
 /**
  * Process a single parsed Claude tool event.
- * Returns null (allow) or { block: true, feedback: string, exitCode: 1 } (block).
+ * Returns null (allow) or { block: true, feedback: string, exitCode: 2 } (block).
+ * exitCode MUST be 2 — Claude Code only blocks a PreToolUse call on exit 2;
+ * any other non-zero is a non-blocking error and the write proceeds.
  *
- * @param {{ tool_name: string, tool_input: { file_path?: string, content?: string, new_string?: string } }} parsedJson
- * @returns {{ block: true, feedback: string, exitCode: 1 } | null}
+ * @param {{ tool_name: string, tool_input: { file_path?: string, notebook_path?: string, content?: string, new_string?: string, new_source?: string, edits?: Array<{ new_string?: string }> } }} parsedJson
+ * @returns {{ block: true, feedback: string, exitCode: 2 } | null}
  */
 function processEvent(parsedJson) {
     const toolName = parsedJson.tool_name || '';
 
-    // Only scan Write and Edit tool calls
-    if (toolName !== 'Write' && toolName !== 'Edit') return null;
+    // Scan every write-capable tool this hook is wired on in settings.json
+    const SCANNED_TOOLS = ['Write', 'Edit', 'MultiEdit', 'NotebookEdit'];
+    if (!SCANNED_TOOLS.includes(toolName)) return null;
 
     const toolInput = parsedJson.tool_input || {};
-    const filePath = toolInput.file_path || '';
+    const filePath = toolInput.file_path || toolInput.notebook_path || '';
 
     if (shouldSkipPath(filePath)) return null;
 
-    const content = toolInput.content || toolInput.new_string || '';
-    if (!content) return null;
+    // Scan each content piece separately so a finding's line number refers to
+    // the piece it was found in (a concatenated pseudo-document would report
+    // line numbers that don't exist in the file). Empty pieces are dropped —
+    // matching the long-standing "no content, nothing to scan" behavior —
+    // while whitespace-only content IS scanned so the high-risk-filename
+    // check (which fires from the path alone) still runs.
+    const pieces = [];
+    const direct = toolInput.content || toolInput.new_string || toolInput.new_source || '';
+    if (direct) pieces.push({ label: '', text: direct });
+    if (Array.isArray(toolInput.edits)) {
+        toolInput.edits.forEach((e, i) => {
+            if (e && e.new_string) pieces.push({ label: `edit #${i + 1}`, text: e.new_string });
+        });
+    }
+    if (pieces.length === 0) return null;
 
-    const findings = scanContent(content, filePath);
+    const findings = [];
+    let sawHighRiskFile = false;
+    for (const piece of pieces) {
+        for (const f of scanContent(piece.text, filePath)) {
+            if (f.type === 'HIGH_RISK_FILE') {
+                // Path-derived, identical for every piece — report once.
+                if (sawHighRiskFile) continue;
+                sawHighRiskFile = true;
+            } else if (piece.label) {
+                f.file = `${filePath} (${piece.label})`;
+            }
+            findings.push(f);
+        }
+    }
     if (findings.length > 0) {
         return {
             block: true,
             feedback: formatFindings(findings),
-            exitCode: 1,
+            exitCode: 2,
         };
     }
 

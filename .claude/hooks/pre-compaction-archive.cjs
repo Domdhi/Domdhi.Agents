@@ -85,7 +85,7 @@ function buildSnapshot(projectRoot, log, trigger) {
     // Read recent agent updates if available. The store rotates by day under
     // docs/.output/evolution/agents/{YYYY-MM-DD}.md so no single file grows unbounded;
     // older (pre-rotation) projects may still have the legacy flat
-    // docs/.output/evolution/agents.md. Prefer the folder (newest day-files), fall
+    // docs/.output/evolution/agents.md (path-lint:keep). Prefer the folder (newest day-files), fall
     // back to the flat file.
     let agentUpdates = '';
     try {
@@ -107,9 +107,13 @@ function buildSnapshot(projectRoot, log, trigger) {
                     }
                 }
             }
-            updatesContent = dayFiles
-                .sort((a, b) => a.name.localeCompare(b.name))  // {YYYY-MM-DD}.md chronological
-                .slice(-3)                                     // newest few days
+            // Select the newest 3 distinct DAYS, then read every file for those
+            // days — a day present both flat and month-nested (partially-homed
+            // store) must not consume two of the three day slots.
+            const sorted = dayFiles.sort((a, b) => a.name.localeCompare(b.name));
+            const keepDays = new Set([...new Set(sorted.map(d => d.name))].slice(-3));
+            updatesContent = sorted
+                .filter(d => keepDays.has(d.name))
                 .map(d => fs.readFileSync(d.abs, 'utf8'))
                 .join('\n');
         } else if (fs.existsSync(flatPath)) {

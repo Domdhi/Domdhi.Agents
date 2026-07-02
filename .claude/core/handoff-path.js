@@ -11,7 +11,8 @@
  * `/run-tests`, and `/todo` — so it conflicts on every PR merge.
  *
  * The fix: handoffs are per-session, stamped, and branch-tagged, living under
- * `docs/.output/handoffs/{stamp}-{caller}-{branch}.md`. Every run writes a
+ * `docs/.output/handoffs/{YYYY-MM}/{stamp}-{caller}-{branch}.md` (month-bucketed,
+ * ADR 0006; readers also accept legacy flat files). Every run writes a
  * uniquely-named file, so parallel branches never touch the same path → zero
  * merge conflicts. The files are TRACKED (the .output gitignore block excludes
  * memories/telemetry/sessions, NOT handoffs/), so they stay portable across
@@ -109,8 +110,16 @@ function ensureDir(cwd = process.cwd(), runStamp) {
  * Newest handoff for `branch` (default: current). Falls back to the newest
  * across ALL branches when the branch has none. Returns a repo-relative path
  * string, or null if the dir is empty/absent.
+ *
+ * `any: true` skips the branch preference entirely and returns the newest
+ * handoff across all branches. Callers like /prime compare the two: when the
+ * branch-preferred pick is NOT the global newest, a more recent session ended
+ * on another branch (a just-merged feature, a parallel worktree) and its
+ * handoff is usually the context the user actually wants surfaced too. The
+ * branch preference itself must stay the default — parallel /run-todo
+ * worktrees rely on it to not leak sibling branches' handoffs.
  */
-function resolveLatest({ cwd = process.cwd(), branch } = {}) {
+function resolveLatest({ cwd = process.cwd(), branch, any = false } = {}) {
     const root = path.join(cwd, HANDOFF_DIR);
     const parsed = [];
 
@@ -148,7 +157,7 @@ function resolveLatest({ cwd = process.cwd(), branch } = {}) {
     // Sort by stamp prefix (chronological), then pick newest for the branch.
     parsed.sort((a, b) => (a.stampStr < b.stampStr ? -1 : a.stampStr > b.stampStr ? 1 : 0));
     const b = branch || currentBranchSlug(cwd);
-    const mine = parsed.filter((e) => e.branch === b);
+    const mine = any ? [] : parsed.filter((e) => e.branch === b);
     const pool = mine.length ? mine : parsed;
     const pick = pool[pool.length - 1];
     return pick.sub ? `${HANDOFF_DIR}/${pick.sub}/${pick.name}` : `${HANDOFF_DIR}/${pick.name}`;
@@ -181,13 +190,15 @@ if (require.main === module) {
             ensureDir(process.cwd(), s);
             process.stdout.write(buildWritePath(arg, { runStamp: s }) + '\n');
         } else if (cmd === 'latest') {
-            const p = resolveLatest();
+            // `latest` = newest for the current branch (worktree-safe default);
+            // `latest --any` = newest across ALL branches (cross-branch recall).
+            const p = resolveLatest({ any: arg === '--any' });
             if (p) process.stdout.write(p + '\n');
             // empty output + exit 0 when none — caller falls back to backlog
         } else if (cmd === 'branch') {
             process.stdout.write(currentBranchSlug() + '\n');
         } else {
-            process.stderr.write('usage: handoff-path.js <write <caller>|latest|branch>\n');
+            process.stderr.write('usage: handoff-path.js <write <caller>|latest [--any]|branch>\n');
             process.exit(2);
         }
     } catch (err) {

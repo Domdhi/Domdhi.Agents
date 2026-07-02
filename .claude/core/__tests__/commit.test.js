@@ -630,6 +630,41 @@ describe('commit.js main() — full commit against an isolated tmp repo (in-proc
   });
 });
 
+// ─── First commit into a brand-new repo (unborn HEAD) ────────────────────────────
+// `git init` with zero commits yet leaves HEAD an unresolvable symref — this is
+// exactly the state of a just-scaffolded repo's very first commit (e.g. after
+// `publish.js`/`scaffold.js` seed a new project). `git rev-parse --abbrev-ref HEAD`
+// throws in this state; commit.js must not crash on it. Builds the repo directly
+// with `git init` (NOT the git-fixture helper, which seeds an initial commit and so
+// never reaches an unborn HEAD).
+
+describe('commit.js main() — first commit into a brand-new repo (unborn HEAD)', () => {
+  let tmp;
+  beforeEach(() => { tmp = createTmpDir({ prefix: 'commit-unborn-' }); });
+  afterEach(() => tmp.cleanup());
+
+  it.skipIf(!gitAvailable())('succeeds on a freshly `git init`-ed repo with zero prior commits', () => {
+    const repoPath = tmp.root;
+    execFileSync('git', ['init', '-b', 'main'], { cwd: repoPath, stdio: 'pipe' });
+    execFileSync('git', ['config', 'user.name', 'Test'], { cwd: repoPath, stdio: 'pipe' });
+    execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: repoPath, stdio: 'pipe' });
+    execFileSync('git', ['config', 'commit.gpgsign', 'false'], { cwd: repoPath, stdio: 'pipe' });
+    // Confirm the fixture really is at an unborn HEAD before trusting the assertion below.
+    expect(() => execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: repoPath, stdio: 'pipe' }))
+      .toThrow();
+
+    fs.writeFileSync(path.join(repoPath, 'README.md'), '# init\n');
+    execFileSync('git', ['add', 'README.md'], { cwd: repoPath, stdio: 'pipe' });
+    const msg = path.join(repoPath, 'MSG');
+    fs.writeFileSync(msg, 'chore: first commit\n');
+
+    const { status, stdout } = runCommit(repoPath, msg, ['--no-scan']);
+    expect(status).toBe(0);
+    expect(stdout).toMatch(/\[commit\] branch: main/);
+    expect(commitCount(repoPath)).toBe(1);
+  });
+});
+
 // ─── --paths against an isolated tmp repo (the multi-process-safe path) ──────────
 // Proves the headline guarantee: --paths stages ONLY the listed file, so a
 // concurrent process's in-flight file (other.md) never gets swept into the commit.

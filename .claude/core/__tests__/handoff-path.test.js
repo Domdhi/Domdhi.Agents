@@ -72,6 +72,34 @@ describe('handoff-path', () => {
     );
   });
 
+  // /prime's cross-branch recall: back on main after a feature merge, main's
+  // own newest handoff is STALE — `any: true` must surface the fresher
+  // foreign-branch handoff the default branch-preference deliberately hides.
+  it('resolveLatest_any_returnsGlobalNewest_evenWhenBranchHasOwnHandoffs', () => {
+    mkHandoffs([
+      '260601-0900-end-main.md',
+      '260607-1200-do-main.md',          // newest for main (stale)
+      '260607-1800-end-feature-x.md',    // global newest, other branch
+    ]);
+    expect(hp.resolveLatest({ cwd: tmp, branch: 'main', any: true })).toBe(
+      'docs/.output/handoffs/260607-1800-end-feature-x.md'
+    );
+    // default stays branch-preferred — parallel worktrees rely on it
+    expect(hp.resolveLatest({ cwd: tmp, branch: 'main' })).toBe(
+      'docs/.output/handoffs/260607-1200-do-main.md'
+    );
+  });
+
+  it('resolveLatest_any_scansMonthFoldersToo', () => {
+    mkHandoffs(['260601-0900-end-main.md']); // flat, current branch
+    const monthDir = path.join(tmp, hp.HANDOFF_DIR, '2026-06');
+    fs.mkdirSync(monthDir, { recursive: true });
+    fs.writeFileSync(path.join(monthDir, '260607-1800-end-feature-x.md'), 'x');
+    expect(hp.resolveLatest({ cwd: tmp, branch: 'main', any: true })).toBe(
+      'docs/.output/handoffs/2026-06/260607-1800-end-feature-x.md'
+    );
+  });
+
   it('resolveLatest_disambiguatesRunTodoVsTodo_andHyphenatedBranches', () => {
     mkHandoffs([
       '260607-1000-todo-feature-login.md',

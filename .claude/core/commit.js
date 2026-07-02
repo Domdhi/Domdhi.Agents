@@ -88,6 +88,18 @@ function git(...a) {
   return execFileSync('git', a, { encoding: 'utf8' });
 }
 
+// `git rev-parse --abbrev-ref HEAD` fails on an unborn branch (a fresh `git init`
+// with zero commits yet) — HEAD is a symref with nothing to resolve to. This is
+// exactly the state of a brand-new scaffolded repo's FIRST commit, so fall back to
+// `symbolic-ref`, which reads the symref name directly and works with no commits.
+function currentBranch() {
+  try {
+    return git('symbolic-ref', '--short', 'HEAD').trim();
+  } catch {
+    return git('rev-parse', '--abbrev-ref', 'HEAD').trim();
+  }
+}
+
 // Read + normalize the raw message text. With an inline -m string, use it directly
 // (never touch the file). Otherwise require the file to exist, then read it.
 // Exits the process (code 1) on a missing file — same as the original top-level body.
@@ -185,7 +197,7 @@ function main() {
     process.exit(0);
   }
 
-  const branch = git('rev-parse', '--abbrev-ref', 'HEAD').trim();
+  const branch = currentBranch();
   console.log(`[commit] branch: ${branch}`);
 
   if (paths) {
@@ -236,4 +248,4 @@ if (require.main === module) {
   main();
 }
 
-module.exports = { parseArgs, readMessage, appendCoAuthor, runScan, main, TRAILER };
+module.exports = { parseArgs, readMessage, appendCoAuthor, runScan, main, TRAILER, currentBranch };

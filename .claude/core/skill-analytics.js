@@ -439,4 +439,22 @@ function main() {
     process.stdout.write(report + '\n');
 }
 
-main();
+if (require.main === module) {
+    main();
+}
+
+module.exports = {
+    extractSkillsList,
+    scanSkills,
+    scanAgents,
+    buildSkillToAgents,
+    loadSkillTelemetry,
+    loadCommandTelemetry,
+    classifySkills,
+    buildReport,
+    pct,
+    topN,
+    statusIcon,
+    main,
+    STATUS,
+};

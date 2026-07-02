@@ -21,7 +21,23 @@ const NEAR_PCT = CONSTANTS.MEMORY_FILTERS.MEMORY_NEAR_LIMIT_PCT;
 const { createTmpDir } = require('./_helpers/tmp-dir');
 const { createGitRepo } = require('./_helpers/git-fixture');
 
-const hasSqlite = parseInt(process.versions.node.split('.')[0], 10) >= 25;
+// Probe FTS5 support directly — mirrors memory-manager.js's own probe (and
+// memory-backend-detect.test.js). A version-number gate here once read `>= 25`
+// and silently skipped these tests on Node 24, which ships FTS5 natively.
+const hasSqlite = (() => {
+  try {
+    const { DatabaseSync } = require('node:sqlite');
+    const db = new DatabaseSync(':memory:');
+    try {
+      db.exec('CREATE VIRTUAL TABLE _probe USING fts5(x)');
+      return true;
+    } finally {
+      db.close();
+    }
+  } catch {
+    return false;
+  }
+})();
 
 // ─── Per-test sandbox ────────────────────────────────────────────────────────
 

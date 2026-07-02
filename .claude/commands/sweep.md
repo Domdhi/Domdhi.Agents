@@ -34,7 +34,7 @@ node .claude/core/telemetry-log.js sweep
 
 **Defrag runs last on purpose.** Steps 2–5 spawn a pile of new memories. Defragging *before* that pile lands gets invalidated the moment the new memories are written — you'd have to defrag twice. Defrag is the *final cleanup pass* over the grown store, not the opener.
 
-**The cap is handled by staging, not by defragging early.** Each category has a hard cap of `MEMORY_MAX_PER_CATEGORY` (default **50**, in `constants.js`); `createMemory` refuses writes at the cap and auto-prunes stale entries at 80% (40). Steps 2–3 do NOT force-write into a near-cap category — new memories **stage into the inbox** (`memory-manager.js create` when the category is below ~80%; otherwise queue a draft via the inbox). The step-6 defrag then processes the inbox (`inbox-promote`) *and* merges overlaps in one pass, so everything lands under the cap. This is what makes "defrag at the end" actually work instead of hitting a wall at step 3.
+**The cap is handled by staging, not by defragging early.** Each category has a hard cap of `MEMORY_MAX_PER_CATEGORY` (default **100**, in `constants.js`); `createMemory` refuses writes at the cap and auto-prunes stale entries at 80% of it (`MEMORY_NEAR_LIMIT_PCT`). Steps 2–3 do NOT force-write into a near-cap category — new memories **stage into the inbox** (`memory-manager.js create` when the category is below ~80%; otherwise queue a draft via the inbox). The step-6 defrag then processes the inbox (`inbox-promote`) *and* merges overlaps in one pass, so everything lands under the cap. This is what makes "defrag at the end" actually work instead of hitting a wall at step 3.
 
 ## Autonomy Contract (read this — it overrides the sub-commands)
 
@@ -52,7 +52,7 @@ node .claude/core/telemetry-log.js sweep
 - **CWD discipline.** The Bash tool persists working directory across calls — a single `cd` into a subdir silently breaks later `node .claude/core/*` and `git` calls (module-not-found / pathspec). Run every phase command from the repo root: use **absolute or repo-root-relative script paths** and `git -C <repo-root>`, and never leave the shell parked in a subdir.
 - **`doc-writer` and review agents have NO Bash.** Gather all per-epic git stats (commit count, files, +/-, date range) in the main agent and pass them INLINE in the Phase 2 dispatch prompt. The orchestrator (main agent) owns all git/gate/node calls.
 - **Promote (Phase 4): cohesive-cluster-first.** When the auto-threshold matches many candidates, promote the largest *cohesive* cluster (same skill/home) as one block; defer *scattered singletons* — especially ones already represented in ADRs/CLAUDE.md — to manual review. Don't scatter single-line edits across many files unattended.
-- **Defrag (Phase 6) relieves the hard cap, not necessarily the soft warning.** `memory-guard.cjs` warns at ≥80% of the cap (40 of 50). A handful of merges clears the *hard cap* (writes work again) but may not clear the warning — that needs a deeper consolidation pass. Phase 7 success = "hard cap relieved + new memories landed," NOT "lint score fully restored."
+- **Defrag (Phase 6) relieves the hard cap, not necessarily the soft warning.** `memory-guard.cjs` warns at ≥80% of the cap (80 of the default 100). A handful of merges clears the *hard cap* (writes work again) but may not clear the warning — that needs a deeper consolidation pass. Phase 7 success = "hard cap relieved + new memories landed," NOT "lint score fully restored."
 - **Squash-merge branch check.** `git merge-base --is-ancestor` is fooled by squash-merges (a content-merged commit looks unique by hash). Use `git cherry -v origin/main HEAD` to detect already-upstream commits before branching or cherry-picking.
 - **Generated/vendored code.** Tell every reviewer to skip generated artifacts (lockfiles, `dist/`, `*.min.*`, migration scaffolding, snapshots) — sanity-check *intent* only, don't review generated line volume.
 
@@ -110,7 +110,7 @@ Auto-apply the retro's concrete outputs. This is the step that turns a retro fro
 
 1. **Memory extraction** — for every reusable pattern the retro surfaced and every learning in the code-review findings worth keeping:
    - If the target category is **below ~80% of cap**: `node .claude/core/memory-manager.js create <category> <id> '<content-json>'`. Assign an `importance` (1–5) in the content per the `session-handoff` skill.
-   - If the target category is **at/near cap (≥ 40 of the 50 default)**: **stage a draft to the inbox** (`docs/.output/.state/memory-inbox/`) instead — do NOT force the write. The Phase 6 defrag frees room and promotes from the inbox. Record the staged item in the Phase Log.
+   - If the target category is **at/near cap (≥ 80% of `MEMORY_MAX_PER_CATEGORY`, i.e. ≥ 80 of the 100 default)**: **stage a draft to the inbox** (`docs/.output/.state/memory-inbox/`) instead — do NOT force the write. The Phase 6 defrag frees room and promotes from the inbox. Record the staged item in the Phase Log.
 2. **System Improvements** — for each row in the retro's `## System Improvements` table:
    - `Agent: …` → edit the named `.claude/agents/*.md` (surgical fix from the retro; broad re-alignment is Phase 5's job — don't duplicate).
    - `Skill: …` → edit the named `.claude/skills/*/SKILL.md`. **In an adopter** (not the workshop), project-specific additions to a *template* skill go below a `<!-- @@project-additions -->` marker (create if absent) — edits above it are clobbered on the next sync. See `skill-authoring`.
@@ -147,7 +147,7 @@ Reuses `/review:evolve-skills --auto`. Runs *after* Phase 5 (so it sees freshly-
 
 **Why propose-only inside the sweep.** Skill *bodies* are the system's own brain. Unlike memory promotion (Phase 4, which has a clean ≥0.9 auto-threshold), a skill rewrite or a brand-new skill has no safe unattended threshold — and the `skill-authoring` doctrine requires a positive **differential eval** to justify any change, which is an expensive multi-subagent run that shouldn't fire blind in a maintenance pass. So Phase 5b **stages proposals; it never applies them.**
 
-1. `node .claude/core/skill-evolution.js intake --date {YYYY-MM-DD}` → reads `intake.json`: IMPROVE candidates (agent-update misalignments attributed to a skill) + CREATE candidates (uncovered recurring memory clusters).
+1. `node .claude/core/skill-evolution.js intake --date {YYYY-MM-DD} --since {last-sweep date}` → reads `intake.json`: IMPROVE candidates (agent-update misalignments attributed to a skill) + CREATE candidates (uncovered recurring memory clusters). **Pass `--since`** (the previous sweep's date, from the newest prior `*-sweep.md`) — without it the intake re-surfaces signals an earlier sweep already adjudicated, and you re-litigate stale evidence every run.
 2. For each candidate clearing the bar (IMPROVE: ≥1 attributed misalignment; CREATE: cluster size ≥3 OR avg confidence ≥0.8), the orchestrator (Opus) does the **reflective diagnosis** (what gap, what the skill should say) and drafts a candidate edit/new SKILL.md into the workspace under `docs/.output/evolution/skills/{date}/`, then conformance-gates it:
    `node .claude/core/skill-evolution.js check <skill> <candidate>`.
 3. **Do NOT apply, do NOT run the full differential benchmark here** (that's the human-confirmed `/review:evolve-skills` standalone run). Record each staged proposal — skill, evidence, the candidate diff, conformance result — in `docs/.output/evolution/skills/{date}/proposals.md`.
@@ -172,7 +172,7 @@ Reuses `/review:memory-defrag` in **auto-approve** mode — now operating on the
 Reuses `/review:memory-health`, `/review:check-templates`, and `/review:timeline`. The memory + template checks are read-only verification of the sweep's own edits; the timeline refresh is the one write (committed).
 
 ### 7a — Memory health (read-only)
-1. `node .claude/core/memory-manager.js lint` → confirm the **hard cap is relieved** (every category < 50 so writes work). NOTE: the category-balance warning persists while a category is ≥80% (40), so the lint score may stay below max — that is expected and is NOT a failure. Only flag it if a category is still AT the hard cap (50) or a deeper consolidation is warranted.
+1. `node .claude/core/memory-manager.js lint` → confirm the **hard cap is relieved** (every category below `MEMORY_MAX_PER_CATEGORY`, default 100, so writes work). NOTE: the category-balance warning persists while a category is ≥80% of the cap, so the lint score may stay below max — that is expected and is NOT a failure. Only flag it if a category is still AT the hard cap or a deeper consolidation is warranted.
 2. `node .claude/core/memory-manager.js decay-report` → confirm no `decayed_confidence < 0.3` left unaddressed.
 3. If lint is below target or stale entries exist, note them in the report as residual follow-ups.
 

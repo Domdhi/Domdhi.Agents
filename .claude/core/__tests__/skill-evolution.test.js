@@ -809,3 +809,59 @@ describe('extractFailureTraces (T.11)', () => {
         expect(m.extractFailureTraces({ evals: [{ eval_name: 'e' }] })).toEqual([]);
     });
 });
+
+// ── status (CLI) ─────────────────────────────────────────────────────────────
+// Spawn-level: the status reader must list every layout the intake writer can
+// produce — flat {YYYY-MM-DD}/, month-nested {YYYY-MM}/{YYYY-MM-DD}/, AND the
+// no-date default latest/ — ordered by run date newest-first regardless of
+// where a run lives. A reader that filters to date-shaped names only silently
+// dropped latest/; sorting relative paths listed nested runs above newer flat
+// ones ('-' < '/').
+
+describe('status CLI', () => {
+    function runStatus(projectRoot) {
+        const { execFileSync } = require('node:child_process');
+        const script = path.resolve(__dirname, '..', 'skill-evolution.js');
+        return execFileSync('node', [script, 'status'], {
+            env: { ...process.env, CLAUDE_PROJECT_DIR: projectRoot },
+            stdio: 'pipe',
+        }).toString();
+    }
+
+    function mkRun(root, rel) {
+        const dir = path.join(root, 'docs', '.output', 'evolution', 'skills', rel);
+        fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(path.join(dir, 'intake.md'), '# intake\n');
+    }
+
+    it('status_mixedLayouts_listsLatestAndSortsByRunDate', () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'skill-evo-status-'));
+        try {
+            mkRun(root, 'latest');
+            mkRun(root, path.join('2026-06', '2026-06-13')); // month-nested, OLDER
+            mkRun(root, '2026-06-20');                       // flat, NEWER
+            const out = runStatus(root);
+            const lines = out.trim().split('\n');
+            expect(lines).toEqual([
+                '- latest/intake.md',
+                '- 2026-06-20/intake.md',
+                '- 2026-06/2026-06-13/intake.md',
+            ]);
+        } finally {
+            fs.rmSync(root, { recursive: true, force: true });
+        }
+    });
+
+    it('status_sameDateFlatAndNested_listedOnce', () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'skill-evo-status-'));
+        try {
+            mkRun(root, '2026-06-13');
+            mkRun(root, path.join('2026-06', '2026-06-13'));
+            const out = runStatus(root);
+            const hits = out.trim().split('\n').filter((l) => l.includes('2026-06-13'));
+            expect(hits).toHaveLength(1);
+        } finally {
+            fs.rmSync(root, { recursive: true, force: true });
+        }
+    });
+});

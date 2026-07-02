@@ -10,6 +10,11 @@ const path = require('path');
 const CONSTANTS = require('./constants');
 const MemoryManager = require('./memory-manager');
 
+// Inbox drafts are transient by design (sub-agents drop, the Main Agent promotes
+// or discards at /end). A pile-up this deep means the promotion loop is stalled,
+// not merely busy.
+const INBOX_BACKLOG_WARN = 10;
+
 class MemoryHealthChecker {
     constructor() {
         this.manager = new MemoryManager();
@@ -20,19 +25,80 @@ class MemoryHealthChecker {
         };
     }
 
-    async checkMemoryDirectories() {
-        console.log('📁 Checking memory directories...');
-        const projectRoot = process.env.CLAUDE_PROJECT_DIR || path.resolve(__dirname, '..', '..');
-        const memoriesDir = path.join(projectRoot, 'docs', '.output', '.memory');
+    /**
+     * Freshness of the derived FTS5 index vs the tracked JSON source. Same
+     * staleness criterion as session-start-prime.cjs's maybeRebuildIndex():
+     * newest .memory JSON mtime vs the db mtime (absent → 0). WARN, never ERROR
+     * — the SessionStart hook self-heals, so staleness only degrades search to
+     * the JSON-scan fallback in the meantime. MUST run before any db-opening
+     * check (MemoryManager.initDb is lazy): a later check creating/writing the
+     * db would freshen the very mtime this check reads.
+     *
+     * (Replaces the vestigial checkMemoryDirectories() — MemoryManager's
+     * constructor self-heals the category dirs, so that check could never fail
+     * in the real CLI flow.)
+     */
+    async checkIndexFreshness() {
+        console.log('🗂️  Checking search-index freshness...');
 
+        let newestJson = 0;
         for (const category of Object.values(CONSTANTS.MEMORY_CATEGORIES)) {
-            const categoryPath = path.join(memoriesDir, category);
-            try {
-                await fs.access(categoryPath);
-                this.results.passed.push(`✅ Category '${category}' directory exists`);
-            } catch {
-                this.results.errors.push(`❌ Category '${category}' directory missing`);
+            const dir = path.join(this.manager.memoriesDir, category);
+            let files;
+            try { files = await fs.readdir(dir); } catch { continue; }
+            for (const f of files) {
+                if (!f.endsWith('.json')) continue;
+                try {
+                    const { mtimeMs } = await fs.stat(path.join(dir, f));
+                    if (mtimeMs > newestJson) newestJson = mtimeMs;
+                } catch { /* raced deletion — skip */ }
             }
+        }
+        if (newestJson === 0) {
+            this.results.passed.push('✅ Index freshness: store empty — nothing to index');
+            return;
+        }
+
+        let dbMtime = 0;
+        try { dbMtime = (await fs.stat(this.manager.dbPath)).mtimeMs; } catch { dbMtime = 0; }
+
+        if (dbMtime === 0) {
+            this.results.warnings.push(
+                '⚠️  FTS5 index absent — search falls back to a JSON linear scan until the next ' +
+                'SessionStart self-heal (or run: node .claude/core/memory-manager-cli.js rebuild-index)'
+            );
+        } else if (dbMtime < newestJson) {
+            this.results.warnings.push(
+                '⚠️  FTS5 index STALE — curated JSON is newer than the index (typical after a git pull); ' +
+                'rebuilds on next SessionStart, or run: node .claude/core/memory-manager-cli.js rebuild-index'
+            );
+        } else {
+            this.results.passed.push('✅ FTS5 index fresh (newer than every curated JSON file)');
+        }
+    }
+
+    /**
+     * Inbox backlog: sub-agent draft memories awaiting Main-Agent promotion.
+     * A persistent pile-up means /end's inbox-promote/discard loop is stalled.
+     */
+    async checkInboxBacklog() {
+        console.log('📥 Checking memory-inbox backlog...');
+        let drafts = [];
+        try {
+            drafts = (await fs.readdir(this.manager.inboxDir)).filter((f) => f.endsWith('.json'));
+        } catch { /* absent dir → empty inbox */ }
+
+        if (drafts.length === 0) {
+            this.results.passed.push('✅ Memory inbox empty — no drafts awaiting promotion');
+        } else if (drafts.length < INBOX_BACKLOG_WARN) {
+            this.results.passed.push(
+                `✅ Memory inbox: ${drafts.length} draft(s) pending (drained at /end via inbox-promote)`
+            );
+        } else {
+            this.results.warnings.push(
+                `⚠️  Memory inbox backlog: ${drafts.length} drafts (≥${INBOX_BACKLOG_WARN}) — the promotion ` +
+                'loop may be stalled; run memory-manager.js inbox-list, then promote or discard'
+            );
         }
     }
 
@@ -172,7 +238,10 @@ class MemoryHealthChecker {
         console.log('🏥 MEMORY SYSTEM HEALTH CHECK');
         console.log('='.repeat(60) + '\n');
 
-        await this.checkMemoryDirectories();
+        // Freshness first — it must observe the db BEFORE any check lazily
+        // opens/creates it (see checkIndexFreshness).
+        await this.checkIndexFreshness();
+        await this.checkInboxBacklog();
         await this.checkBackend();
         await this.checkMemoryPerformance();
         await this.checkMemoryQuality();

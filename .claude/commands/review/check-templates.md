@@ -94,6 +94,22 @@ It scans every `.claude/agents/*.md` frontmatter `skills:` list against the `.cl
 
 Exit code is 0 when clean, non-zero on any ERROR. This is the tool-checkable form of the manual "BROKEN SKILL REF" check in Step 6 — same operating standard applies: fold output into Step 9's Issues Found as **BROKEN SKILL REF**, **fix it in place** (correct the agent's frontmatter or add/restore the skill), then re-run to confirm green.
 
+### 2e. Path-Drift Lint
+
+Assert path literals in prose and code match the current resolvers — the mechanical form of the `migrate-all-readers-of-a-shared-path-in-one-wave` workflow memory (four independent writer/reader drift instances in the v4.95 window alone). Run the deterministic checker:
+
+```bash
+node .claude/core/path-drift-lint.js
+```
+
+It scans the template fileset (`.claude/`, `tools/`, `docs/reference/`, `docs/engineering/`, root `CLAUDE.md`/`docs/CLAUDE.md`/`README.md`) plus the living plan (`docs/work/backlog.md`, `roadmap.md` — the rest of `docs/work/` is historical as-of-date record, deliberately not judged) and applies three rules:
+
+- **LEGACY_TOKEN** (ERROR) — a pre-taxonomy `.output/…` token survives (sourced from `migrate-output-layout.js`'s rewrite table plus the Amendment-2 `memories/` store)
+- **FLAT_HANDOFF** (ERROR) — a literal or glob addresses a file directly under `handoffs/` with no `{YYYY-MM}` month segment; `handoff-path.js` writes month-bucketed, so a flat reader glob silently misses every current handoff
+- **UNKNOWN_COMPARTMENT** (WARN) — a literal `docs/.output/<seg>` segment absent from `constants.js OUTPUT_PATHS` (WARN because the taxonomy is open — adopters grow compartments; in the workshop it usually means drift)
+
+Exit code is 0 when clean or WARN-only, 1 on any ERROR. Same operating standard as 2c/2d: fold output into Step 9's Issues Found as **PATH DRIFT**, **fix it in place** (update the stale literal to the resolver's current shape — or, for an intentional legacy example, append a `path-lint:keep` marker to that line), then re-run to confirm green.
+
 ### 3. Scan Hook Inventory
 
 ```

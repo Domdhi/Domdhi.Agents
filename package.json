@@ -17,7 +17,9 @@
     "memory:stability": "node .claude/core/memory-stability.js",
     "memory:backup": "node .claude/core/memory-backup.js",
     "adr:lint": "node .claude/core/adr-lint.js",
+    "path:lint": "node .claude/core/path-drift-lint.js",
     "branch:audit": "node .claude/core/branch-audit.js",
+    "analytics:skills": "node .claude/core/skill-analytics.js",
     "feedback:rollup": "node tools/feedback-aggregate.js"
   },
   "devDependencies": {

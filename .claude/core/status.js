@@ -326,7 +326,7 @@ function computeGrandTotals(files) {
 
 // ── Text output ──────────────────────────────────────────────────
 
-function printTextSummary(files, telemetry, gitMetrics, memMetrics) {
+function printTextSummary(files, telemetry, gitMetrics, memMetrics, gateSummary = null, codeMetrics = null) {
   if (files.length === 0) { console.log('No TODO files found.'); return; }
   console.log('');
   for (const f of files) {
@@ -381,6 +381,15 @@ function printTextSummary(files, telemetry, gitMetrics, memMetrics) {
         .join(', ');
       console.log(`    Memory: ${memMetrics.healthScore}/70 [${tag}]  (${memMetrics.total} total, ${memMetrics.staleCount} stale${topCats ? ` — ${topCats}` : ''})`);
     }
+  }
+  if (gateSummary && typeof gateSummary.overall === 'boolean') {
+    const t = gateSummary.test || {};
+    const tests = typeof t.total === 'number' && t.total > 0 ? `, ${t.passed ?? 0}/${t.total} tests` : '';
+    const dur = typeof gateSummary.durationMs === 'number' ? `, ${(gateSummary.durationMs / 1000).toFixed(1)}s` : '';
+    console.log(`    Build gate: ${gateSummary.overall ? 'PASS' : 'FAIL'} (${gateSummary.stack || 'unknown'}${tests}${dur})`);
+  }
+  if (codeMetrics && codeMetrics.fileCount > 0) {
+    console.log(`    Code: ${codeMetrics.loc.toLocaleString('en-US')} LOC in ${codeMetrics.fileCount} source files`);
   }
   console.log('');
 }
@@ -675,15 +684,12 @@ async function main() {
   const telemetry       = computeTelemetryMetrics(PROJECT_ROOT);
 
   const memMetrics = await memMetricsPromise;
-  // gateSummary + codeMetrics remain TODO — surfacing them is a future
-  // dashboard story (gate-status badge + LOC trend).
-  void gateSummary; void codeMetrics;
 
-  printTextSummary(parsed, telemetry, gitMetrics, memMetrics);
+  printTextSummary(parsed, telemetry, gitMetrics, memMetrics, gateSummary, codeMetrics);
 
   if (!TEXT_ONLY) {
     if (!fs.existsSync(OUTPUT_DIR)) fs.mkdirSync(OUTPUT_DIR, { recursive: true });
-    const html = generateHtml(parsed, telemetry, gitMetrics, OUTPUT_DIR, memMetrics);
+    const html = generateHtml(parsed, telemetry, gitMetrics, OUTPUT_DIR, memMetrics, gateSummary, codeMetrics);
     fs.writeFileSync(OUTPUT_FILE, html, 'utf8');
     console.log(`  Dashboard: ${path.relative(PROJECT_ROOT, OUTPUT_FILE)}`);
     try {

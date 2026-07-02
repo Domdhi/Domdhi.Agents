@@ -102,7 +102,7 @@ Check for runtime agent issues tracked by `/do` and `/run-todo`:
 
 ```
 Read: docs/.output/evolution/agents/*.md (newest day-files; e.g. last 30 days)
-      ↳ fall back to legacy flat docs/.output/evolution/agents.md if the folder is absent
+      ↳ fall back to legacy flat docs/.output/evolution/agents.md if the folder is absent (path-lint:keep)
 ```
 
 The `agent-updates/` folder rotates by day (`{YYYY-MM-DD}.md`) so no single file grows unbounded — read across the recent files. These contain:

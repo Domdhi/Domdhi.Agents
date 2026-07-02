@@ -68,10 +68,26 @@ Prune this branch's older handoffs to the newest 3 (keeping `$HANDOFF`), so the 
 
 ```bash
 BR=$(node .claude/core/handoff-path.js branch)
-# newest-first, skip the 3 newest, git rm the rest (POSIX: tail -n +4 is portable).
-# git rm only — older handoffs are always committed by the time we prune, so a
-# bare `rm -f` is unnecessary (and trips the destructive-rm guardrail).
-ls -1t docs/.output/handoffs/*-"$BR".md 2>/dev/null | tail -n +4 | while read -r f; do git rm -q "$f" 2>/dev/null || true; done
+# Handoffs are month-nested (docs/.output/handoffs/YYYY-MM/...-$BR.md), so a FLAT
+# glob (docs/.output/handoffs/*-$BR.md) matches nothing (path-lint:keep) — and under zsh an unmatched
+# glob VANISHES, degrading `ls -1t <glob>` into a bare `ls -1t` that lists the repo
+# ROOT, whose tracked files then get `git rm`'d (package.json, README.md, ...). Use
+# `find` (deterministic, recurses the month dirs, never lists cwd on empty).
+# The grep anchors the match on the {stamp}-{caller}- boundary (handoff-path.js
+# FILE_RE) — a bare "*-${BR}.md" suffix glob also matches OTHER branches whose
+# slug merely ends in -$BR (pruning `foo` must not delete `bar-foo` handoffs).
+# Newest-3 selection sorts by BASENAME: the {YYMMDD-HHMM} stamp prefix is
+# chronological, and awk/sort/cut/grep are POSIX (find -printf is GNU-only and
+# fails SILENTLY on macOS/BSD — stderr is discarded — turning prune into a no-op).
+find docs/.output/handoffs -type f -name "*-${BR}.md" 2>/dev/null \
+  | grep -E '/[0-9]{6}-[0-9]{4}-(run-todo|run-tests|end|do|todo)-'"${BR}"'\.md$' \
+  | awk -F/ '{print $NF "\t" $0}' | sort -r | tail -n +4 | cut -f2- \
+  | while read -r f; do
+      case "$f" in
+        docs/.output/handoffs/*) git rm -q "$f" 2>/dev/null || true ;;
+        *) : ;;  # never touch anything outside the handoffs tree
+      esac
+    done
 ```
 
 Write the commit message to `docs/.output/.state/.commit-msg` (Write tool — no shell escaping):
