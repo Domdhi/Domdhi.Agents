@@ -108,6 +108,37 @@ describe('scanContent', () => {
         });
     });
 
+    describe('scanContent_googleOauthClientSecret', () => {
+        it('scanContent_googleOauthClientSecret_detected', () => {
+            // GOCSPX- + 28 chars. Built at runtime to avoid tripping the repo's
+            // own pre-commit scanner on this test file.
+            const secret = 'GOCSPX-' + 'abcdefghijklmnopqrstuvwxyz12';
+            const findings = scanContent(`client_secret=${secret}`, 'config.js');
+            expect(findings.map(f => f.name)).toContain('Google OAuth Client Secret');
+        });
+    });
+
+    describe('scanContent_nonStringContent', () => {
+        // Non-string content once threw `content.split is not a function`. It is
+        // now coerced so it still scans (rather than throwing, which failed the
+        // hook OPEN). A numeric payload has no secret → no SECRET_PATTERN finding,
+        // but the high-risk-filename check still fires from the path alone.
+        it('scanContent_numericContent_doesNotThrow', () => {
+            expect(() => scanContent(12345, 'config.js')).not.toThrow();
+            expect(scanContent(12345, 'config.js')).toEqual([]);
+        });
+
+        it('scanContent_numericContentToHighRiskFile_stillFlagsPath', () => {
+            const findings = scanContent(12345, '/x/.env');
+            expect(findings.map(f => f.type)).toContain('HIGH_RISK_FILE');
+        });
+
+        it('scanContent_nullAndUndefinedContent_doNotThrow', () => {
+            expect(() => scanContent(null, 'config.js')).not.toThrow();
+            expect(() => scanContent(undefined, 'config.js')).not.toThrow();
+        });
+    });
+
     describe('scanContent_openaiKey', () => {
         it('scanContent_openAiKey_detected', () => {
             const content = `OPENAI_API_KEY=${fakeOpenAiKey()}`;
@@ -411,6 +442,34 @@ describe('shouldSkipPath', () => {
 
     it('shouldSkipPath_regularSourceFile_returnsFalse', () => {
         expect(shouldSkipPath('/project/src/index.js')).toBe(false);
+    });
+
+    it('shouldSkipPath_skillsAndTemplates_returnsFalse', () => {
+        // .claude/skills/ and .claude/templates/ are NO LONGER skipped — .claude/
+        // is exactly what ships to every fleet adopter, so a secret authored into
+        // a SKILL.md, a skill asset, or a template config must be scanned. Same
+        // blind-spot class as the removed docs/.output/ skip.
+        expect(shouldSkipPath('/project/.claude/skills/foo/SKILL.md')).toBe(false);
+        expect(shouldSkipPath('/project/.claude/skills/foo/assets/example.env')).toBe(false);
+        expect(shouldSkipPath('/project/.claude/templates/root/gitignore')).toBe(false);
+    });
+
+    it('shouldSkipPath_testFixtures_returnsTrue', () => {
+        // Test-fixture skips are intentionally KEPT — they legitimately hold mock
+        // secrets for auth-flow fixtures; code review is the right gate there.
+        expect(shouldSkipPath('/project/src/__tests__/auth.js')).toBe(true);
+        expect(shouldSkipPath('/project/src/auth.test.js')).toBe(true);
+        expect(shouldSkipPath('/project/src/auth.spec.ts')).toBe(true);
+    });
+
+    it('secretInSkillFile_isNowScanned', () => {
+        // End-to-end: a secret in a skill markdown file now produces a finding
+        // (it was previously skipped wholesale and shipped unscanned).
+        const findings = scanContent(
+            `const key = "${fakeAwsKey()}";`,
+            '/project/.claude/skills/x/SKILL.md'
+        );
+        expect(findings.map(f => f.name)).toContain('AWS Access Key');
     });
 
     it('shouldSkipPath_envFile_returnsFalse', () => {

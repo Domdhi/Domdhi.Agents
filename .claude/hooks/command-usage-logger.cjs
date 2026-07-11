@@ -61,6 +61,11 @@
  * @property {string} command - skill name or gate type ('gate:build'|'gate:test')
  * @property {number|null} duration_ms - Event duration if available (null until P1.6)
  * @property {'success'|'failure'|'unknown'} outcome - Success/failure signal; 'unknown' when no exit_code and no summary
+ * @property {string|null} session_id - Stable per-session identifier (isolates one session's own
+ *   command chain from a concurrent session sharing the working tree). Read from
+ *   `CLAUDE_CODE_SESSION_ID` (set by Claude Code in every spawned subprocess's env, hooks included),
+ *   falling back to the hook JSON payload's own `session_id` field if the env var is absent. Null
+ *   only if neither source is available.
  */
 
 const fs = require('fs');
@@ -69,6 +74,10 @@ const { appendJsonl: appendJsonlLib } = require('../core/_lib/jsonl-writer');
 const { readHookInput } = require('../core/_lib/hook-input');
 const { getJsonlPath } = require('../core/_lib/telemetry-paths');
 const { readSummary } = require('../core/_lib/gate-summary');
+
+function resolveSessionId(parsedJson) {
+    return process.env.CLAUDE_CODE_SESSION_ID || parsedJson?.session_id || null;
+}
 
 // Anchor telemetry writes to the repo root — not the caller's CWD. Without this,
 // a prior `cd src && ...` in the same shell session leaves the Bash tool's CWD at
@@ -160,6 +169,7 @@ function processEvent(parsedJson) {
             type: 'command_invocation',
             command: skillName,
             duration_ms: null,
+            session_id: resolveSessionId(parsedJson),
         };
     }
 
@@ -203,6 +213,7 @@ function processEvent(parsedJson) {
             command: gateCommand,
             duration_ms: durationMs,
             outcome,
+            session_id: resolveSessionId(parsedJson),
         };
     }
 

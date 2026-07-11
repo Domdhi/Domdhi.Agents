@@ -21,6 +21,17 @@ const { MEMORY_DECAY } = require('../constants');
 
 const MS_PER_DAY = 1000 * 60 * 60 * 24;
 
+// Cap on the commit-history scan (M4). The resolver only counts DISTINCT active
+// work-days, and even the slowest decay curve (decisions 0.98^days) is well past
+// the archive threshold by ~150 active days — so a few thousand commits covers all
+// decay-relevant history with generous headroom. Bounding the query matters because
+// the caller (session-start-prime) runs this on a synchronous execSync: its
+// advertised 2s hard-timeout is a setTimeout, which CANNOT preempt a blocked event
+// loop, so an unbounded `git log` on a huge repo would block every session start up
+// to the inner 5s ceiling. Very old memories in a >cap-commit repo simply see
+// slightly less decay (a safe, retention-favoring bias), never a hang.
+const GIT_LOG_COMMIT_CAP = 5000;
+
 /**
  * Pure decay calculation.
  *
@@ -94,7 +105,7 @@ function createActiveDaysResolver({ projectRoot }) {
         if (resolved) return;
         resolved = true;
         try {
-            const output = execSync('git log --format="%ad" --date=short', {
+            const output = execSync(`git log -n ${GIT_LOG_COMMIT_CAP} --format="%ad" --date=short`, {
                 cwd: projectRoot,
                 encoding: 'utf-8',
                 stdio: ['pipe', 'pipe', 'pipe'],

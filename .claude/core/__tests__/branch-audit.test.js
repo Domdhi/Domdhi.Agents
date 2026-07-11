@@ -19,6 +19,7 @@ import path from 'node:path';
 const require = createRequire(import.meta.url);
 const {
   classifyPath, branchVerdictFromCode, worktreeVerdictFromDirty, codeFileSignature,
+  basenameInSiblingDir, hasShellMetachar,
   git, gitSafe, gitOk, auditBranch, listWorktrees, auditWorktree, main,
 } = require('../branch-audit');
 const { createTmpDir } = require('./_helpers/tmp-dir');
@@ -32,7 +33,6 @@ describe('classifyPath', () => {
   });
   it('flags regenerable working state as disposable', () => {
     expect(classifyPath('docs/.output/plans/x.md')).toBe('disposable');
-    expect(classifyPath('.claude/commands/do.md')).toBe('disposable');
     expect(classifyPath('docs/.output/.state/.commit-msg')).toBe('disposable');
     expect(classifyPath('docs/.output/.state/.pr-body')).toBe('disposable');
     expect(classifyPath('node_modules/x/index.js')).toBe('disposable');
@@ -40,6 +40,57 @@ describe('classifyPath', () => {
   it('treats unknown paths as other (review)', () => {
     expect(classifyPath('design-export/logo.svg')).toBe('other');
     expect(classifyPath('README.md')).toBe('other');
+  });
+  // C1 regression: authored .claude/ content is real work, never "safe to remove".
+  // Previously DISPOSABLE_RE matched ^\.claude\/ wholesale, so a worktree holding
+  // only new uncommitted skills/agents/commands/hooks was waved through prune-plan.
+  it('classifies authored .claude/ content as other (REVIEW), NOT disposable', () => {
+    expect(classifyPath('.claude/skills/new-skill/SKILL.md')).not.toBe('disposable');
+    expect(classifyPath('.claude/skills/new-skill/SKILL.md')).toBe('other');
+    expect(classifyPath('.claude/agents/new-agent.md')).toBe('other');
+    expect(classifyPath('.claude/commands/do.md')).toBe('other');
+    expect(classifyPath('.claude/hooks/some-hook.cjs')).toBe('other');
+  });
+});
+
+describe('hasShellMetachar', () => {
+  it('rejects branch names carrying shell metacharacters', () => {
+    for (const meta of ['x$(id)', 'x`id`', 'a;b', 'a|b', 'a&b', 'a(b)', 'a\nb']) {
+      expect(hasShellMetachar(meta)).toBe(true);
+    }
+  });
+  it('accepts ordinary branch names', () => {
+    for (const ok of ['main', 'feature/foo', 'release-1.2', 'backup/2026-01-01', 'fix_bug']) {
+      expect(hasShellMetachar(ok)).toBe(false);
+    }
+  });
+});
+
+describe('basenameInSiblingDir (dir-scoped rename heuristic)', () => {
+  const build = (files) => {
+    const m = new Map();
+    for (const f of files) {
+      const b = f.split('/').pop();
+      const i = f.lastIndexOf('/');
+      const dir = i < 0 ? '' : f.slice(0, i);
+      if (!m.has(b)) m.set(b, new Set());
+      m.get(b).add(dir);
+    }
+    return m;
+  };
+  it('true for a same-parent (sibling) directory move — tools/util.js → src/util.js', () => {
+    expect(basenameInSiblingDir(build(['tools/util.js']), 'src/util.js')).toBe(true);
+  });
+  it('true for a same-directory basename', () => {
+    expect(basenameInSiblingDir(build(['src/foo/util.js']), 'src/foo/util.js')).toBe(true);
+  });
+  it('false for a coincidental basename in an unrelated directory (N2 fix)', () => {
+    // base has lib/index.js (parent ""); new src/app/index.js (parent "src") → NOT a rename.
+    expect(basenameInSiblingDir(build(['lib/index.js']), 'src/app/index.js')).toBe(false);
+    expect(basenameInSiblingDir(build(['docs/README.md']), 'src/pkg/README.md')).toBe(false);
+  });
+  it('false when the basename is absent from base entirely', () => {
+    expect(basenameInSiblingDir(build(['src/other.js']), 'src/new.js')).toBe(false);
   });
 });
 
@@ -93,13 +144,19 @@ function treeOf(ref, cwd) {
 }
 
 function baseCtx(repoPath, overrides = {}) {
+  const baseByBasename = new Map();
+  for (const f of sh('git ls-tree -r --name-only main', repoPath).split('\n').filter(Boolean)) {
+    const b = f.split('/').pop();
+    const i = f.lastIndexOf('/');
+    const dir = i < 0 ? '' : f.slice(0, i);
+    if (!baseByBasename.has(b)) baseByBasename.set(b, new Set());
+    baseByBasename.get(b).add(dir);
+  }
   return {
     BASE: 'main',
     baseTree: treeOf('main', repoPath),
     PROTECTED: new Set(['main']),
-    baseBasenames: new Set(
-      sh('git ls-tree -r --name-only main', repoPath).split('\n').filter(Boolean).map((f) => f.split('/').pop())
-    ),
+    baseByBasename,
     ...overrides,
   };
 }
@@ -242,23 +299,34 @@ describe.skipIf(!gitAvailable())('git / gitSafe / gitOk (real git)', () => {
   afterEach(() => { tmp.cleanup(); });
 
   it('git() runs a real command and trims trailing whitespace', () => {
-    const out = git('rev-parse --abbrev-ref HEAD', { cwd: repoPath });
+    const out = git(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: repoPath });
     expect(out).toBe('main');
   });
 
   it('git() with raw:true preserves leading whitespace (porcelain XY columns)', () => {
     require('node:fs').writeFileSync(path.join(repoPath, 'untracked.txt'), 'x\n');
-    const out = git('status --porcelain', { cwd: repoPath, raw: true });
+    const out = git(['status', '--porcelain'], { cwd: repoPath, raw: true });
     expect(out.startsWith('??')).toBe(true);
   });
 
   it('gitSafe() returns "" instead of throwing on an invalid command', () => {
-    expect(gitSafe('not-a-real-git-subcommand', { cwd: repoPath })).toBe('');
+    expect(gitSafe(['not-a-real-git-subcommand'], { cwd: repoPath })).toBe('');
   });
 
   it('gitOk() is true for a valid ref and false for an invalid one', () => {
-    expect(gitOk('rev-parse --verify main', { cwd: repoPath })).toBe(true);
-    expect(gitOk('rev-parse --verify totally-bogus-ref', { cwd: repoPath })).toBe(false);
+    expect(gitOk(['rev-parse', '--verify', 'main'], { cwd: repoPath })).toBe(true);
+    expect(gitOk(['rev-parse', '--verify', 'totally-bogus-ref'], { cwd: repoPath })).toBe(false);
+  });
+
+  // C1 regression: a branch/argument carrying a command-substitution payload must
+  // NEVER reach a shell. With execFileSync(argv) the metachars are inert literals —
+  // git rejects the ref, no proof file is ever written.
+  it('git() never shells out — a $()-payload argument cannot execute a command', () => {
+    const proof = path.join(repoPath, 'PROOF_RCE');
+    // gitSafe swallows git's "unknown revision" error; the point is the side effect.
+    gitSafe(['rev-parse', '--verify', 'x$(touch ' + proof + ')'], { cwd: repoPath });
+    gitSafe(['for-each-ref', '--format=%(refname:short)', 'refs/heads/x`touch ' + proof + '`'], { cwd: repoPath });
+    expect(require('node:fs').existsSync(proof)).toBe(false);
   });
 });
 
@@ -438,6 +506,20 @@ describe.skipIf(!gitAvailable())('main (CLI wiring, in-process)', () => {
   it('exit code is always 0 (read-only tool) even on a full run', () => {
     const { exitCode } = runMain(['--base', 'main']);
     expect(exitCode).toBe(0);
+  });
+
+  // C1 end-to-end regression: a repo carrying a branch whose name is a command-
+  // substitution payload (git allows $ ( ) > `` etc. in ref names). main() must
+  // skip it with a stderr warning and — because git() no longer shells — must not
+  // execute the payload. Proven by the absence of the proof file the payload writes.
+  it('skips a branch whose name is an RCE payload and never executes it', () => {
+    // Space-free, colon-free payload (git ref-format forbids spaces and colons):
+    // if ever shelled, `id>PROOF_RCE` would write the proof file into cwd (repoPath).
+    sh("git branch 'x$(id>PROOF_RCE)'", repoPath);
+    const { exitCode, errs } = runMain(['--base', 'main', '--json']);
+    expect(exitCode).toBe(0);
+    expect(require('node:fs').existsSync(path.join(repoPath, 'PROOF_RCE'))).toBe(false);
+    expect(errs).toContain('skipping branch with unsafe name');
   });
 
   it('renders the MERGED~ detail line (superseded/renamed code + doc stragglers) in the human-readable table', () => {

@@ -87,6 +87,31 @@ function loadExcludedSkills(targetClaudeDir) {
     }
 }
 
+/**
+ * Set of skill-directory names under a `.claude/skills/` dir. Counts a SYMLINKED
+ * skill dir too (statSync, not Dirent.isDirectory) — an adopter's bespoke skills
+ * are frequently symlinks into a shared ../.agents/skills/, and Dirent.isDirectory()
+ * returns false for a symlink. If dropped from the target-skills set, those skills
+ * fail mergeFrontmatter's bespoke-union check and get silently stripped off every
+ * specialized agent's frontmatter on sync. Guards statSync against a broken symlink.
+ * Returns an empty Set if the dir doesn't exist.
+ *
+ * @param {string} dir  — path to a `.claude/skills/` directory
+ * @returns {Set<string>}
+ */
+function listSkillDirs(dir) {
+    try {
+        return new Set(fs.readdirSync(dir, { withFileTypes: true })
+            .filter(d => {
+                if (d.isDirectory()) return true;
+                if (!d.isSymbolicLink()) return false;
+                try { return fs.statSync(path.join(dir, d.name)).isDirectory(); }
+                catch { return false; }
+            })
+            .map(d => d.name));
+    } catch { return new Set(); }
+}
+
 // ── Main Command: update ──────────────────────────────────────────────────────
 
 function runUpdate(targetPath, options) {
@@ -131,12 +156,6 @@ function runUpdate(targetPath, options) {
     // as a skill dir in the target is a project specialization (added by
     // /review:specialize) and must survive the merge — otherwise every update strips
     // a specialized agent's domain skills off its frontmatter.
-    const listSkillDirs = (dir) => {
-        try {
-            return new Set(fs.readdirSync(dir, { withFileTypes: true })
-                .filter(d => d.isDirectory()).map(d => d.name));
-        } catch { return new Set(); }
-    };
     const canonicalSkills = listSkillDirs(path.join(sourceClaudeDir, 'skills'));
     const targetSkills    = listSkillDirs(path.join(targetClaudeDir, 'skills'));
 
@@ -435,7 +454,7 @@ if (require.main === module) { main(); }
 // from this file without change. walkDir shim keeps the old array-returning API.
 const _libFW = require('./_lib/file-walker');
 module.exports = Object.assign(
-    { copyFile, runUpdate, loadExcludedSkills },
+    { copyFile, runUpdate, loadExcludedSkills, listSkillDirs },
     zoneClassifier,
     agentMerger,
     settingsMerger,

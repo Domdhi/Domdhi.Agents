@@ -134,6 +134,13 @@ async function main() {
             break;
         }
         case 'search': {
+            // Validate before searchMemories (N2): a missing term otherwise reached
+            // searchTerm.toLowerCase() in the JSON-scan fallback and surfaced a bare
+            // TypeError instead of a usage hint — match delete/update validation.
+            if (!args[0] || typeof args[0] !== 'string') {
+                console.error('Error: search requires a query string — e.g. search "publish tooling"');
+                process.exit(1);
+            }
             const results = await manager.searchMemories(args[0]);
             console.log(JSON.stringify(results, null, 2));
             break;

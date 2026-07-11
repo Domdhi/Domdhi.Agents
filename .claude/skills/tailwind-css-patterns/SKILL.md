@@ -72,6 +72,7 @@ function ProductCard({ product }: { product: Product }) {
 - **Purge Configuration**: Must configure content paths correctly for production builds
 - **Arbitrary Values**: Use sparingly; prefer design tokens for consistency
 - **Specificity Issues**: Avoid @apply with complex selectors
+- **Inline styles silently defeat breakpoint classes**: in Tailwind v4, setting a property via `style={{...}}` on an element that also carries responsive breakpoint classes (`min-[]:`/`max-[]:`, etc.) disables ALL of those variants — inline styles win specificity over any class-based rule, including ones inside media queries. The breakpoint classes still appear in `className` and look correct in review, but never take effect. Most common with `gridTemplateColumns` and `position: sticky`. Move the value into a class (arbitrary value or a CSS variable) instead of `style={{}}` if it needs to vary by breakpoint.
 - **Dark Mode**: Requires proper configuration (class or media strategy)
 - **JIT Mode**: Some dynamic patterns may not be detected; use safelist if needed
 - **Browser Support**: Check Tailwind docs for browser compatibility

@@ -478,8 +478,10 @@ describe('memory-manager', () => {
     });
 
     it('buildFtsQuery_degenerateHyphen_returnsHyphenFree', () => {
-      // "x-ray": the 1-char "x" is dropped (min-length-2 rule), leaving "ray".
-      expect(buildFtsQuery('x-ray')).toBe('ray');
+      // N1: "x-ray" — the 1-char "x" fails the min-length-2 filter, but silently
+      // searching for just "ray" drops half the term. When 2+ raw tokens existed,
+      // keep them all as a hyphen-free join instead of losing the dropped one.
+      expect(buildFtsQuery('x-ray')).toBe('x ray');
       // "a-b": both parts dropped → 0 tokens → hyphen-stripped original, never raw.
       expect(buildFtsQuery('a-b')).toBe('a b');
     });
@@ -501,6 +503,48 @@ describe('memory-manager', () => {
     });
 
   }); // buildFtsQuery
+
+  // ── M1: prose queries (punctuation + hyphen) must not silently return [] ──────
+
+  describe('M1 prose-query regression', () => {
+    it.skipIf(!hasSqlite)('searchMemories_fullSentenceWithParensAndHyphen_findsRelevantMemory', async () => {
+      // Reproduces the findings' end-to-end repro. buildFtsQuery passes a string
+      // through raw when it carries FTS5-looking punctuation ("(" / ")"); ordinary
+      // prose descriptions trip that, and a hyphenated word in the raw string then
+      // makes FTS5 MATCH throw ("no such column: …"). Pre-fix, both the FTS path and
+      // the whole-query JSON substring fallback failed together → [] for a query
+      // against a directly relevant memory. The tokenized-OR retry must now find it.
+      const manager = makeManager();
+      await manager.createMemory('patterns', 'file-based-store-notes', {
+        description: 'file-based memory store notes',
+      });
+
+      const results = await manager.searchMemories(
+        'For our file-based memory store, usage_count is a broken eviction instrument (see notes).'
+      );
+
+      expect(results.length).toBeGreaterThanOrEqual(1);
+      expect(results.some(r => r.id === 'file-based-store-notes')).toBe(true);
+    });
+
+    it.skipIf(!hasSqlite)('detectOverlap_prosePunctuationHyphenDescription_flagsSupersedesCandidate', async () => {
+      // detectOverlap runs buildFtsQuery(content.description) on EVERY createMemory —
+      // exactly the punctuation+hyphen shape that tripped M1, silently no-op'ing
+      // write-time supersession detection. A new memory whose prose description
+      // overlaps an existing one must now surface it as a supersedes candidate.
+      const manager = makeManager();
+      await manager.createMemory('constraints', 'publish-script-path-old', {
+        description: 'The publish workflow uses the tools/publish.js path.',
+      });
+
+      const created = await manager.createMemory('constraints', 'publish-script-path-new', {
+        description: 'Publish workflow tooling lives at tools/publish.js (not the old .claude/core path).',
+      });
+
+      expect(created.supersedes_candidates).toBeDefined();
+      expect(created.supersedes_candidates).toContain('publish-script-path-old');
+    });
+  }); // M1 prose-query regression
 
   // ── calculateDecayedConfidence ─────────────────────────────────────────────
 
@@ -1540,12 +1584,44 @@ describe('memory-manager', () => {
       // Act
       const report = await manager.ingestAgentMemory(dirRoot);
 
-      // Assert
+      // Assert — ids are namespaced by the agent (parent) dir relative to the walked
+      // root (M9), so two agents' same-named files can't collide.
       expect(report.ingested).toBe(2);
-      const alpha = await manager.readMemory('patterns', 'feedback-alpha');
-      const beta = await manager.readMemory('patterns', 'pattern-beta');
+      const alpha = await manager.readMemory('patterns', 'general-purpose-feedback-alpha');
+      const beta = await manager.readMemory('patterns', 'architect-pattern-beta');
       expect(alpha).not.toBeNull();
       expect(beta).not.toBeNull();
+    });
+
+    it('ingest_sameBasenameDifferentAgentDirs_noCollision', async () => {
+      // M9: all 11 agents recommend the SAME generic filenames (feedback_testing.md,
+      // user_role.md, …). Basename-only ids collided two agents' files onto one
+      // (category, id) and silently dropped the second (skipped as "already exists").
+      // Namespacing by the agent dir must keep both — distinct ids, both ingested.
+      const manager = makeManager();
+      const dirRoot = tmp.mkdir('agent-memory');
+      writeMd(
+        'agent-memory/general-purpose/feedback_testing.md',
+        { name: 'GP testing', description: 'general-purpose take on testing', type: 'feedback' },
+        'GP body'
+      );
+      writeMd(
+        'agent-memory/architect/feedback_testing.md',
+        { name: 'Arch testing', description: 'architect take on testing', type: 'feedback' },
+        'Architect body'
+      );
+
+      const report = await manager.ingestAgentMemory(dirRoot);
+
+      // Both survive — neither silently skipped as a false duplicate.
+      expect(report.ingested).toBe(2);
+      expect(report.skipped).toBe(0);
+      const gp = await manager.readMemory('patterns', 'general-purpose-feedback-testing');
+      const arch = await manager.readMemory('patterns', 'architect-feedback-testing');
+      expect(gp).not.toBeNull();
+      expect(arch).not.toBeNull();
+      expect(gp.content.description).toBe('general-purpose take on testing');
+      expect(arch.content.description).toBe('architect take on testing');
     });
 
     it('ingest_mapsTypeToCategoryCorrectly', async () => {

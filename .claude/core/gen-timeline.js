@@ -69,22 +69,147 @@ function groupByTheme(dayCommits) {
     return groups;
 }
 
+// ── Incremental merge (update mode) ─────────────────────────────────────────
+//
+// Update mode fetches only commits AFTER the last documented hash, then splices
+// them onto the existing timeline. A naive prepend duplicates the boundary week's
+// `## Week of …` header (and its shared day) whenever the new commits land in a
+// week the timeline already covers. These helpers merge by header instead: a week
+// present on both sides is merged at the day level (shared day = summed counts +
+// concatenated commit bullets, existing-then-new), never re-emitted twice.
+
+// Split a weeks-only markdown body into blocks keyed by their `## Week of …` line.
+function splitWeekBlocks(text) {
+    const blocks = [];
+    let cur = null;
+    for (const line of text.split('\n')) {
+        if (/^## Week of /.test(line)) {
+            if (cur) blocks.push(cur);
+            cur = { header: line.trim(), body: [] };
+        } else if (cur) {
+            cur.body.push(line);
+        }
+    }
+    if (cur) blocks.push(cur);
+    return blocks;
+}
+
+// Trim leading blank lines and trailing blank/`---` separator lines from a week body.
+function normalizeWeekBody(lines) {
+    const out = [...lines];
+    while (out.length && out[0].trim() === '') out.shift();
+    while (out.length && (out[out.length - 1].trim() === '' || out[out.length - 1].trim() === '---')) out.pop();
+    return out;
+}
+
+// Parse a normalized week body into day blocks: `### {base} (N commits, M files)`.
+function parseDayBlocks(lines) {
+    const days = [];
+    let cur = null;
+    for (const line of lines) {
+        const dh = line.match(/^### (.*?) \((\d+) commits?, (\d+) files?\)\s*$/);
+        if (dh) {
+            cur = { base: dh[1], commits: parseInt(dh[2], 10), files: parseInt(dh[3], 10), body: [] };
+            days.push(cur);
+        } else if (cur) {
+            cur.body.push(line);
+        }
+    }
+    for (const d of days) {
+        while (d.body.length && d.body[0].trim() === '') d.body.shift();
+        while (d.body.length && d.body[d.body.length - 1].trim() === '') d.body.pop();
+    }
+    return days;
+}
+
+function emitDay(d) {
+    const label = `${d.commits} commit${d.commits !== 1 ? 's' : ''}, ${d.files} files`;
+    return `### ${d.base} (${label})\n` + (d.body.length ? d.body.join('\n') + '\n' : '') + '\n';
+}
+
+function emitWeek(header, days) {
+    return `${header}\n\n` + days.map(emitDay).join('') + '---\n\n';
+}
+
+// Merge two ascending day lists. New commits are strictly newer, so the only
+// possible overlap is existing's LAST day vs new's FIRST day (same calendar day):
+// merge those (sum counts, existing bullets then new bullets); everything else
+// concatenates in order, preserving the ascending-by-date layout.
+function mergeWeekDays(oldDays, newDays) {
+    const result = oldDays.map((d) => ({ ...d, body: [...d.body] }));
+    if (result.length && newDays.length && result[result.length - 1].base === newDays[0].base) {
+        const last = result[result.length - 1];
+        const first = newDays[0];
+        result[result.length - 1] = {
+            base: last.base,
+            commits: last.commits + first.commits,
+            files: last.files + first.files,
+            body: [...last.body, ...first.body],
+        };
+        result.push(...newDays.slice(1).map((d) => ({ ...d, body: [...d.body] })));
+    } else {
+        result.push(...newDays.map((d) => ({ ...d, body: [...d.body] })));
+    }
+    return result;
+}
+
+// Merge the freshly-generated weeks with the existing weeks. New weeks are all
+// >= the newest existing week, so [merged/new weeks…] then [remaining old weeks…]
+// stays newest-first. A week header shared by both sides is merged once, never
+// duplicated.
+function mergeTimeline(newWeeksText, oldWeeksText) {
+    const newBlocks = splitWeekBlocks(newWeeksText);
+    const oldBlocks = splitWeekBlocks(oldWeeksText);
+    const oldByHeader = new Map(oldBlocks.map((b) => [b.header, b]));
+    const usedOld = new Set();
+    let out = '';
+    for (const nb of newBlocks) {
+        const ob = oldByHeader.get(nb.header);
+        const nDays = parseDayBlocks(normalizeWeekBody(nb.body));
+        if (ob) {
+            const oDays = parseDayBlocks(normalizeWeekBody(ob.body));
+            out += emitWeek(nb.header, mergeWeekDays(oDays, nDays));
+            usedOld.add(nb.header);
+        } else {
+            out += emitWeek(nb.header, nDays);
+        }
+    }
+    for (const ob of oldBlocks) {
+        if (usedOld.has(ob.header)) continue;
+        out += emitWeek(ob.header, parseDayBlocks(normalizeWeekBody(ob.body)));
+    }
+    return out;
+}
+
 // ── Main ────────────────────────────────────────────────────────────────────
 
 function main() {
     const projectDir = process.env.CLAUDE_PROJECT_DIR || path.resolve(__dirname, '..', '..');
     const timelinePath = path.join(projectDir, 'docs', 'work/timeline.md');
-    const mode = process.argv[2] || (fs.existsSync(timelinePath) ? 'update' : 'full');
+
+    // Parse argv: a positional mode (full|update) plus an optional `--base <ref>`.
+    // Default base is HEAD (always valid on the current branch) — the old hardcoded
+    // literal `main` broke on any repo whose default branch isn't named "main".
+    const argv = process.argv.slice(2);
+    let baseRef = 'HEAD';
+    const positional = [];
+    for (let i = 0; i < argv.length; i++) {
+        const a = argv[i];
+        if (a === '--base') { baseRef = argv[++i] || baseRef; continue; }
+        if (a.startsWith('--')) continue;
+        positional.push(a);
+    }
+    const mode = positional[0] || (fs.existsSync(timelinePath) ? 'update' : 'full');
 
     // ── Gather git data ─────────────────────────────────────────────────────
 
-    let gitCmd = 'git log --format="%H|%ai|%s" --reverse --numstat main';
+    let gitCmd = `git log --format="%H|%ai|%s" --reverse --numstat ${baseRef}`;
 
     if (mode === 'update' && fs.existsSync(timelinePath)) {
         const existing = fs.readFileSync(timelinePath, 'utf8');
         const hashMatch = existing.match(/<!-- last:([a-f0-9]{40}) -->/);
         if (hashMatch) {
-            gitCmd = `git log --format="%H|%ai|%s" --reverse --numstat ${hashMatch[1]}..HEAD`;
+            gitCmd = `git log --format="%H|%ai|%s" --reverse --numstat ${hashMatch[1]}..${baseRef}`;
         }
     }
 
@@ -182,13 +307,16 @@ function main() {
     // ── Write (full or incremental) ─────────────────────────────────────────
 
     if (mode === 'update' && fs.existsSync(timelinePath)) {
-        // For update: prepend new weeks before existing content
+        // For update: merge new weeks into existing content by header (M2) — a
+        // boundary week shared with the existing timeline is merged, not duplicated.
         const existing = fs.readFileSync(timelinePath, 'utf8');
-        // Replace header + last hash, keep week content
-        const firstWeekIdx = existing.indexOf('\n## Week of');
-        if (firstWeekIdx !== -1) {
-            const existingWeeks = existing.slice(firstWeekIdx + 1);
-            output = output + existingWeeks;
+        const existingWeekIdx = existing.indexOf('\n## Week of');
+        const newWeekIdx = output.indexOf('## Week of');
+        if (existingWeekIdx !== -1 && newWeekIdx !== -1) {
+            const headerPart = output.slice(0, newWeekIdx); // refreshed title + last-hash marker
+            const newWeeks = output.slice(newWeekIdx);
+            const existingWeeks = existing.slice(existingWeekIdx + 1);
+            output = headerPart + mergeTimeline(newWeeks, existingWeeks);
         }
     }
 
@@ -209,4 +337,7 @@ if (require.main === module) {
     }
 }
 
-module.exports = { getMonday, formatDate, formatWeekHeader, groupByTheme, main };
+module.exports = {
+    getMonday, formatDate, formatWeekHeader, groupByTheme, main,
+    splitWeekBlocks, normalizeWeekBody, parseDayBlocks, mergeWeekDays, mergeTimeline,
+};

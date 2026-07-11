@@ -15,12 +15,18 @@
  *   docs/.output/.state/telemetry/logs/gate-{timestamp}.log    — Full output
  *   docs/.output/.state/telemetry/_latest-build.json           — Parsed build results
  *   docs/.output/.state/telemetry/_latest-test.json            — Parsed test results (if --test)
+ *   docs/.output/.state/telemetry/_latest-lint.json            — Parsed lint results (if --test)
  *   docs/.output/.state/telemetry/_latest-summary.json         — Combined summary
+ *
+ * `test` mode also runs a `lint` leg (same condition as test) — a project with
+ * no lint script configured (and no explicit config override) skips it
+ * gracefully, same contract as the `e2e` leg.
  *
  * Configuration (.claude/gate.config.json):
  *   {
  *     "build": { "command": "npm run build", "timeout": 300000 },
- *     "test":  { "command": "npm test", "timeout": 600000 }
+ *     "test":  { "command": "npm test", "timeout": 600000 },
+ *     "lint":  { "command": "npm run lint", "timeout": 300000 }
  *   }
  *
  * Auto-detection order (if no config):
@@ -144,6 +150,11 @@ function autoDetectConfig() {
         return {
             build: { command: buildCommand, timeout: 300000 },
             test: { command: scripts.test ? 'npm test' : 'echo "No test script"', timeout: 600000 },
+            // A `lint` leg, same graceful-missing contract as e2e above — absent ⇒
+            // missing:true so a project with no lint script never fails the lint gate.
+            lint: scripts.lint
+                ? { command: 'npm run lint', timeout: 300000 }
+                : { command: 'echo "No lint script"', timeout: 60000, missing: true },
             e2e: e2eScript
                 ? { command: `npm run ${e2eScript}`, timeout: 1200000 }
                 : { command: 'echo "No e2e script"', timeout: 60000, missing: true },
@@ -267,9 +278,33 @@ function parseBuildOutput(output, exitCode) {
     const errors = [];
     const warnings = [];
     const lines = output.split('\n');
+    // ESLint's default "stylish" formatter (a bare `eslint .` with no `-f` flag) prints the file
+    // path on its own unindented line, then one indented `line:col  error|warning  message  rule`
+    // line per finding — unlike every pattern below, the filename never repeats on the finding's
+    // own line. Track the most recent unindented path-looking line so indented findings attribute
+    // to it.
+    let pendingStylishFile = '';
 
     for (const rawLine of lines) {
         const line = stripAnsi(rawLine);
+
+        const trimmed = line.trim();
+        if (!/^\s/.test(line) && /^[./A-Za-z].*\.[a-zA-Z]+$/.test(trimmed) && !/^\d+:\d+/.test(trimmed)) {
+            pendingStylishFile = trimmed;
+        }
+        const stylishMatch = line.match(/^\s+(\d+):(\d+)\s+(error|warning)\s+(.+?)(?:\s{2,}([\w@][\w./-]*))?$/);
+        if (stylishMatch && pendingStylishFile) {
+            const bucket = stylishMatch[3] === 'error' ? errors : warnings;
+            bucket.push({
+                file: pendingStylishFile,
+                line: parseInt(stylishMatch[1]) || 0,
+                column: parseInt(stylishMatch[2]) || 0,
+                code: stylishMatch[5]?.trim() || '',
+                message: stylishMatch[4]?.trim() || '',
+            });
+            continue;
+        }
+
         // Common error patterns across stacks
         // TypeScript: src/file.ts(10,5): error TS2345: ...
         // ESLint: /path/file.ts:10:5: error ...
@@ -670,9 +705,55 @@ async function main() {
         }
     }
 
+    // ── Step 3: Lint (folded into the same invocation as Test) ──────
+    //
+    // Root cause this closes: a lint failure had no gate leg to fail against — it
+    // only surfaced later via a dedicated code-review pass (or CI, post-push), by
+    // which point the broken commit already existed. Runs under the exact same
+    // condition as Test (`runTests`) so every existing `/do`/`/run-todo` Step 7
+    // call site (`gate.js test`) picks this up with zero command-template edits.
+    // Parsed via parseBuildOutput (ESLint/tsc-shaped file:line:col output), not
+    // parseTestOutput — lint has no pass/fail COUNT summary the way a test run
+    // does. Same graceful-missing contract as the e2e leg: a project with no lint
+    // script configured (and no explicit gate.config.json override) never fails.
+
+    let lint = null;
+    if (runTests) {
+        const lintConfig = config.lint || { command: 'echo "No lint gate configured"', timeout: 60000, missing: true };
+        if (!build.succeeded) {
+            console.log('[GATE] Skipping lint — build failed');
+            fullLog += '\n--- Lint SKIPPED (build failed) ---\n';
+        } else if (lintConfig.missing) {
+            console.log(`[GATE] Lint: SKIPPED (no lint script detected for stack ${config.stack || 'configured'})`);
+            fullLog += '\n--- Lint SKIPPED (no lint script detected) ---\n';
+            lint = {
+                succeeded: true, errors: [], warnings: [], skipped: true,
+                command: lintConfig.command, timestamp: new Date().toISOString(),
+            };
+            fs.writeFileSync(path.join(GATE_DIR, '_latest-lint.json'), JSON.stringify(lint, null, 2));
+        } else {
+            console.log(`[GATE] Linting... (${lintConfig.command})`);
+            fullLog += '\n--- Lint ---\n';
+
+            const lintResult = runCommand(lintConfig.command, PROJECT_ROOT, lintConfig.timeout);
+            const lintCombined = lintResult.output + '\n' + lintResult.stderr;
+            fullLog += lintCombined + '\n';
+
+            lint = parseBuildOutput(lintCombined, lintResult.exitCode);
+            lint.exitCode = lintResult.exitCode;
+            lint.command = lintConfig.command;
+            lint.timestamp = new Date().toISOString();
+
+            fs.writeFileSync(path.join(GATE_DIR, '_latest-lint.json'), JSON.stringify(lint, null, 2));
+
+            const lintStatus = lint.succeeded ? 'PASSED' : 'FAILED';
+            console.log(`[GATE] Lint: ${lintStatus} (${lint.errors.length} errors, ${lint.warnings.length} warnings)`);
+        }
+    }
+
     // ── Summary ─────────────────────────────────────────────────────
 
-    const overall = build.succeeded && (!runTests || (test && test.succeeded));
+    const overall = build.succeeded && (!runTests || (test && test.succeeded)) && (!lint || lint.succeeded);
 
     const summary = {
         timestamp: new Date().toISOString(),
@@ -699,6 +780,15 @@ async function main() {
             total: test.total,
             zeroCollected: !!test.zeroCollected,
             failureNames: test.failures.map(f => f.name)
+        };
+    }
+
+    if (lint) {
+        summary.lint = {
+            succeeded: lint.succeeded,
+            errorCount: lint.errors.length,
+            warningCount: lint.warnings.length,
+            skipped: !!lint.skipped
         };
     }
 

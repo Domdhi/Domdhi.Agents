@@ -46,6 +46,7 @@ This is the **critic** layer: it advises, it does not block on its own. Did the 
 - Check for missing requirements, over-engineering, and misinterpretations.
 - Do not trust the implementer's report; read the actual code.
 - While reading, record every candidate code finding (including low-confidence ones), each labelled with confidence (high/medium/low) and severity (CRITICAL/MAJOR/MINOR/NIT). Do not filter at this stage.
+- **A precondition-dependent bug or an edge-case-value bug reads as plausible/correct on inspection — write and run a standalone repro before ruling on it, don't reason from the source alone.** Two bug classes reliably survive read-only review: (1) code copied from a "mirror this existing pattern" instruction that silently drops a structural precondition the original relied on (e.g. a reset-on-open effect that only works because the original component has an internal trigger; the copy doesn't, so the effect never fires) — this reads correct because each file is internally consistent, the mismatch is only *between* them; (2) a schema/validation edge case (empty string, `0`, `null`) that's fatal to an entire request but doesn't announce itself in the schema definition — trace at least one such value through by hand or a quick check before trusting "the schema looks right." Confirm these by writing a runnable repro, not by re-reading the code more carefully.
 - If the change introduces or repurposes a domain term in a skill/command, grep the affected file and its siblings for prior uses of that term — a term used two ways is an interpretation bug for the agents that read it (e.g. "judge" meaning both a review stage and the ship-gate).
 - Result: spec pass or list of specific gaps. If spec has open issues, stop — stage 2 does not run until they are resolved. Candidate findings are passed to stage 2 regardless.
 
@@ -69,6 +70,7 @@ This stage is severity **adjudication** over the candidate findings — deciding
 **Escalation rules:**
 - A MINOR finding in a HIGH-risk file (auth, crypto, secrets) escalates to MAJOR.
 - Three or more similar MINOR findings of the same type indicate a systemic issue — escalate one to MAJOR with a note.
+- **A bug found once is a bug class — grep for every sibling before signing off.** When you confirm a defect, search the codebase for the same shape and report every instance, not just the file in front of you. A review that names one file per finding when the same pattern hits many others is why a fix lands in one place and the concept stays broken everywhere else. Report the cluster, not the instance.
 - CRITICAL findings in test-only files are downgraded to MAJOR (tests do not run in production).
 - **A silently-swallowed error (empty `catch`, ignored exit code, discarded `Promise` rejection) in a tool that DELETES files, writes/migrates data, or publishes to a remote is a MAJOR** — the operation's summary becomes untrustworthy (it reports success for work that didn't happen). Either surface the failure in the result or abort; never swallow and continue. (Field-proven: a fleet-prune tool reported `removed:` for files an `rmSync` had failed to delete.)
 

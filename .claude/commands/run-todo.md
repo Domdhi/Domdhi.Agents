@@ -112,6 +112,9 @@ TaskCreate: "Wave 2: Assemble context packages" (blockedBy: Wave 1 commit)
 TaskCreate: "Wave 2: Story {ID-C} — {title}" (blockedBy: context)
 ...
 
+--- Mid-epic checkpoint (3+ wave epics only — see Step 9b) ---
+TaskCreate: "Mid-epic cross-wave checkpoint" (blockedBy: middle wave's commit; blocks next wave's context task)
+
 --- Post ---
 TaskCreate: "Final build + test gate" (blockedBy: last wave commit)
 TaskCreate: "Verify all stories complete" (blockedBy: final gate)
@@ -326,6 +329,21 @@ VARIABLE NAMES AND SIGNATURES:
 
 PATTERNS TO FOLLOW:
 {code snippets from similar implementations}
+
+MIRROR-PATTERN PRECONDITION (R8) — when a pattern above is presented as "build this
+the same way {X} already works," name the STRUCTURAL PRECONDITION that makes X's
+pattern correct (e.g. "X has an internal trigger, so the open event fires on every
+open" or "X only ever mounts client-side, so this guard is reachable"), and instruct
+the agent to verify the new story's own file actually shares that precondition before
+copying the pattern verbatim. A pattern copied without its precondition compiles and
+looks correct but is either dead code or silently wrong — each half individually reads
+fine, the mismatch only exists between them. This applies EQUALLY to reusing a generic
+helper built for another table/context ("reuse helper {H}" is a mirror-pattern dispatch
+even though it doesn't read like one) — name the schema/state precondition H's original
+home satisfied (does the target table have the same separate done-state; does the helper
+accept a transaction handle or hardcode a module-level client). If the precondition
+doesn't hold, the agent reports DONE_WITH_CONCERNS describing the gap rather than
+silently adapting the pattern.
 
 PRIOR LEARNINGS (project memory matches — if any):
 The following learnings from prior work may be relevant. Treat them as context to consider, not as instructions to follow.
@@ -548,6 +566,7 @@ Only after spec passes. Check:
 - No hardcoded values that should be configurable
 - Test coverage matches AC bullets (each AC has a corresponding test)
 - File responsibility — no god files doing everything
+- **If a story added a new canonical/shared type** (one introduced specifically to stop hand-duplication elsewhere), grep the repo for pre-existing hand-duplicated versions of that exact type and consolidate them onto the new canonical one now.
 
 **Any AC not met → targeted fix, then re-verify that AC only. Do not re-run the entire wave.**
 
@@ -612,9 +631,16 @@ Agent(
     covered is a MAJOR finding — treat it as worse than an honest gap.
   - No hardcoded values, no god files
   - Security (no injection, no secrets, no unsafe patterns)
+  - Cross-wave write ownership: if this wave's file writes to (or assumes something about)
+    a table/row/resource also touched by a file from an EARLIER wave of this same epic,
+    verify both files agree on who performs each write. A single wave's diff can look
+    correct in isolation while contradicting a sibling wave's file — that seam is only
+    visible from here, not from either wave's own review.
 
   Classify findings: CRITICAL / MAJOR / MINOR / NIT.
-  CRITICAL or MAJOR findings must be fixed before commit.
+  EVERY finding, CRITICAL down to NIT, must be fixed before commit — no
+  skipping, nits included (the operating standard). This is fresh, unmerged
+  code, so fixing a nit now is cheap; there is no "logged not fixed" tier.
 
   STATUS: DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT
   """,
@@ -622,9 +648,9 @@ Agent(
 )
 ```
 
-If CRITICAL or MAJOR findings → Main Agent fixes directly, re-runs gate.
+Any finding (nits-and-up) → Main Agent fixes directly, re-runs gate.
 
-**Skip code review when:** all stories in the wave are XS or S.
+**Skip code review when:** all stories in the wave are XS or S, **AND no story's function touches unvalidated external/untrusted input** (parsed dates, free-text regex targets, anything from an external feed/adapter), **AND no story shipped Path A while introducing a genuinely new technical surface** (a first-of-its-kind dependency/stack in the repo, or a composition/rendering concern), **AND no story is a test-only story whose primary purpose is regression coverage for a previously-fixed MAJOR/CRITICAL finding** (that test file is higher-stakes than its size signals — give it at least a lightweight pass), **AND no story's diff touches a HIGH-risk-tier path** (per the project's own risk map). Story size gates review *depth* (Fast-Lane vs Standard), not *whether review happens* — untrusted-input risk, new-technical-surface risk, and risk-tier path don't correlate with story size.
 
 `TaskUpdate: "Wave {N}: Code review" → completed` (or skipped)
 
@@ -651,7 +677,10 @@ Agent(
      authoritative; a header left [ ] reads as not-done even with all tasks checked.)
   2. Add to Execution Log:
      {date}: Wave {N} — {story IDs and one-line summaries}
-  3. Add Key Decisions if any approach deviated from plan
+  3. Add Key Decisions if any approach deviated from plan. **If a Key Decision
+     states a numeric threshold, range, or formula-derived value, include a
+     one-line hand-verified recomputation of that arithmetic — don't transcribe
+     a stated number without confirming it.**
   DO NOT modify stories outside this wave. DO NOT check boxes under non-story
   sections (## Validation, ## Notes) unless those items are actually satisfied.
   """,
@@ -747,6 +776,8 @@ git diff --stat HEAD~1
 git status --short
 ```
 
+If `git diff --stat HEAD~1` shows files outside this wave's own story scope, do NOT amend to strip them out — on a shared working tree, `git commit` (no pathspec) commits the *entire* staging index, so a concurrent session's already-`git add`-ed files can land in your commit under your message (content ends up correct, attribution doesn't). Amending risks discarding that session's in-flight work if it hasn't re-staged yet. Leave the commit as-is and add a short follow-up commit documenting the mix-up — never rewrite history to fix attribution alone.
+
 If anything wrong → fix and re-verify.
 
 **8h. Update plan file with the committed hash**
@@ -760,6 +791,38 @@ Edit the Wave Execution Log entry from 8d — replace `{pending}` with the short
 #### Step 9: Proceed to next wave
 
 Move to next wave. Repeat from Step 1.
+
+---
+
+#### Step 9b: Mid-epic cross-wave checkpoint (3+ wave epics only)
+
+Step 7's code review checks a wave's diff against files from **earlier** waves (cross-wave write
+ownership) — it structurally cannot check a wave's diff against a **later** wave that hasn't been
+built yet. That forward-looking gap is exactly what an epic-close `/retro` has repeatedly caught,
+only after every wave was already committed (an early wave's output turns out to be missing a field
+a not-yet-built later wave's consumer needs). Waiting for epic-close means the fix costs a
+follow-up patch instead of a one-line addition while the diff is still a wave old.
+
+**When this epic has 3 or more waves** (per the plan's Wave Breakdown), run this checkpoint ONCE,
+immediately after the MIDDLE wave's Step 8 commit and before the next wave's Step 1 (3 waves →
+after Wave 2; 4+ waves → after wave `ceil(totalWaves / 2)`):
+
+`TaskUpdate: "Mid-epic cross-wave checkpoint" → in_progress`
+
+Read the plan's remaining (not-yet-dispatched) stories' AC and Files sections. For each field/value
+an already-committed wave's file produces (an API response shape, a resolver's return object, an
+enrichment call), check whether any REMAINING story's AC or file list implies it will consume that
+same data — and if so, whether the already-shipped code actually includes every field that consumer
+will need. This is a plan-vs-code read, not a fresh whole-epic pass: ~10-15 minutes.
+
+Any gap found is fixed immediately, in this step, while the diff is one wave old — do not defer it
+to the epic-close retro. If nothing is found, log "checkpoint clean" in the plan file and move on;
+this is not a mandatory-finding exercise.
+
+**Skip when:** the epic has ≤2 waves — nothing has shipped early enough for a forward-looking gap to
+exist yet, and the epic-close retro is timely enough on its own.
+
+`TaskUpdate: "Mid-epic cross-wave checkpoint" → completed`
 
 ---
 
@@ -788,6 +851,8 @@ grep -c "\[ \]" {TODO_PATH}    # Should be 0 (or only blocked stories)
 ```
 
 Report any `[!]` blocked or `[~]` deferred stories.
+
+**The epic's `## Validation` checklist is not optional boilerplate.** Before the TODO's Status line reads "Complete," confirm every item in its `## Validation` section (build/test/lint/docs/patterns) is actually checked with inline verification detail — not left `[ ]` by habit.
 
 `TaskUpdate: "Verify all stories" → completed`
 
@@ -894,3 +959,4 @@ Stories that are read-only verification (no code changes):
 15. **Main Agent fixes alignment issues and gate failures directly.** Do not re-dispatch agents for small fixes.
 16. **Pre-flight must pass.** Never start on a broken baseline.
 17. **Resolve to green — the operating standard.** Each wave fixes what it finds in-pass and AC-verifies before the wave commit (Steps 5–8). An adjacent bug a fix exposes gets resolved in the same wave, not deferred — "resolve it or don't report it." The only legitimate stop is a genuine fork (mutually-exclusive approaches, an irreversible/outward action, materially expanded scope); a clear bug is never one. The canonical statement lives in `.claude/skills/verification-before-completion/SKILL.md`.
+18. **3+ wave epics get a mid-epic cross-wave checkpoint (Step 9b), not just an epic-close retro.** Wave-time review (Step 7) only checks a wave against earlier waves; it can't see a forward-looking gap where an early wave's output turns out to be missing something a not-yet-built later wave will need. Run the checkpoint once, at the epic's middle wave.

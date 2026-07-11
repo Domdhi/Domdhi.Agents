@@ -23,7 +23,10 @@ const {
   walkDir,
   runUpdate,
   loadExcludedSkills,
+  listSkillDirs,
 } = updater;
+
+const nodeFs = require('node:fs');
 
 let tmp;
 
@@ -1026,5 +1029,32 @@ describe('runUpdate skill --merge preserves project additions', () => {
     const out = fs.readFileSync(path.join(tmp.root, destRel), 'utf8');
     expect(out).toBe(SRC_SKILL);          // clobbered
     expect(out).not.toContain('project stuff.');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// listSkillDirs — counts symlinked skill dirs (the bespoke-skill-preservation fix)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('listSkillDirs', () => {
+  it('listSkillDirs_countsSymlinkedSkillDir', () => {
+    // A real skill dir, a SYMLINKED skill dir (the shape adopters use for bespoke
+    // skills into ../.agents/skills/), a loose file, and a broken symlink.
+    tmp.write('skills/real-skill/SKILL.md', 'x');
+    const linkTarget = tmp.mkdir('agents-skills/linked-skill');
+    nodeFs.symlinkSync(linkTarget, path.join(tmp.root, 'skills/linked-skill'), 'dir');
+    tmp.write('skills/loose-file.md', 'x');
+    nodeFs.symlinkSync(path.join(tmp.root, 'nonexistent'), path.join(tmp.root, 'skills/broken-link'), 'dir');
+
+    const result = listSkillDirs(path.join(tmp.root, 'skills'));
+    expect(result.has('real-skill')).toBe(true);
+    expect(result.has('linked-skill')).toBe(true);   // the fix: symlinked dir counts
+    expect(result.has('loose-file.md')).toBe(false); // a file is not a skill dir
+    expect(result.has('broken-link')).toBe(false);   // broken symlink guarded out
+  });
+
+  it('listSkillDirs_missingDir_returnsEmptySet', () => {
+    const result = listSkillDirs(path.join(tmp.root, 'does-not-exist'));
+    expect(result.size).toBe(0);
   });
 });

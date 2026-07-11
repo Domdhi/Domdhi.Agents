@@ -95,6 +95,8 @@ Every story maps to exactly **one** dev agent at `/run-todo` time. Size each sto
 
 If a unit of work exceeds the cap, **SPLIT it** into parallel sub-stories partitioned by orthogonal concern (e.g. service slice / component slice / wiring slice / test slice). **Strongly prefer more, smaller stories and more parallel agents over fewer fat ones** — narrow agents finish faster, never compact, and parallelize. There is no penalty for a 12-story TODO of tiny stories; there is a real penalty for a 4-story TODO of 10-file stories (a fat-scope agent that compacted mid-task dropped an acceptance criterion with a fabricated "deferred" comment).
 
+**Split sub-stories are sibling H2 headers (`## Story N.M.K`), NEVER H3 (`### Story N.M.K`) nested under a wrapping `## Story N.M` parent.** `status.js --regen-master` counts only H2 story headers — a nested-H3 split is structurally invisible to the master index (Stories/Hours undercount). When splitting, delete or demote the wrapping parent header so it isn't double-counted.
+
 Every story MUST carry an **Agent budget** line (files modified / files created) so the cap is auditable before dispatch. The self-review (Phase 3b) fails the plan if any story exceeds it.
 
 ### Estimate Story Count First
@@ -287,6 +289,7 @@ Main Agent writes the TODO directly. Do NOT delegate assembly to a subagent — 
 9. **No code blocks** — file paths and descriptions only. Implementation is the dev agent's job
 10. **AC bullets are NEVER stripped or summarized** — they flow verbatim into `/do` and `/run-todo`
 11. **Every story carries an Agent budget line within the HARD CAP** — ≤5 files modified / ≤2 files created (tests count). Split anything larger into parallel sub-stories. Bias toward more, smaller stories + more agents.
+12. **Sub-story splits use sibling H2 headers (`## Story N.M.K`), never H3 nested under a wrapping H2** — `status.js --regen-master` only counts H2 headers (see the SPLIT rule above).
 
 ---
 

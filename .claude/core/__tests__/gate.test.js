@@ -100,6 +100,46 @@ describe('gate', () => {
       expect(result.errors[0].column).toBe(5);
     });
 
+    it('parseBuildOutput_eslintStylish_attributesIndentedFindingToFileLine', () => {
+      // Arrange — ESLint default "stylish" formatter: path on its own line, then
+      // indented `line:col  error  message  rule` findings under it.
+      const output = [
+        '/home/user/project/src/app.ts',
+        '  10:5   error    Unexpected console statement  no-console',
+        '  12:1   warning  Missing return type            @typescript-eslint/explicit-function-return-type',
+      ].join('\n');
+      const exitCode = 1;
+
+      // Act
+      const result = parseBuildOutput(output, exitCode);
+
+      // Assert — the error attributes to the pending file line; the warning is bucketed separately
+      expect(result.errors).toHaveLength(1);
+      expect(result.errors[0].file).toBe('/home/user/project/src/app.ts');
+      expect(result.errors[0].line).toBe(10);
+      expect(result.errors[0].column).toBe(5);
+      expect(result.errors[0].code).toBe('no-console');
+      expect(result.warnings).toHaveLength(1);
+      expect(result.warnings[0].line).toBe(12);
+    });
+
+    it('parseBuildOutput_tscBuild_notMisreadAsStylish', () => {
+      // Regression guard — the stylish branch must NOT create phantom findings on
+      // ordinary tsc build output (unindented `file(line,col): error` lines).
+      const output = [
+        'src/main.ts(5,3): error TS1005: ";" expected',
+      ].join('\n');
+      const exitCode = 1;
+
+      // Act
+      const result = parseBuildOutput(output, exitCode);
+
+      // Assert — exactly one error, from the tsc pattern, not double-counted by stylish
+      expect(result.errors).toHaveLength(1);
+      expect(result.errors[0].line).toBe(5);
+      expect(result.errors[0].code).toBe('TS1005');
+    });
+
     it('parseBuildOutput_rustPrefix_extractsError', () => {
       // Arrange — Rust/generic prefix: error[E0308]: message
       const output = 'error[E0308]: mismatched types';

@@ -45,7 +45,10 @@ async function cleanupLogs(maxAgeDays = DEFAULT_DAYS) {
             const match = entry.name.match(/^(\d{4})-(\d{2})-(\d{2})_/);
             if (!match) continue;
 
-            const folderDate = new Date(`${match[1]}-${match[2]}-${match[3]}`);
+            // Build local midnight (Y, M-1, D) to match the cutoff's local basis.
+            // Parsing the "YYYY-MM-DD" string instead yields UTC midnight, which in
+            // negative-UTC zones shifts the destructive fs.rm boundary by up to a day.
+            const folderDate = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
             if (folderDate < cutoffDate) {
                 const folderPath = path.join(logsDir, entry.name);
                 const size = await getFolderSize(folderPath);

@@ -137,8 +137,8 @@ const SEED_MEMORIES = [
         id: 'sqlite-fts5-backend',
         importance: 3,
         content: {
-            description: 'Full-text search FTS5 only works with the better-sqlite3 npm package. Node built-in node:sqlite ships WITHOUT FTS5 as of v24. Falls back to JSON scan if neither is available.',
-            evidence: 'memory-manager.js SQLite backend resolution comment block.',
+            description: 'Full-text search uses SQLite FTS5. On Node 24+ the built-in node:sqlite ships FTS5 compiled in, so search works with ZERO npm dependencies; better-sqlite3 is only an optional fallback for older Node. Falls back to a JSON linear scan if neither backend is available.',
+            evidence: 'memory-manager.js SQLite backend resolution comment block; constraint memory node24-nodesqlite-ships-fts5-zero-deps.',
             confidence: 0.8,
         },
     },

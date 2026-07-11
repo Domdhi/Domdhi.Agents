@@ -133,35 +133,41 @@ class MemoryHealthChecker {
         // new junk memory on EVERY run, inflating the store unboundedly.
         const startCreate = Date.now();
         const testId = '_health_check_probe';
-        await this.manager.createMemory(CONSTANTS.MEMORY_CATEGORIES.PATTERNS, testId, {
-            test: true,
-            timestamp: new Date().toISOString()
-        });
-        const createTime = Date.now() - startCreate;
-
-        if (createTime < CONSTANTS.PERFORMANCE.CACHE_HIT_MS * 10) { // Should be very fast
-            this.results.passed.push(`✅ Memory creation: ${createTime}ms (excellent)`);
-        } else if (createTime < CONSTANTS.PERFORMANCE.CACHE_HIT_MS * 100) {
-            this.results.warnings.push(`⚠️  Memory creation: ${createTime}ms (acceptable)`);
-        } else {
-            this.results.errors.push(`❌ Memory creation: ${createTime}ms (too slow)`);
-        }
-
-        // Test memory search speed
-        const startSearch = Date.now();
-        await this.manager.searchMemories('test');
-        const searchTime = Date.now() - startSearch;
-
-        if (searchTime < CONSTANTS.PERFORMANCE.SIMPLE_QUERY_MS) {
-            this.results.passed.push(`✅ Memory search: ${searchTime}ms (within target)`);
-        } else {
-            this.results.warnings.push(`⚠️  Memory search: ${searchTime}ms (exceeds ${CONSTANTS.PERFORMANCE.SIMPLE_QUERY_MS}ms target)`);
-        }
-
-        // Clean up the probe — diagnostics must not accumulate in the curated store.
+        // The probe writes into the git-TRACKED store (ADR 0006 Am. 2). Guard the
+        // whole create→search→delete window in try/finally so an exception in the
+        // intervening search (previously unwrapped, M6) can't leave the probe file
+        // behind in a tracked category dir where a later commit could sweep it up.
         try {
-            await this.manager.deleteMemory(CONSTANTS.MEMORY_CATEGORIES.PATTERNS, testId);
-        } catch { /* non-fatal — fixed key means next run overwrites anyway */ }
+            await this.manager.createMemory(CONSTANTS.MEMORY_CATEGORIES.PATTERNS, testId, {
+                test: true,
+                timestamp: new Date().toISOString()
+            });
+            const createTime = Date.now() - startCreate;
+
+            if (createTime < CONSTANTS.PERFORMANCE.CACHE_HIT_MS * 10) { // Should be very fast
+                this.results.passed.push(`✅ Memory creation: ${createTime}ms (excellent)`);
+            } else if (createTime < CONSTANTS.PERFORMANCE.CACHE_HIT_MS * 100) {
+                this.results.warnings.push(`⚠️  Memory creation: ${createTime}ms (acceptable)`);
+            } else {
+                this.results.errors.push(`❌ Memory creation: ${createTime}ms (too slow)`);
+            }
+
+            // Test memory search speed
+            const startSearch = Date.now();
+            await this.manager.searchMemories('test');
+            const searchTime = Date.now() - startSearch;
+
+            if (searchTime < CONSTANTS.PERFORMANCE.SIMPLE_QUERY_MS) {
+                this.results.passed.push(`✅ Memory search: ${searchTime}ms (within target)`);
+            } else {
+                this.results.warnings.push(`⚠️  Memory search: ${searchTime}ms (exceeds ${CONSTANTS.PERFORMANCE.SIMPLE_QUERY_MS}ms target)`);
+            }
+        } finally {
+            // Clean up the probe — diagnostics must not accumulate in the curated store.
+            try {
+                await this.manager.deleteMemory(CONSTANTS.MEMORY_CATEGORIES.PATTERNS, testId);
+            } catch { /* non-fatal — fixed key means next run overwrites anyway */ }
+        }
     }
 
     async checkMemoryQuality() {

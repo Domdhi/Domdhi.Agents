@@ -62,21 +62,35 @@
 
 'use strict';
 
-const { execSync } = require('child_process');
+const { execFileSync } = require('child_process');
 
 // ── path classification (pure) ────────────────────────────────────────────────
 // A repo-relative path is "code" (scrutinize), "disposable" (regenerable working
 // state — safe), or "other" (unknown — review). Tech-agnostic defaults; the
 // disposable set covers this toolkit's own scratch files (.commit-msg/.pr-body)
 // plus common regenerable artifacts.
+//
+// DISPOSABLE is deliberately narrow — it must NOT wave through authored `.claude/`
+// content (a new SKILL.md, agent/command .md, hook .cjs). Those are real work; a
+// worktree holding only new uncommitted `.claude/` files must classify as 'other'
+// (REVIEW), never 'disposable' (safe-to-remove). Generated `.claude/` state lives
+// under docs/.output/.state/, which the docs/.output/ branch already covers.
 const CODE_RE = /^(src|tests|tools)\//;
-const DISPOSABLE_RE = /(^docs\/\.output\/|^\.claude\/|(^|\/)Directory\.Build\.props$|(^|\/)\.commit-msg$|(^|\/)\.pr-body$|(^|\/)node_modules\/)/;
+const DISPOSABLE_RE = /(^docs\/\.output\/|(^|\/)Directory\.Build\.props$|(^|\/)\.commit-msg$|(^|\/)\.pr-body$|(^|\/)node_modules\/)/;
 
 function classifyPath(p) {
   if (CODE_RE.test(p)) return 'code';
   if (DISPOSABLE_RE.test(p)) return 'disposable';
   return 'other';
 }
+
+// ── branch-name safety (defense-in-depth) ─────────────────────────────────────
+// git() no longer touches a shell (execFileSync argv), so metacharacters in a
+// branch name can't inject. This is a belt-and-suspenders reject of enumerated
+// names carrying shell metacharacters ($ ` ; | & ( ) newline) — the toolkit
+// never legitimately audits such a branch, so skipping one is lossless.
+const SHELL_METACHAR_RE = /[$`;|&()\n]/;
+function hasShellMetachar(name) { return SHELL_METACHAR_RE.test(name); }
 
 /**
  * Derive a branch verdict from the net-new code-file signatures of a non-no-op
@@ -96,16 +110,39 @@ function worktreeVerdictFromDirty(kinds) {
 }
 
 /** Classify a net-new code file against base: 'modified' | 'renamed' | 'NEW'. */
-function codeFileSignature(present, basenamePresentElsewhere) {
-  if (present) return 'modified';                 // exists in base → merge-noise
-  if (basenamePresentElsewhere) return 'renamed'; // moved elsewhere in base
-  return 'NEW';                                   // genuinely absent → unmerged signal
+function codeFileSignature(present, basenameInSiblingDir) {
+  if (present) return 'modified';             // exists in base → merge-noise
+  if (basenameInSiblingDir) return 'renamed'; // same basename in same/sibling dir → a move
+  return 'NEW';                               // genuinely absent → unmerged signal
+}
+
+const dirOf = (p) => { const i = p.lastIndexOf('/'); return i < 0 ? '' : p.slice(0, i); };
+const parentOf = (dir) => { const i = dir.lastIndexOf('/'); return i < 0 ? '' : dir.slice(0, i); };
+
+/**
+ * Rename heuristic, scoped to the same-or-sibling directory. A net-new code file
+ * `f` looks like a move ONLY if base holds the same basename under a directory
+ * sharing `f`'s parent directory — not merely *anywhere* in base. Without the
+ * scope, a genuinely new `index.js`/`README.md` is waved through as "renamed"
+ * because its basename coincides with an unrelated file elsewhere (N2).
+ * `byBasename` maps basename → Set<dirname> over base's files.
+ */
+function basenameInSiblingDir(byBasename, f) {
+  const dirs = byBasename.get(f.split('/').pop());
+  if (!dirs) return false;
+  const fParent = parentOf(dirOf(f));
+  for (const d of dirs) { if (parentOf(d) === fParent) return true; }
+  return false;
 }
 
 // ── git helpers (impure) ───────────────────────────────────────────────────────
-function git(args, { cwd, raw } = {}) {
+// `argv` is an argument ARRAY passed straight to git via execFileSync — NO shell,
+// so a branch name containing $(), backticks, ;, |, & can never be interpreted as
+// a command (was the RCE in the old string-interpolated execSync). Every call site
+// passes an array; string args are a programming error.
+function git(argv, { cwd, raw } = {}) {
   // git names with slashes mangle under MSYS path-conversion; disable it.
-  const out = execSync(`git ${args}`, {
+  const out = execFileSync('git', argv, {
     encoding: 'utf8',
     cwd: cwd || process.cwd(),
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -120,7 +157,7 @@ function gitOk(args, o) { try { git(args, o); return true; } catch { return fals
 
 // ── audits (impure) ────────────────────────────────────────────────────────────
 function auditBranch(branch, ctx) {
-  const { BASE, baseTree, PROTECTED, baseBasenames } = ctx;
+  const { BASE, baseTree, PROTECTED, baseByBasename } = ctx;
   // backup/* are deliberate recovery snapshots — never propose for deletion.
   if (PROTECTED.has(branch) || /^backup\//.test(branch)) return { branch, verdict: 'KEEP', reason: 'protected' };
 
@@ -129,29 +166,29 @@ function auditBranch(branch, ctx) {
   // exact "gone" case), so gitSafe swallowed it to '' and this always reported
   // 'none' — the documented corroborating signal could never fire. for-each-ref's
   // %(upstream:track) survives a pruned ref and reports the literal "[gone]".
-  const track = gitSafe(`for-each-ref --format='%(upstream:track)' refs/heads/${branch}`).replace(/'/g, '');
-  const hasUpstreamConfig = gitOk(`config --get branch.${branch}.merge`);
+  const track = gitSafe(['for-each-ref', '--format=%(upstream:track)', 'refs/heads/' + branch]);
+  const hasUpstreamConfig = gitOk(['config', '--get', 'branch.' + branch + '.merge']);
   let upstreamState = 'none';
   if (track.includes('[gone]')) upstreamState = 'gone';
   else if (hasUpstreamConfig) upstreamState = 'tracking';
 
-  const ahead = gitSafe(`rev-list --count ${BASE}..${branch}`) || '0';
+  const ahead = gitSafe(['rev-list', '--count', BASE + '..' + branch]) || '0';
 
   // the only clean "fully merged" signal: no-op merge into base
-  const mt = gitSafe(`merge-tree --write-tree ${BASE} ${branch}`);
+  const mt = gitSafe(['merge-tree', '--write-tree', BASE, branch]);
   const mergedTree = mt.split('\n')[0];
   if (mergedTree === baseTree) {
     return { branch, verdict: 'MERGED', ahead, upstreamState, code: [], docs: [] };
   }
 
   // net-new files this branch would contribute on top of base
-  const files = gitSafe(`diff --name-only ${baseTree} ${mergedTree}`).split('\n').filter(Boolean);
+  const files = gitSafe(['diff', '--name-only', baseTree, mergedTree]).split('\n').filter(Boolean);
   const code = [];
   const docs = [];
   for (const f of files) {
     if (classifyPath(f) === 'code') {
-      const present = gitOk(`cat-file -e ${BASE}:${f}`);
-      code.push({ file: f, sig: codeFileSignature(present, baseBasenames.has(f.split('/').pop())) });
+      const present = gitOk(['cat-file', '-e', BASE + ':' + f]);
+      code.push({ file: f, sig: codeFileSignature(present, basenameInSiblingDir(baseByBasename, f)) });
     } else {
       docs.push(f);
     }
@@ -162,7 +199,7 @@ function auditBranch(branch, ctx) {
 }
 
 function listWorktrees() {
-  const out = git('worktree list --porcelain');
+  const out = git(['worktree', 'list', '--porcelain']);
   const trees = [];
   let cur = null;
   for (const line of out.split('\n')) {
@@ -173,7 +210,7 @@ function listWorktrees() {
   return trees;
 }
 function auditWorktree(wt) {
-  const status = (() => { try { return git('status --porcelain', { cwd: wt.path, raw: true }); } catch { return ''; } })();
+  const status = (() => { try { return git(['status', '--porcelain'], { cwd: wt.path, raw: true }); } catch { return ''; } })();
   if (!status) return { ...wt, verdict: 'CLEAN', dirty: [] };
   const dirty = status.split('\n').filter(Boolean).map((l) => {
     const xy = l.slice(0, 2);
@@ -194,22 +231,35 @@ function main(argv) {
   const PRUNE_PLAN = flag('--prune-plan');
   const JSON_OUT = flag('--json');
 
-  if (!gitOk(`rev-parse --verify ${BASE}`)) {
+  if (!gitOk(['rev-parse', '--verify', BASE])) {
     console.error(`branch-audit: base ref '${BASE}' not found. Fetch first, or pass --base.`);
     process.exit(0);
   }
-  const baseTree = git(`show -s --format=%T ${BASE}`); // caret-free (cmd.exe eats ^{tree})
-  const current = gitSafe('rev-parse --abbrev-ref HEAD');
+  const baseTree = git(['show', '-s', '--format=%T', BASE]); // caret-free (cmd.exe eats ^{tree})
+  const current = gitSafe(['rev-parse', '--abbrev-ref', 'HEAD']);
   const baseShort = BASE.replace(/^origin\//, '');
   const PROTECTED = new Set(['main', 'master', baseShort, current, ...EXTRA_KEEP]);
-  const baseFiles = git(`ls-tree -r --name-only ${BASE}`).split('\n').filter(Boolean);
-  const baseBasenames = new Set(baseFiles.map((f) => f.split('/').pop()));
-  const ctx = { BASE, baseTree, PROTECTED, baseBasenames };
+  const baseFiles = git(['ls-tree', '-r', '--name-only', BASE]).split('\n').filter(Boolean);
+  // basename → set of the directories it appears in, for the same/sibling-dir rename heuristic.
+  const baseByBasename = new Map();
+  for (const f of baseFiles) {
+    const b = f.split('/').pop();
+    let dirs = baseByBasename.get(b);
+    if (!dirs) baseByBasename.set(b, (dirs = new Set()));
+    dirs.add(dirOf(f));
+  }
+  const ctx = { BASE, baseTree, PROTECTED, baseByBasename };
 
-  const branches = git("for-each-ref --format='%(refname:short)' refs/heads/")
-    .split('\n').map((s) => s.replace(/'/g, '').trim()).filter(Boolean);
+  const branches = git(['for-each-ref', '--format=%(refname:short)', 'refs/heads/'])
+    .split('\n').map((s) => s.trim()).filter(Boolean)
+    .filter((b) => {
+      // Defense-in-depth: git() no longer shells, but never process a branch whose
+      // name carries shell metacharacters — skip it loudly rather than audit it.
+      if (hasShellMetachar(b)) { console.error(`branch-audit: skipping branch with unsafe name: ${b}`); return false; }
+      return true;
+    });
   const worktrees = listWorktrees();
-  const primaryPath = gitSafe('rev-parse --show-toplevel');
+  const primaryPath = gitSafe(['rev-parse', '--show-toplevel']);
 
   const branchReports = (ONLY_WT ? [] : branches.map((b) => auditBranch(b, ctx)));
   const worktreeReports = (ONLY_BR ? [] : worktrees.map(auditWorktree));
@@ -275,6 +325,7 @@ function main(argv) {
 
 module.exports = {
   classifyPath, branchVerdictFromCode, worktreeVerdictFromDirty, codeFileSignature,
+  basenameInSiblingDir, hasShellMetachar,
   CODE_RE, DISPOSABLE_RE,
   git, gitSafe, gitOk, auditBranch, listWorktrees, auditWorktree, main,
 };

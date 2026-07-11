@@ -6,7 +6,7 @@
 // These tests MUST FAIL before yaml-parser.js is created, then pass after.
 // The module will be created at .claude/core/_lib/yaml-parser.js.
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
@@ -198,5 +198,31 @@ describe('parseScalar', () => {
     it('parseScalar_mixedQuotes_notStripped', () => {
         // "foo' does not match quote-strip rule — returned as-is
         expect(parseScalar('"foo\'')).toBe('"foo\'');
+    });
+
+    // ── sec-m1: prototype-pollution guard ────────────────────────────────────
+    describe('prototype pollution', () => {
+        afterEach(() => {
+            // Belt-and-suspenders: ensure no test leaves the global polluted.
+            delete Object.prototype.polluted;
+        });
+
+        it('does not pollute Object.prototype via a nested __proto__ key', () => {
+            const result = parseYaml('__proto__:\n  polluted: PWNED\n');
+            // The classic gadget: nested assignment under __proto__.
+            expect(({}).polluted).toBeUndefined();
+            expect(Object.prototype.polluted).toBeUndefined();
+            // The unsafe key is dropped, not surfaced as data.
+            expect(result.polluted).toBeUndefined();
+        });
+
+        it('drops constructor / prototype keys at the top level too', () => {
+            const result = parseYaml('constructor:\n  x: 1\nprototype:\n  y: 2\nblock_patterns:\n  - "rm -rf /"\n');
+            // Legitimate sibling keys still parse.
+            expect(result.block_patterns).toContain('rm -rf /');
+            // No pollution and no data leakage from the unsafe keys.
+            expect(Object.prototype.x).toBeUndefined();
+            expect(Object.prototype.y).toBeUndefined();
+        });
     });
 });

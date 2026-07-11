@@ -89,9 +89,37 @@ function buildFtsQuery(searchTerm) {
     if (!searchTerm || typeof searchTerm !== 'string') return searchTerm;
     if (/[":^*()]/.test(searchTerm)) return searchTerm;
     if (/\b(OR|AND|NOT|NEAR)\b/.test(searchTerm)) return searchTerm;
+    return tokenizeToOrQuery(searchTerm);
+}
+
+/**
+ * The tokenize-and-OR-join half of buildFtsQuery, callable directly as a FALLBACK.
+ *
+ * buildFtsQuery passes a string through UNMODIFIED when it looks like deliberate
+ * FTS5 syntax (quotes/paren/operators). But ordinary prose descriptions also carry
+ * that punctuation — a full sentence like "…usage_count is a broken instrument
+ * (see notes)." trips the paren check, gets passed through raw, and any hyphenated
+ * word in it then makes FTS5's MATCH throw ("no such column: …"). detectOverlap
+ * sends exactly that shape on every createMemory, so write-time supersession
+ * detection silently no-ops (M1). searchMemories has the same failure mode.
+ *
+ * Callers wrap the raw buildFtsQuery attempt in try/catch and retry with THIS —
+ * a strictly tokenized OR-join that can never carry an operator-hyphen to MATCH —
+ * before giving up to the JSON-scan fallback.
+ */
+function tokenizeToOrQuery(searchTerm) {
+    if (!searchTerm || typeof searchTerm !== 'string') return searchTerm;
     const tokens = searchTerm.split(/[^a-zA-Z0-9_]+/).filter(t => t.length > 1);
     if (tokens.length === 0) return searchTerm.replace(/-+/g, ' ').trim() || searchTerm;
-    if (tokens.length === 1) return tokens[0];
+    if (tokens.length === 1) {
+        // N1: a lone survivor after length-filtering can mean the raw query had a
+        // single-char leading token ("x-ray" → only "ray" survives), silently
+        // dropping data. When 2+ raw tokens existed, keep them all as a hyphen-free
+        // (AND) join rather than searching for just the survivor.
+        const rawTokens = searchTerm.split(/[^a-zA-Z0-9_]+/).filter(Boolean);
+        if (rawTokens.length > 1) return rawTokens.join(' ');
+        return tokens[0];
+    }
     return tokens.join(' OR ');
 }
 
@@ -478,8 +506,7 @@ class MemoryManager {
         const text = (contentObj && contentObj.description) || (contentObj ? JSON.stringify(contentObj) : '');
         const q = buildFtsQuery(text);
         if (!q) return [];
-        try {
-            const rows = this.db.prepare(`
+        const sql = `
                 SELECT m.id
                 FROM memories_fts fts
                 JOIN memories m ON fts.id = m.id
@@ -489,11 +516,21 @@ class MemoryManager {
                   AND m.invalid_at IS NULL
                 ORDER BY rank
                 LIMIT 5
-            `).all(q, category, excludeId);
-            return rows.map(r => r.id);
+            `;
+        const run = (query) => this.db.prepare(sql).all(query, category, excludeId).map(r => r.id);
+        try {
+            return run(q);
         } catch {
-            // FTS unavailable (node:sqlite without fts5) or query error — no flag
-            return [];
+            // buildFtsQuery passed the description through raw (punctuation heuristic)
+            // and a hyphen in it made MATCH throw — the exact shape that silently
+            // no-op'd write-time supersession detection (M1). Retry tokenized before
+            // giving up: a real overlap should still be flagged.
+            try {
+                return run(tokenizeToOrQuery(text));
+            } catch {
+                // FTS genuinely unavailable (node:sqlite without fts5) — no flag
+                return [];
+            }
         }
     }
 
@@ -666,8 +703,7 @@ class MemoryManager {
         const { includeSuperseded = false } = opts;
         // Try SQLite FTS5 first
         if (this.initDb()) {
-            try {
-                const stmt = this.db.prepare(`
+            const sql = `
                     SELECT m.id, m.category, m.content, m.metadata, m.confidence, m.usage_count, m.updated, m.importance,
                            rank
                     FROM memories_fts fts
@@ -676,8 +712,17 @@ class MemoryManager {
                       ${includeSuperseded ? '' : 'AND m.invalid_at IS NULL'}
                     ORDER BY rank
                     LIMIT 20
-                `);
-                const rows = stmt.all(buildFtsQuery(searchTerm));
+                `;
+            try {
+                let rows;
+                try {
+                    rows = this.db.prepare(sql).all(buildFtsQuery(searchTerm));
+                } catch {
+                    // buildFtsQuery may have passed prose through raw (the punctuation
+                    // heuristic) and a hyphen in it made MATCH throw (M1). Retry with a
+                    // strictly tokenized OR-join before falling to the JSON scan.
+                    rows = this.db.prepare(sql).all(tokenizeToOrQuery(searchTerm));
+                }
                 if (rows.length > 0) {
                     const mapped = rows.map(row => {
                         const importance = clampImportance(row.importance);
@@ -835,10 +880,14 @@ class MemoryManager {
         const { MEMORY_DECAY } = require('./constants');
         if (boostAmount === undefined) boostAmount = MEMORY_DECAY.ECHO_BOOST;
 
-        // 1. Read commit log — %H (full hash) + %s (subject), most-recent first
+        // 1. Read commit log — %H (full hash) + %s (subject), most-recent first.
+        // Coerce limit to a non-negative int before it reaches the shell (sec-n3):
+        // it is interpolated into an execSync string, so a non-numeric caller value
+        // must never survive into the command.
+        const safeLimit = Math.max(1, Number(limit) | 0);
         let commits = [];
         try {
-            const raw = execSync(`git log --format=%H%x09%s -${limit}`, {
+            const raw = execSync(`git log --format=%H%x09%s -${safeLimit}`, {
                 cwd: this.projectRoot,
                 encoding: 'utf8',
                 timeout: 5000,

@@ -11,7 +11,7 @@ import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const path = require('node:path');
 
-const { loadRules, matchesPattern, evaluate, hasEscalationMarker } = require('../guardrail-rules');
+const { loadRules, matchesPattern, evaluate, hasEscalationMarker, globMatchesPath } = require('../guardrail-rules');
 const { createTmpDir } = require('../../__tests__/_helpers/tmp-dir');
 
 // ─── loadRules ────────────────────────────────────────────────────────────────
@@ -238,5 +238,28 @@ describe('evaluate — nudge tier', () => {
         expect(hasEscalationMarker('rm -rf x')).toBe(false);
         // Bare phrase without a leading # is NOT the marker (must read as a comment).
         expect(hasEscalationMarker('echo guardrail confirm')).toBe(false);
+    });
+
+    // ── C3: whitespace-normalized plain matching ─────────────────────────────
+    it('matchesPattern_plain_normalizesWhitespace (C3)', () => {
+        // Double space and tabs between tokens must not evade a plain pattern.
+        expect(matchesPattern('git  push  --force', 'git push --force')).toBe(true);
+        expect(matchesPattern('git\tpush\t--force', 'git push --force')).toBe(true);
+        expect(matchesPattern('format  c:', 'format c:')).toBe(true);
+        // Single-space still matches; an unrelated command still does not.
+        expect(matchesPattern('git push --force', 'git push --force')).toBe(true);
+        expect(matchesPattern('git status', 'git push --force')).toBe(false);
+    });
+
+    // ── m2 / G2: segment-boundary + exact-dir glob matching ──────────────────
+    it('globMatchesPath_dirGlob_isSegmentBoundaryAnchored (m2)', () => {
+        // `bin/` must NOT match an unrelated path that merely contains "bin".
+        expect(globMatchesPath('bin/', '/repo/cabin/foo')).toBe(false);
+        expect(globMatchesPath('web/', '/repo/cobweb/index.html')).toBe(false);
+        // …but DOES match the directory itself and files under it.
+        expect(globMatchesPath('bin/', '/repo/bin/tool')).toBe(true);
+        expect(globMatchesPath('bin/', '/repo/bin')).toBe(true);           // exact dir, no trailing slash (G2)
+        expect(globMatchesPath('.git/', '/repo/.git')).toBe(true);         // path.resolve drops the trailing slash
+        expect(globMatchesPath('.git/', '/repo/.git/config')).toBe(true);
     });
 });

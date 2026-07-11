@@ -810,6 +810,20 @@ describe('guardrail — live rules (tmp-exempt rm -rf + destructive find -exec)'
         expect(decision('rm -rf .env  # guardrail:confirm')).toBe('block');
         expect(decision('rm -rf .env.production')).toBe('block');
     });
+
+    it('dotGit_delete_isHardBlock_evenChainedWithMarker_butGitignoreGithubUnaffected', () => {
+        // sweep C-followup: deleting .git destroys all VCS history — catastrophic
+        // and irreversible, so it is a zeroAccessPath (non-escalatable hard block).
+        // The security audit demonstrated `x && rm -rf .git # guardrail:confirm`
+        // downgrading to a user-confirm because .git was never a protected tier.
+        expect(decision('rm -rf .git')).toBe('block');
+        expect(decision('rm -rf .git  # guardrail:confirm')).toBe('block');
+        expect(decision('true && rm -rf .git # guardrail:confirm')).toBe('block');
+        // Segment-anchored matching: sibling dot-git paths are NOT elevated to a
+        // hard block — they stay escalatable (nudge → confirm) or pass as before.
+        expect(decision('rm -rf .gitignore  # guardrail:confirm')).toBe('confirm');
+        expect(decision('rm -rf .github/workflows # guardrail:confirm')).toBe('confirm');
+    });
 });
 
 // ─── Real rules file: rm autonomy exemptions (regression for 2026-06-05 widen) ──
@@ -966,5 +980,92 @@ describe('real guardrail-rules.yaml — rm -rf autonomy exemptions', () => {
         expect(act('git reset --soft HEAD~1')).toBe('allow');
         expect(act('git reset HEAD~1')).toBe('allow');
         expect(act('git reset --mixed HEAD')).toBe('allow');
+    });
+});
+
+// ─── Guardrail hardening — adversarial bypass regressions ─────────────────────
+// Every string below is a documented bypass from the 2026-07-09 security audit /
+// hooks code review that used to resolve to the WRONG decision. Mandatory per
+// the code-review skill's "security-control changes = bypass-attempt tests" rule.
+// These run against the REAL shipped guardrail-rules.yaml, not a fixture.
+
+describe('guardrail hardening — documented bypasses now blocked', () => {
+    let originalDir;
+    beforeEach(() => {
+        originalDir = process.env.CLAUDE_PROJECT_DIR;
+        process.env.CLAUDE_PROJECT_DIR = REPO_ROOT;
+    });
+    afterEach(() => {
+        if (originalDir === undefined) delete process.env.CLAUDE_PROJECT_DIR;
+        else process.env.CLAUDE_PROJECT_DIR = originalDir;
+    });
+
+    const decision = (command) => {
+        const r = processEvent({ tool_input: { command } });
+        if (r === null) return 'pass';
+        if (r.confirm) return 'confirm';
+        if (r.block) return r.feedback && r.feedback.includes('SAFER ALTERNATIVE') ? 'nudge' : 'block';
+        return '?';
+    };
+
+    it('C3 — whitespace-evaded catastrophic commands still block', () => {
+        // Double-spaced / tab-separated force-push and format used to ALLOW.
+        expect(decision('git  push  --force origin main')).toBe('block');
+        expect(decision('git\tpush\t--force')).toBe('block');
+        expect(decision('format  c:')).toBe('block');
+        // Single-token catastrophic commands never regressed — assert they hold.
+        expect(decision('mkfs.ext4 /dev/sda')).toBe('block');
+        expect(decision('dd  if=/dev/zero of=/dev/sda')).toBe('block');
+        expect(decision('fdisk /dev/sda')).toBe('block');
+        expect(decision('diskpart')).toBe('block');
+    });
+
+    it('hooks-m1 — git push --force-with-lease is a CONFIRM, not a hard block', () => {
+        // Block rule excludes --force-with-lease (negative lookahead), so its
+        // confirm rule is now reachable instead of dead code.
+        expect(decision('git push --force-with-lease')).toBe('confirm');
+        expect(decision('git push --force-with-lease origin main')).toBe('confirm');
+        // The plain force push is still a hard block.
+        expect(decision('git push --force')).toBe('block');
+    });
+
+    it('G1/M1 — chained delete of a zero-access path is a hard block, not confirm', () => {
+        // Prefixing any command used to downgrade the non-escalatable .env block
+        // to a user-approvable confirm. The four-tier check now scans every
+        // segment, so these BLOCK regardless of the escalation marker.
+        expect(decision('echo hi && rm -rf .env # guardrail:confirm')).toBe('block');
+        expect(decision('true && rm -rf .env # guardrail:confirm')).toBe('block');
+        expect(decision('cd /tmp; rm -rf .env')).toBe('block');
+        expect(decision('$(rm -rf .env.production)')).toBe('block');
+    });
+
+    it('M2/G2 — allowlist-prefix path traversal deletes are hard-blocked', () => {
+        // `node_modules/../.git` resolves to PROJECT/.git; `dist/../../etc/...`
+        // escapes the project. Both used to ALLOW via the textual prefix.
+        expect(decision('rm -rf node_modules/../.git')).toBe('block');
+        expect(decision('rm -rf dist/../../../../etc/passwd')).toBe('block');
+        expect(decision('rm -rf ./coverage/../.env')).toBe('block');
+    });
+
+    it('G3 — alternate deletion verbs against a protected path are blocked', () => {
+        // find -delete / truncate / shred / redirection targeting .env used to
+        // sidestep the rm-only detection entirely.
+        expect(decision('find . -name .env -delete')).toBe('block');
+        expect(decision('truncate -s 0 .env')).toBe('block');
+        expect(decision('shred .env.production')).toBe('block');
+        expect(decision('cat /dev/null > .env')).toBe('block');
+        expect(decision(': > .env.local')).toBe('block');
+    });
+
+    it('does not over-block benign uses of the same verbs', () => {
+        // Only PROTECTED targets escalate to a hard block — ordinary redirects,
+        // finds and truncations of non-protected paths stay out of the way.
+        expect(decision('echo hi > README.md')).toBe('pass');
+        expect(decision('node app.js 2>&1')).toBe('pass');
+        // `find … -delete` carries a general nudge (escalatable) on ANY target.
+        expect(decision('find . -name "*.log" -delete')).toBe('nudge');
+        // truncate/shred/redirect are checked ONLY against protected tiers — a
+        // non-protected target is a clean pass, no blanket nudge noise.
+        expect(decision('truncate -s 0 build/output.txt')).toBe('pass');
     });
 });

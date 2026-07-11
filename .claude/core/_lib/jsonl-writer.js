@@ -19,6 +19,25 @@ const path = require('path');
 const DEFAULT_MAX_LINES = 1000;
 const DEFAULT_TAIL_KEEP = 500;
 
+// Per-path cached line count (T1) so the hot path (every searchMemories + session
+// start) doesn't read + split the WHOLE file on every append just to decide on
+// rotation. Seeded once per process on cache miss, incremented per append, reset to
+// tailKeep after a rotation — so the O(file) read now happens only AT rotation
+// (once per maxLines-tailKeep appends), not on every append. An estimate by design:
+// two writers in SEPARATE processes each keep their own count, so a file may
+// modestly overshoot maxLines before one rotates — still bounded, and telemetry
+// rotation is best-effort. Keyed by the (absolute) jsonl path.
+const lineCountCache = new Map();
+
+/** Count complete (newline-terminated) lines — appendJsonl always writes '…\n'. */
+function countJsonlLines(content) {
+    let n = 0;
+    for (let i = 0; i < content.length; i++) {
+        if (content.charCodeAt(i) === 10 /* \n */) n++;
+    }
+    return n;
+}
+
 /**
  * Append an entry as a JSONL line, rotating tail when over `maxLines`.
  * Graceful: errors are silenced so telemetry/metrics never block the workflow.
@@ -39,13 +58,29 @@ function appendJsonl(jsonlPath, entry, {
         fs.mkdirSync(path.dirname(jsonlPath), { recursive: true });
         fs.appendFileSync(jsonlPath, JSON.stringify(entry) + '\n', 'utf8');
 
-        // Tail-sample if over limit
-        const content = fs.readFileSync(jsonlPath, 'utf8');
-        const lines = content.split('\n').filter(l => l.trim());
-        if (lines.length > maxLines) {
-            const trimmed = lines.slice(-tailKeep).join('\n') + '\n';
-            fs.writeFileSync(jsonlPath, trimmed, 'utf8');
+        // Cheap cached line count instead of re-reading the whole file each append.
+        let count = lineCountCache.get(jsonlPath);
+        if (count === undefined) {
+            // Cold start — read once to seed (includes the line just appended).
+            try { count = countJsonlLines(fs.readFileSync(jsonlPath, 'utf8')); }
+            catch { count = 1; }
+        } else {
+            count += 1;
         }
+
+        // Tail-sample if over limit. Rotation is the ONLY branch that re-reads the
+        // file (it needs the content to keep the tail) — amortized, not per-append.
+        if (count > maxLines) {
+            const lines = fs.readFileSync(jsonlPath, 'utf8').split('\n').filter(l => l.trim());
+            if (lines.length > maxLines) {
+                const trimmed = lines.slice(-tailKeep).join('\n') + '\n';
+                fs.writeFileSync(jsonlPath, trimmed, 'utf8');
+                count = tailKeep;
+            } else {
+                count = lines.length; // cache drifted high — resync to the truth
+            }
+        }
+        lineCountCache.set(jsonlPath, count);
     } catch (e) {
         if (onError) {
             try { onError(e.message); } catch { /* logger itself failed — swallow */ }

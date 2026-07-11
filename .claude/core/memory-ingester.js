@@ -19,11 +19,14 @@
 
 const fs = require('fs');
 const path = require('path');
+const { memoryPaths } = require('./_lib/memory-paths');
 
 class MemoryIngester {
     constructor(outputDir) {
-        const projectRoot = process.env.CLAUDE_PROJECT_DIR || path.resolve(__dirname, '..', '..');
-        this.outputDir = outputDir || path.join(projectRoot, 'docs', '.output', '.state', 'memory-daily');
+        // Worktree-safe resolution (M5): the gitignored daily-log dir anchors to the
+        // MAIN worktree via memoryPaths() — the old per-__dirname fallback wrote logs
+        // into a linked worktree's own .state/ that is lost on worktree removal.
+        this.outputDir = outputDir || memoryPaths(path.resolve(__dirname, '..', '..')).dailyDir;
     }
 
     // -------------------------------------------------------------------------

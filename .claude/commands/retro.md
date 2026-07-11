@@ -43,6 +43,8 @@ INPUT: $ARGUMENTS
 
 Capture the epic's **commit range** (first → last commit) from `git log --oneline` — Step 2 reviews this range and Step 3 derives metrics from it.
 
+**Prior-retro check.** Before scoping Step 2, check for an existing `docs/.output/findings/reviews/retro-{epic-slug}.md`. An epic can grow a story *after* it was already retro'd (e.g. a cross-epic gap-closure story assigned post-hoc) — the prior retro is then stale, not wrong: an accurate partial record that predates completion. When this happens: scope Step 2's review to only the **delta since the prior retro's commit** (don't re-review code it already covered), and instruct the `doc-writer` (Step 5) to write one **complete, updated** retro at the same path — incorporating the prior retro's still-valid analysis plus the new delta — not a second file (the `retro-*.md` glob expects one retro per epic).
+
 ### 2. Run Code-Review Pass (main agent → code-reviewer)
 
 > **Skip this entire step if `--skip-review` is set** — but still gather any pre-existing code-review findings for this epic (a recent `docs/.output/findings/reviews/*-code-review.md`, or `/sweep` Phase 1 output) and carry them into Steps 3 & 5.
@@ -50,6 +52,7 @@ Capture the epic's **commit range** (first → last commit) from `git log --onel
 Reuses the `/review:code-review` methodology, scoped to the epic. This is the retro's first analytical input — a fresh review whose findings surface in *What Didn't Go Well*, *System Improvements*, and the *Code Review Findings* section.
 
 1. **Scope** = the epic's commit range from Step 1. Build the diff, e.g. `git diff {first}^..{last}`. **Skip generated/vendored code** (lockfiles, `dist/`, `*.min.*`, migration scaffolding, snapshots) — sanity-check intent only, never review generated line volume.
+1b. **Path-A gap-closure check.** Read each story's Execution Log entry in the epic's TODO for a noted dispatch fallback ("Path A", "no subagent available", "implemented directly by main agent"). A story that shipped via Path A got no independent subagent review at wave time — epic-wide diff review alone has historically missed real MAJOR bugs sitting in exactly these stories. If any story is flagged, dispatch a **dedicated gap-closure review scoped to that story's files** (not just folded into the epic-wide diff) in addition to the normal Step 2 pass, and call it out in the findings table.
 2. **Classify risk tiers.** If a risk map exists (`code-reviewer` agent's `## Project Context > ### Risk Map`), match each changed file to a tier (HIGH / MEDIUM / LOW); otherwise default all files to MEDIUM. Overall review depth = the highest tier present (any HIGH → Deep; all MEDIUM → Standard; all LOW → Fast-Lane).
 3. **Dispatch `code-reviewer`** via Task tool. **Model routing:** overall tier **HIGH** → pass `model: opus`; **MEDIUM or LOW** → omit `model:` (Sonnet floor). For a large multi-theme epic, dispatch one reviewer per theme in parallel and consolidate (as `/sweep` Phase 1 does). The agent auto-loads the `code-review` skill — do not paste the rubric. The task prompt must include:
    - The diff (or per-theme diffs) to review
@@ -158,7 +161,7 @@ Use the Task tool with `subagent_type: "doc-writer"` to generate the retrospecti
 | MINOR | {n} | {one-liner or —} |
 | NIT | {n} | {one-liner or —} |
 
-{List each CRITICAL and MAJOR finding in full below the table — file:line, what, why it matters. MINOR/NIT stay in the counts only.}
+{List each CRITICAL and MAJOR finding in full below the table — file:line, what, why it matters. List MINOR/NIT as one line each (file:line + one-liner) — every finding nits-and-up must be visible so Step 6.5 resolves all of them; nothing is buried in a count.}
 
 ## Metrics
 - **Commits**: {count}
@@ -221,7 +224,7 @@ node .claude/core/memory-manager.js create patterns "{pattern-id}" '{"descriptio
 
 The retro is not done when findings are *filed* — it's done when the worth-fixing ones are *fixed*. Per the operating standard (`.claude/skills/verification-before-completion/SKILL.md` → "Autonomous & batch commands"), resolve in the same pass rather than handing the user a punch-list:
 
-- **CRITICAL / MAJOR code-review findings** → fix and re-verify. A real bug a retro surfaced is not a "next epic" item; it gets fixed now (delegate to `general-purpose` for non-trivial fixes, same as `/do`).
+- **All code-review findings, CRITICAL down to NIT** → fix and re-verify — no skipping, nits included (the operating standard; the only limit is SCOPE, not severity — don't expand beyond the epic's changed code, skip generated/vendored). A finding a retro surfaced is not a "next epic" item; it gets fixed now (delegate to `general-purpose` for non-trivial fixes, batching small ones, same as `/do`).
 - **Mechanical doc-drift** (from Step 4 check-sync) → apply the fix.
 - **Single-target System-Improvement recs** (update this skill, add this agent step, fix this command line) → apply them in-pass.
 - **Re-run `node .claude/core/gate.js test`** after any code fix; everything stays green before the Step 7 commit.

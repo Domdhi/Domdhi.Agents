@@ -232,6 +232,6 @@ Task tool (code-reviewer):
 ## Integration
 
 This pattern works best when combined with:
-- `.claude/skills/dev-process/references/worktrees.md` — isolate feature work on a clean branch first
-- `.claude/skills/dev-process/references/verification.md` — after all tasks complete, verify the full implementation
-- `.claude/skills/dev-process/references/branch-completion.md` — merge/PR/keep/discard decision after the full review passes
+- `using-git-worktrees` skill — isolate feature work on a clean branch first
+- `verification-before-completion` skill — after all tasks complete, verify the full implementation
+- `finishing-a-development-branch` skill — merge/PR/keep/discard decision after the full review passes

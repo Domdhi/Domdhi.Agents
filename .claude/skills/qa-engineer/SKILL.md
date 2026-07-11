@@ -127,6 +127,39 @@ expect(report.total).toBe(2);
 ```
 This exact anti-pattern slipped past dev agents twice in one test-authoring epic (once per wave) and was caught only in review — make it a write-time check, not a review-time catch.
 
+### Cross-item field uniqueness for multi-item mapping functions
+
+When a function maps a response into multiple output items sharing one input shape (an adapter, a normalizer, a batch transform), and the AC or downstream design treats one of the mapped fields as unique/dedup-relevant (a URL, an ID, a key), the test suite MUST assert uniqueness of that field **across items in the same multi-item test case** — not just "maps every item" and "maps correctly" per item in isolation.
+
+```js
+// ✗ insufficient: tests per-item mapping, never checks the two items differ where it matters
+expect(items[0].url).toBe(expectedUrl0);
+expect(items[1].url).toBe(expectedUrl1);
+
+// ✓ explicit cross-item uniqueness assertion
+expect(new Set(items.map((i) => i.url)).size).toBe(items.length);
+```
+
+Per-item assertions are blind to a mapper that emits the same shared value for every item (e.g. a source-level URL instead of a per-item one) — the bug silently defeats downstream dedup while every single-item test passes. Add this assertion whenever a story's AC documents a field as unique/dedup-relevant on a function that returns more than one item per call.
+
+### Concurrent-caller test for shared-key mutations
+
+When two callers can run concurrently (`Promise.all`, overlapping cron ticks, two requests racing) and both mutate state keyed by the **same** name/id — not one row each — a test that only ever invokes the function once per test cannot catch a check-then-act race. Assert the actual concurrent-call outcome, not just the single-caller happy path:
+
+```js
+// ✗ insufficient: only ever calls the function once — a TOCTOU race between two concurrent
+// callers sharing one key has no way to surface
+await trackFailureAndMaybeAlert('shared-key');
+expect(notify).toHaveBeenCalledTimes(1);
+
+// ✓ simulates the race: the second of two concurrent claims on the SAME key must lose
+tryClaimAlert.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+await Promise.all([trackFailureAndMaybeAlert('shared-key'), trackFailureAndMaybeAlert('shared-key')]);
+expect(notify).toHaveBeenCalledTimes(1); // not 2 — one caller must lose the claim
+```
+
+This is the shared-mutable-state generalization of the cross-item pattern above: whenever a shared key/resource can be reached by more than one concurrent caller, add a test that actually runs two calls concurrently and asserts only one wins — a single-call test cannot see a check-then-act race.
+
 ## Testing Conventions & Checkers
 
 Two patterns for the case where the thing under test is itself a *rule* (a cross-file convention) or a *checker* (a script that validates the tree):

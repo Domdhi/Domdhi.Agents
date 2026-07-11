@@ -54,26 +54,56 @@ function lintMemories(allMemories, { calculateDecayedConfidence, categories, max
     const knownIds = new Set(allMemories.map(m => m.full.id));
 
     // Check 1 — Broken cross-references
-    // Capture path chars too so a file-path citation ("ref: docs/.output/…") is
-    // swallowed whole and then skipped below — not mis-read as a bare id "docs".
+    // Three citation forms are checked against knownIds:
+    //   (a) prose prefixes  — "related:/see:/ref: <id>"
+    //   (b) wiki-links      — "[[slug]]" (the toolkit's ACTUAL convention, per
+    //       CLAUDE.md's memory-authoring instructions and the live store) — the
+    //       old regex matched none of these, so broken_refs always reported 0 (M2)
+    //   (c) a top-level content.references[] array
+    // Capture path chars in (a) too so a file-path citation ("ref: docs/.output/…")
+    // is swallowed whole and then skipped below — not mis-read as a bare id "docs".
     const refPattern = /(?:related:|see:|ref:)\s*([\w./-]+)/gi;
+    // Wiki-links are kebab-case slugs only — never a file path, so they need no
+    // path-skip guard (a "[[docs/foo.md]]" would simply not match [\w-]+).
+    const wikiPattern = /\[\[([\w-]+)\]\]/g;
+    const flagRef = (category, full, rawId, source) => {
+        const referencedId = rawId.replace(/[.,;:]+$/, '');
+        // Memory ids are kebab-case slugs — a capture with a path separator or an
+        // INTERIOR dotted extension ("docs/foo.md") is a file-path citation, not a
+        // cross-reference. A trailing period (already stripped) is not.
+        if (!referencedId || referencedId.includes('/') || /\.[a-z]/i.test(referencedId)) return;
+        // Every real memory id is a multi-segment kebab-case slug (verified: zero
+        // single-word ids exist in the store). A bare single word — e.g. "switching"
+        // captured from ordinary prose "ref: switching the active record", or an
+        // English "ref:"/"see:" (a React ref, a git ref) — is never a genuine
+        // citation. Require a hyphen so prose false-positives drop before the
+        // knownIds lookup instead of being flagged as broken. (Wiki-links and
+        // references[] slugs are already hyphenated, so this never rejects a real one.)
+        if (!referencedId.includes('-')) return;
+        if (!knownIds.has(referencedId)) {
+            findings.broken_refs.findings.push({
+                memory: `${category}/${full.id}`,
+                referenced_id: referencedId,
+                detail: `References ID "${referencedId}" (${source}) which does not exist`,
+            });
+        }
+    };
     for (const { category, full } of allMemories) {
         const contentStr = JSON.stringify(full.content);
         let match;
         while ((match = refPattern.exec(contentStr)) !== null) {
-            // Strip sentence-final punctuation first, so "see: missing-id." is still
-            // checked as the bare id "missing-id" rather than skipped as a path.
-            const referencedId = match[1].replace(/[.,;:]+$/, '');
-            // Memory ids are kebab-case slugs — a capture with a path separator or an
-            // INTERIOR dotted extension ("docs/foo.md") is a file-path citation, not a
-            // cross-reference. A trailing period (already stripped) is not.
-            if (referencedId.includes('/') || /\.[a-z]/i.test(referencedId)) continue;
-            if (!knownIds.has(referencedId)) {
-                findings.broken_refs.findings.push({
-                    memory: `${category}/${full.id}`,
-                    referenced_id: referencedId,
-                    detail: `References ID "${referencedId}" which does not exist`,
-                });
+            flagRef(category, full, match[1], 'prose ref');
+        }
+        // (b) [[wiki-link]] slugs in description/evidence prose.
+        const proseText = `${full.content?.description || ''} ${full.content?.evidence || ''}`;
+        while ((match = wikiPattern.exec(proseText)) !== null) {
+            flagRef(category, full, match[1], 'wiki-link');
+        }
+        // (c) explicit content.references array of slug ids.
+        const refs = full.content?.references;
+        if (Array.isArray(refs)) {
+            for (const ref of refs) {
+                if (typeof ref === 'string') flagRef(category, full, ref, 'references[]');
             }
         }
     }

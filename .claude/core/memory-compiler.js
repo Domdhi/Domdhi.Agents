@@ -27,6 +27,7 @@ const {
     injectRelatedConcepts: injectRelatedConceptsLib,
 } = require('./_lib/concept-index');
 const { generateCrossReferences: generateCrossReferencesLib } = require('./_lib/cross-references');
+const { memoryPaths } = require('./_lib/memory-paths');
 
 const CATEGORIES = Object.values(CONSTANTS.MEMORY_CATEGORIES);
 
@@ -53,9 +54,12 @@ const CATEGORY_SIGNALS = {
 
 class MemoryCompiler {
     constructor() {
-        const projectRoot = process.env.CLAUDE_PROJECT_DIR || path.resolve(__dirname, '..', '..');
-        this.dailyDir    = path.join(projectRoot, 'docs', '.output', '.state', 'memory-daily');
-        this.conceptsDir = path.join(projectRoot, 'docs', '.output', '.state', 'memory-concepts');
+        // Worktree-safe resolution (M5): gitignored .state/ dirs anchor to the MAIN
+        // worktree via memoryPaths() — the old per-__dirname fallback wrote compiled
+        // concept articles into a linked worktree's own .state/ that vanishes with it.
+        const paths = memoryPaths(path.resolve(__dirname, '..', '..'));
+        this.dailyDir    = paths.dailyDir;
+        this.conceptsDir = paths.conceptsDir;
     }
 
     // -------------------------------------------------------------------------

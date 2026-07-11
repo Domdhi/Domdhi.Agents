@@ -51,10 +51,25 @@ describe('flag detectors', () => {
     expect(hasInlineMessageFlag(' --message="x"')).toBe(true);
   });
 
+  it('hasInlineMessageFlag detects ATTACHED message forms (git glues the value to the flag)', () => {
+    // git accepts the value directly after the flag with no space. These slipped
+    // past the old regex (char after `m` had to be space/=/end) — a live bypass
+    // that also skipped commit.js's pre-commit secret scan.
+    expect(hasInlineMessageFlag(' -m"x"')).toBe(true);
+    expect(hasInlineMessageFlag(" -m'x'")).toBe(true);
+    expect(hasInlineMessageFlag(' -mhello')).toBe(true);
+    expect(hasInlineMessageFlag(' -am"x"')).toBe(true);
+    expect(hasInlineMessageFlag(' -amhello')).toBe(true);
+  });
+
   it('hasInlineMessageFlag is false for no inline message', () => {
     expect(hasInlineMessageFlag(' --amend')).toBe(false);
     expect(hasInlineMessageFlag(' -F .git/MSG')).toBe(false);
     expect(hasInlineMessageFlag('')).toBe(false);
+    // Attached-form fix must not over-match message-free flags that merely
+    // contain the letter m elsewhere in a long-flag token.
+    expect(hasInlineMessageFlag(' --allow-empty-message')).toBe(false);
+    expect(hasInlineMessageFlag(' --amend --no-edit')).toBe(false);
   });
 
   it('hasFileFlag / hasAmendFlag', () => {
@@ -81,6 +96,15 @@ describe('processEvent', () => {
   it('BLOCKS combined -am and after a separator', () => {
     expect(processEvent(evt('git commit -am "x"'))).toMatchObject({ block: true });
     expect(processEvent(evt('git add -A && git commit -m "x"'))).toMatchObject({ block: true });
+  });
+
+  it('BLOCKS attached-value message forms (-m"x" / -mhello / -am"x")', () => {
+    // These bypassed the guard before the attached-form fix — and would have
+    // committed with NO pre-commit secret scan.
+    expect(processEvent(evt('git commit -m"feat: x"'))).toMatchObject({ block: true });
+    expect(processEvent(evt('git commit -mhello'))).toMatchObject({ block: true });
+    expect(processEvent(evt('git commit -am"x"'))).toMatchObject({ block: true });
+    expect(processEvent(evt('git add -A && git commit -am"wip"'))).toMatchObject({ block: true });
   });
 
   it('PASSES the commit.js helper', () => {

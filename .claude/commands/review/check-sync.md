@@ -61,6 +61,8 @@ Glob: docs/TODO_*.md
 
 Launch applicable agents **in parallel** based on scope. Each agent auto-loads its skills via frontmatter.
 
+> **Read-only enforcement.** Every dispatched agent below has Write/Edit tools for other work it does — that does NOT extend to this command. Each Task prompt in 2a/2b/2c MUST include an explicit "do not edit or write any files" instruction, not just an implicit assumption from the command's own contract. This is a real gap: an agent can self-authorize a "helpful" doc edit during a check-sync dispatch, breaking the read-only contract that this command's chained resolution step (`/review:update-docs`) depends on. A drifted-but-unedited report is correct behavior; a self-healed doc is not, no matter how confident the agent is.
+
 **2a. Architecture sync** (if scope is `all` or `architecture`) — `subagent_type: "architect"`
 
 Task prompt:
@@ -77,6 +79,7 @@ Task prompt:
    - MODIFIED — item exists in both but the doc's description no longer matches reality
    - REMOVED — item is documented but no longer exists in reality
 6. Rate overall: SYNCED, MINOR_DRIFT, or MAJOR_DRIFT
+7. **Do not edit or write any files — report findings only, even for drift you're confident how to fix.** Fixes chain through `/review:update-docs`, not through this dispatch.
 
 **2b. Story status sync** (if scope is `all` or `stories`) — `subagent_type: "project-planner"`
 
@@ -88,6 +91,7 @@ Task prompt:
 5. If master index exists (`docs/TODO_*.md`): verify epic-level done counts match per-epic checklists
 6. Return structured report: story ID, doc status, git evidence, sync status
 7. Rate overall: SYNCED, MINOR_DRIFT, or MAJOR_DRIFT
+8. **Do not edit or write any files — report findings only.**
 
 > **Note**: `docs/work/backlog.md` is a **read-only planning artifact** — it defines what to build but does NOT track completion status. Status lives in per-epic TODO checklists and the master index.
 
@@ -100,6 +104,7 @@ Task prompt:
 4. This is **informational** — PRD drift is expected during early phases, so flag but don't alarm
 5. Return structured report: requirement ID, description, evidence found, status (implemented/partial/missing)
 6. Rate overall: ON_TRACK, PARTIAL_COVERAGE, or LOW_COVERAGE
+7. **Do not edit or write any files — report findings only.**
 
 ### 3. Dead Reference Check (main agent)
 

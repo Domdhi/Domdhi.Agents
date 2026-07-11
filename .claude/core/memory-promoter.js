@@ -19,6 +19,8 @@ const CONSTANTS = require('./constants');
 const { calculateDecayedConfidence, createActiveDaysResolver } = require('./_lib/memory-decay');
 const { parseFrontmatter: parseFm } = require('./_lib/frontmatter');
 const { readConcepts } = require('./_lib/concept-reader');
+const { resolveProjectRoot } = require('./_lib/project-root');
+const { memoryPaths } = require('./_lib/memory-paths');
 
 const CATEGORIES = Object.values(CONSTANTS.MEMORY_CATEGORIES);
 
@@ -33,11 +35,19 @@ const TARGET_SUGGESTIONS = {
 
 class MemoryPromoter {
     constructor() {
-        const projectRoot = process.env.CLAUDE_PROJECT_DIR || path.resolve(__dirname, '..', '..');
+        // Worktree-safe resolution (M5), mirroring memory-manager.js's constructor:
+        // the tracked .memory/ source follows the CURRENT worktree while the
+        // gitignored .state/ half is anchored to the MAIN worktree — memoryPaths()
+        // splits both correctly. The git-history root (active-days) uses the main
+        // worktree. The naive per-__dirname fallback reintroduced the git-worktree
+        // memory-loss bug _lib/project-root.js documents fixing.
+        const fallbackDir = path.resolve(__dirname, '..', '..');
+        const projectRoot = resolveProjectRoot(fallbackDir);
+        const paths = memoryPaths(fallbackDir);
         // Split store (ADR 0006 Am. 2): JSON categories under .memory/; derived
         // concept articles under .state/memory-concepts.
-        this.memoriesDir = path.join(projectRoot, 'docs', '.output', '.memory');
-        this.conceptsDir = path.join(projectRoot, 'docs', '.output', '.state', 'memory-concepts');
+        this.memoriesDir = paths.jsonRoot;
+        this.conceptsDir = paths.conceptsDir;
         this._activeDaysResolver = createActiveDaysResolver({ projectRoot });
     }
 

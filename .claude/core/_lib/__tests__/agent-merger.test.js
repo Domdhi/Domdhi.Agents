@@ -747,3 +747,32 @@ describe('mergeAgentFile — skillExclude-aware (regression: clobbered curated a
         expect(out).toContain('- dev-process');
     });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Line-ending preservation (m3: CRLF churn)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('mergeAgentFile CRLF preservation', () => {
+    it('does not rewrite a CRLF dest to LF when the merged content is unchanged', () => {
+        const srcPath = tmp.write('src/agents/code-reviewer.md', FIXTURE_GENERIC);
+
+        // 1. Merge into an LF dest to capture the canonical merge output (so an LF
+        //    dest carrying it is a genuine no-op — isolates EOL as the only variable).
+        const lfDestPath = tmp.write('dest-lf/agents/code-reviewer.md', FIXTURE_GENERIC);
+        mergeAgentFile(srcPath, lfDestPath);
+        const canonical = fs.readFileSync(lfDestPath, 'utf8');
+
+        // Re-merging the canonical LF dest must report no change.
+        expect(mergeAgentFile(srcPath, lfDestPath).changed).toBe(false);
+
+        // 2. Same canonical content, but with CRLF line endings (a Windows checkout).
+        const crlfDestPath = tmp.write('dest-crlf/agents/code-reviewer.md', canonical.replace(/\n/g, '\r\n'));
+        const result = mergeAgentFile(srcPath, crlfDestPath);
+
+        // The only difference is the line endings → no semantic change, no rewrite.
+        expect(result.changed).toBe(false);
+        const after = fs.readFileSync(crlfDestPath, 'utf8');
+        expect(after.includes('\r\n')).toBe(true);   // still CRLF — not churned to LF
+        expect(after).toBe(canonical.replace(/\n/g, '\r\n'));
+    });
+});

@@ -5,6 +5,13 @@
  * Reads .claude/guardrail-rules.yaml and checks the incoming bash command
  * against configured rule sets before Claude executes it.
  *
+ * ADVISORY, NOT AUTHORITATIVE: this hook is a best-effort speed-bump against a
+ * confused/injected agent. Command surfaces are unbounded (alternate verbs,
+ * encodings, subshells), so it cannot be a hard boundary. The Claude Code
+ * permission system is the real gate; the fixes here (whitespace normalization,
+ * chained-delete scanning, `..` traversal blocking, alternate-verb detection)
+ * close the specific documented bypasses, not the whole class.
+ *
  * Exit codes (Claude Code semantics):
  *   0 = pass — proceed silently
  *   0 + JSON permissionDecision:"ask" = confirm — user is prompted yes/no
@@ -154,6 +161,30 @@ function stripCommitMessages(command) {
 // ─── Path extraction for delete-style commands (P2.5 — A3 routing) ───────────
 
 /**
+ * Shell separators that start a NEW command. Splitting on these lets the path
+ * extractors (and thus the non-escalatable four-tier check) see a delete that
+ * is chained or nested rather than at position 0 — `echo hi && rm -rf .env`,
+ * `cd /tmp; rm -rf ~/.env`, `$(rm -rf .git)` (G1 / M1 bypass).
+ * Order matters: `&&`/`||` are listed before `&`/`|` so the two-char forms win.
+ */
+const SHELL_SEPARATORS = /&&|\|\||;|\||&|\n|\$\(|`|\)/;
+
+function splitCommandSegments(command) {
+    if (typeof command !== 'string') return [];
+    return command.split(SHELL_SEPARATORS);
+}
+
+function tokenizeArgs(str) {
+    const tokens = [];
+    const tokenRe = /"([^"]*)"|'([^']*)'|(\S+)/g;
+    let m;
+    while ((m = tokenRe.exec(str)) !== null) {
+        tokens.push(m[1] || m[2] || m[3]);
+    }
+    return tokens;
+}
+
+/**
  * Extract candidate path arguments from a delete-style bash command.
  *
  * Best-effort tokenization for `rm`, `rm -rf`, `del`, `unlink`, `Remove-Item`.
@@ -161,33 +192,95 @@ function stripCommitMessages(command) {
  * those that look like .env / .githooks / .eslintrc etc.). Callers resolve
  * these to absolute paths via CLAUDE_PROJECT_DIR before tier-checking.
  *
+ * G1: scans EVERY command segment (split on shell separators), not just the
+ * command start, so a chained/subshell delete is still tier-checked.
+ *
  * @param {string} command
  * @returns {string[]}
  */
 function extractDeletePaths(command) {
     if (!command || typeof command !== 'string') return [];
-    const trimmed = command.trim();
-    // Bash: rm [flags] args   |   Windows cmd: del [flags] args
-    // PowerShell: Remove-Item [flags] args   |   POSIX: unlink path
-    const match = trimmed.match(/^(rm|del|unlink|Remove-Item)\b\s+(.*)$/i);
-    if (!match) return [];
+    const paths = [];
+    for (const segment of splitCommandSegments(command)) {
+        const trimmed = segment.trim();
+        // Bash: rm [flags] args   |   Windows cmd: del [flags] args
+        // PowerShell: Remove-Item [flags] args   |   POSIX: unlink path
+        const match = trimmed.match(/^(rm|del|unlink|Remove-Item)\b\s+(.*)$/i);
+        if (!match) continue;
 
-    // Split on whitespace respecting basic quotes.
-    const remainder = match[2];
-    const tokens = [];
-    const tokenRe = /"([^"]*)"|'([^']*)'|(\S+)/g;
-    let m;
-    while ((m = tokenRe.exec(remainder)) !== null) {
-        tokens.push(m[1] || m[2] || m[3]);
+        for (const t of tokenizeArgs(match[2])) {
+            if (!t) continue;
+            if (t.startsWith('-')) continue;
+            if (t.startsWith('/') && !t.includes('/', 1) && t.length <= 5) continue; // short /flag
+            paths.push(t);
+        }
+    }
+    return paths;
+}
+
+/**
+ * Extract candidate targets of ALTERNATE deletion/truncation verbs that the
+ * `rm`-family extractor misses (G3 / M3). Covers `find … -delete`,
+ * `find … -exec rm|unlink|shred|truncate`, `truncate`, `shred`, and output
+ * redirection truncation (`> path`, `>> path`, `: > path`, `N> path`).
+ *
+ * Used ONLY by the four-tier path check, so a benign target (anything not in a
+ * protected tier) is a no-op — only a protected/zeroAccess target (`.env`, a
+ * read-only config) actually blocks. This closes the "choose a different tool"
+ * bypass for protected paths without nudging every `find`/redirect in the repo.
+ *
+ * @param {string} command
+ * @returns {string[]}
+ */
+function extractAltDeleteTargets(command) {
+    if (!command || typeof command !== 'string') return [];
+    const targets = [];
+    const push = (t) => {
+        if (!t) return;
+        const clean = String(t).replace(/^["']|["']$/g, '');
+        if (!clean || clean.startsWith('-') || clean.startsWith('&')) return;
+        targets.push(clean);
+    };
+
+    for (const segment of splitCommandSegments(command)) {
+        const trimmed = segment.trim();
+
+        // find … -delete   |   find … -exec rm|unlink|shred|truncate
+        if (/^find\b/i.test(trimmed) && /(-delete\b|-exec\s+(rm|unlink|shred|truncate)\b)/i.test(trimmed)) {
+            for (const tok of tokenizeArgs(trimmed)) {
+                if (/^find$/i.test(tok)) continue;
+                if (tok.startsWith('-')) continue;                     // -name, -type, -delete, -exec…
+                if (tok === '+' || tok === ';' || tok === '\\;' || tok === '{}') continue; // -exec terminators
+                if (/^(rm|unlink|shred|truncate)$/i.test(tok)) continue; // the exec'd verb
+                push(tok);                                              // search root + -name/-path value
+            }
+            continue;
+        }
+
+        // truncate / shred — destructive single-file ops
+        if (/^(truncate|shred)\b/i.test(trimmed)) {
+            let first = true;
+            for (const tok of tokenizeArgs(trimmed)) {
+                if (first) { first = false; continue; } // the verb itself
+                if (tok.startsWith('-')) continue;
+                push(tok);
+            }
+            continue;
+        }
     }
 
-    // Drop flag tokens (start with `-` or `--` or `/`, excluding `./` paths).
-    return tokens.filter((t) => {
-        if (!t) return false;
-        if (t.startsWith('-')) return false;
-        if (t.startsWith('/') && !t.includes('/', 1) && t.length <= 5) return false; // short /flag
-        return true;
-    });
+    // Output-redirection truncation anywhere in the command: `> path`, `>> path`,
+    // `: > path`, `N> path`. The target group excludes `&` (so `2>&1` yields no
+    // target) and shell separators.
+    const redirRe = /\d*>>?\s*("[^"]*"|'[^']*'|[^\s;&|()<>]+)/g;
+    let r;
+    while ((r = redirRe.exec(command)) !== null) {
+        const clean = String(r[1]).replace(/^["']|["']$/g, '');
+        if (!clean || clean === '/dev/null') continue;
+        push(clean);
+    }
+
+    return targets;
 }
 
 function resolveAbsPath(p) {
@@ -309,8 +402,27 @@ function processEvent(parsedJson) {
     // # guardrail:confirm` would escalate a should-be-hard-block to a user-
     // approvable confirm — violating the "zero-access = all ops blocked"
     // invariant. Checking the path tier here keeps it non-escalatable. (sweep A1)
-    const deletePaths = extractDeletePaths(sanitizedCommand);
+    const deletePaths = [
+        ...extractDeletePaths(sanitizedCommand),
+        ...extractAltDeleteTargets(sanitizedCommand),
+    ];
     for (const p of deletePaths) {
+        // G2 — path-traversal guard. A destructive target that walks upward via
+        // a `..` segment either escapes the project root
+        // (`dist/../../../../etc/passwd`) or launders a protected path behind an
+        // allowlisted prefix (`node_modules/../.git` → PROJECT/.git). The nudge
+        // allowlist matches the TEXTUAL prefix, so it would wave these through;
+        // legitimate cleanup never deletes through `..`, so this is a hard,
+        // non-escalatable block regardless of prefix. (M2 / G2)
+        if (/(^|\/)\.\.(\/|$)/.test(String(p).replace(/\\/g, '/'))) {
+            const resp = buildHookResponse('block', {
+                command,
+                pattern: 'delete via parent-directory traversal (`..`) is not permitted — run it manually if truly intended',
+                tier: 'zeroAccessPaths',
+            });
+            return { block: true, feedback: resp.stderr, telemetry: { decision: 'block', rule: 'path-traversal', tier: 'zeroAccessPaths', pathClass } };
+        }
+
         const absPath = resolveAbsPath(p);
 
         // Freeze-state check (A2)
@@ -355,7 +467,17 @@ async function runClaudeHook() {
     let data;
     try { data = JSON.parse(input); } catch { process.exit(0); }
 
-    const result = processEvent(data);
+    // n3 — fail CLOSED on an unexpected processEvent error. processEvent is
+    // internally well-guarded (loadRules/evaluate/checkPathAccess all catch), so
+    // a throw here is a should-never-happen; blocking (exit 2) rather than
+    // passing through preserves the guardrail's safety posture on the surprise.
+    let result;
+    try {
+        result = processEvent(data);
+    } catch (err) {
+        process.stderr.write('[guardrail] BLOCKED (fail-closed on unexpected error): ' + err.message + '\n');
+        process.exit(2);
+    }
     if (result === null) process.exit(0);
 
     // Count the hit. Best-effort + side-effect-free in processEvent (emitted here
@@ -383,6 +505,9 @@ module.exports = {
     parseYaml,           // re-exported from _lib/yaml-parser
     stripComment,        // re-exported from _lib/yaml-parser
     matchPatterns,       // array variant (takes patterns[], not single pattern)
+    extractDeletePaths,       // rm-family delete targets across chained segments (G1)
+    extractAltDeleteTargets,  // find/truncate/shred/redirect targets (G3)
+    splitCommandSegments,     // shell-separator split used by both extractors
     stripCommitMessages,
     checkRules,          // backward compat wrapper over evaluate()
     loadRules,           // hook-level wrapper (resolves path, writes stderr warnings)

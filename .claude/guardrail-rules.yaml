@@ -33,8 +33,14 @@
 #   - grep -r "DROP TABLE" src/
 # Use /anchored-regex/ patterns for SQL keywords and other terms
 # that may legitimately appear inside echo, grep, or comment strings.
-# Double-spaced or tab-separated variants of blocked commands
-# (e.g. "git  reset  --hard") will NOT match plain string patterns.
+# Double-spaced or tab-separated variants are normalized before plain-string
+# matching (runs of whitespace collapse to a single space), so "git  reset
+# --hard" DOES match "git reset --hard" (hooks-C3). /regex/ patterns are not
+# normalized — use \s+ between tokens for whitespace tolerance in a regex.
+#
+# ADVISORY, NOT AUTHORITATIVE: this guardrail is a best-effort speed-bump, not a
+# security boundary. Alternate verbs, encodings, and subshells can always be
+# constructed; the Claude Code permission system is the real gate.
 #
 # Exit codes produced by the hook:
 #   2  — BLOCKED   command is hard-stopped (only exit code 2 blocks in Claude Code)
@@ -69,8 +75,11 @@
 block_patterns:
 
   # --- Git: Force push (overwrites remote history, cannot be undone) ---
-  - git push --force
-  - git push -f
+  # Regex (not plain string) with a negative lookahead so `--force-with-lease`
+  # is EXCLUDED here and falls through to its confirm rule below (hooks-m1). The
+  # `\s+` between tokens keeps double-spaced / tab-separated variants blocked.
+  - /git\s+push\s+--force(?!-with-lease)/   # force push (excludes safer --force-with-lease)
+  - git push -f                             # short force flag
 
   # --- Database: Schema destruction ---
   # Anchored regexes prevent false positives on echo/grep commands that
@@ -190,6 +199,10 @@ nudge_patterns:
   # -exec grep / cat / ls never match. Try a tighter scope or a dry `-print`
   # first; escalate with the marker when the sweep is intended.
   - /find\s+.+-exec\s+(rm|mv|dd|truncate|tee|chmod|chown|sh|bash)\b/
+  # find … -delete: the built-in deletion sibling of -exec rm (G3). A protected
+  # target (e.g. `.env`) is ALSO hard-blocked by the four-tier path check before
+  # this nudge is reached; this rule covers the general case.
+  - /find\s+.+-delete\b/
 
 
 # ============================================================
@@ -209,7 +222,7 @@ confirm_patterns:
   # --- Git: Remote branch/tag operations (outward-facing — touch the remote) ---
   - git push origin --delete           # deletes a remote branch or tag
   - /git push .+:refs\/tags\//         # deletes a remote tag
-  - /git push .+--force-with-lease/    # safer force push, but still rewrites remote
+  - /git\s+push\s+.*--force-with-lease/ # safer force push, but still rewrites remote (reachable now the block rule excludes it — hooks-m1)
 
   # --- Package management: publish (irreversible — public registry) ---
   - npm publish                        # publishing to npm registry (irreversible)
@@ -243,6 +256,8 @@ zeroAccessPaths:
   - .env                               # root .env (local secrets)
   - .env.local                         # local override secrets
   - .env.production                    # production secrets
+  - .git                               # deleting .git destroys all VCS history — catastrophic + irreversible
+  - .git/                              # ...and its internals; non-escalatable so `rm -rf .git # guardrail:confirm` can't downgrade to a user-confirm (sweep C-followup: .git was demonstrated as a chained bypass but was never a protected tier). Segment-anchored matching keeps .gitignore/.github/.gitattributes clear.
 # .githooks/ removed 2026-05-09 — secret-scanner runs as a Claude Code
 # PreToolUse hook now (see .claude/hooks/secret-scanner.cjs); no git hook
 # is scaffolded by adopters, so a tier-1 rule here would be defending an

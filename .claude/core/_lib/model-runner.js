@@ -24,6 +24,14 @@ const DEFAULT_MODEL = process.env.CLAUDE_MEMORY_MODEL || 'claude-sonnet-4-6';
 const DEFAULT_TIMEOUT_MS = 90_000;
 const MAX_BUFFER_BYTES = 10 * 1024 * 1024;
 
+// A model flag is interpolated unquoted into the shelled `claude -p …` command
+// (the prompt is single-quote-escaped; the model must be too). Rather than quote
+// it, constrain it to the characters real model IDs use (e.g. claude-sonnet-4-6,
+// claude-opus-4-8) — anything with shell metacharacters is rejected, so the model
+// can never break out of the command. Config/env-sourced, so a bad value is a
+// config error surfaced as an invocation failure (null), not a thrown exception.
+const SAFE_MODEL_RE = /^[A-Za-z0-9._:-]+$/;
+
 /**
  * Probe whether the `claude` CLI is on PATH.
  * @returns {boolean}
@@ -51,6 +59,13 @@ function checkClaudeCli() {
  * @returns {string|null}
  */
 function invokeModel(prompt, { cwd, timeout = DEFAULT_TIMEOUT_MS, model = DEFAULT_MODEL, logTag = 'model-runner' } = {}) {
+    // Reject a model that isn't a plain model ID before it reaches the shell — this
+    // closes the `--model ${model}` injection (the model was the one unescaped
+    // interpolation; the prompt is escaped below).
+    if (!SAFE_MODEL_RE.test(String(model))) {
+        if (logTag) process.stderr.write(`[${logTag}] refusing unsafe model id: ${JSON.stringify(model)}\n`);
+        return null;
+    }
     const escapedPrompt = String(prompt).replace(/'/g, "'\\''");
     try {
         return execSync(

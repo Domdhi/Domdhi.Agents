@@ -31,11 +31,12 @@ const DESC_MAX = 1024;     // chars — spec description ceiling (hard → ERROR
 
 // ── Pure helpers (unit-tested against fixtures, never the live tree) ─────────
 
-/** Count lines with `wc -l` semantics: a trailing newline does not add a line. */
+/** Count lines with `wc -l` semantics: the number of newline characters. A file
+ * with no trailing newline counts its last (unterminated) line as wc -l does —
+ * i.e. NOT counted — so this agrees with `wc -l` for both cases (the old
+ * split/pop form over-counted a no-trailing-newline file by one). */
 function countLines(content) {
-    const arr = content.split('\n');
-    if (arr.length > 0 && arr[arr.length - 1] === '') arr.pop();
-    return arr.length;
+    return (content.match(/\n/g) || []).length;
 }
 
 /** Extract a single-line frontmatter field, stripping surrounding quotes. */
@@ -130,7 +131,19 @@ function scanAll(skillsRoot) {
 
     const dirs = fs
         .readdirSync(skillsRoot, { withFileTypes: true })
-        .filter((d) => d.isDirectory())
+        // statSync (not Dirent.isDirectory) so symlinked skill dirs count too — a skill dir may be
+        // a symlink (e.g. into a shared ../.agents/skills/), and Dirent.isDirectory() returns false
+        // for a symlink, silently dropping it from every conformance run. Guard statSync against a
+        // broken symlink.
+        .filter((d) => {
+            if (d.isDirectory()) return true;
+            if (!d.isSymbolicLink()) return false;
+            try {
+                return fs.statSync(path.join(skillsRoot, d.name)).isDirectory();
+            } catch {
+                return false;
+            }
+        })
         .map((d) => d.name)
         .sort();
 

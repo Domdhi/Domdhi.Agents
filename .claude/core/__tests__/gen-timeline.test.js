@@ -22,7 +22,99 @@ const { createGitRepo, gitAvailable } = require('./_helpers/git-fixture');
 const GEN_TIMELINE_PATH = require.resolve('../gen-timeline');
 
 // Top-level require for pure functions — no env/argv dependency
-const { getMonday, formatDate, formatWeekHeader, groupByTheme } = require('../gen-timeline');
+const { getMonday, formatDate, formatWeekHeader, groupByTheme, mergeTimeline } = require('../gen-timeline');
+
+// ─── mergeTimeline (M2) ──────────────────────────────────────────────────────
+// Update mode fetches only NEW commits then splices them onto the existing
+// timeline. When the new commits land in a week the timeline already covers, a
+// naive prepend duplicated the `## Week of …` header. mergeTimeline merges by
+// header instead.
+
+describe('mergeTimeline (M2 — within-week update)', () => {
+    const countOccurrences = (s, needle) => s.split(needle).length - 1;
+
+    it('does NOT duplicate a week header when new commits fall in an existing week', () => {
+        const existing = [
+            '## Week of Jun 8, 2026',
+            '',
+            '### Mon Jun 8 (2 commits, 3 files)',
+            '- feat: existing one',
+            '- feat: existing two',
+            '',
+            '---',
+            '',
+        ].join('\n');
+        const fresh = [
+            '## Week of Jun 8, 2026',
+            '',
+            '### Wed Jun 10 (1 commit, 1 files)',
+            '- fix: brand new',
+            '',
+            '---',
+            '',
+        ].join('\n');
+
+        const merged = mergeTimeline(fresh, existing);
+        expect(countOccurrences(merged, '## Week of Jun 8, 2026')).toBe(1);
+        // Both the old and new commits survive the merge.
+        expect(merged).toContain('feat: existing one');
+        expect(merged).toContain('fix: brand new');
+    });
+
+    it('merges a shared day: sums counts and concatenates bullets (existing then new)', () => {
+        const existing = [
+            '## Week of Jun 8, 2026',
+            '',
+            '### Mon Jun 8 (1 commit, 2 files)',
+            '- feat: older commit',
+            '',
+            '---',
+            '',
+        ].join('\n');
+        const fresh = [
+            '## Week of Jun 8, 2026',
+            '',
+            '### Mon Jun 8 (1 commit, 1 files)',
+            '- fix: newer commit',
+            '',
+            '---',
+            '',
+        ].join('\n');
+
+        const merged = mergeTimeline(fresh, existing);
+        expect(countOccurrences(merged, '### Mon Jun 8')).toBe(1);
+        // 1 + 1 commits, 2 + 1 files.
+        expect(merged).toContain('### Mon Jun 8 (2 commits, 3 files)');
+        const olderIdx = merged.indexOf('feat: older commit');
+        const newerIdx = merged.indexOf('fix: newer commit');
+        expect(olderIdx).toBeGreaterThan(-1);
+        expect(newerIdx).toBeGreaterThan(olderIdx); // existing-then-new order
+    });
+
+    it('keeps non-overlapping weeks distinct (new week first, old week after)', () => {
+        const existing = [
+            '## Week of Jun 1, 2026',
+            '',
+            '### Mon Jun 1 (1 commit, 1 files)',
+            '- feat: last week',
+            '',
+            '---',
+            '',
+        ].join('\n');
+        const fresh = [
+            '## Week of Jun 8, 2026',
+            '',
+            '### Mon Jun 8 (1 commit, 1 files)',
+            '- feat: this week',
+            '',
+            '---',
+            '',
+        ].join('\n');
+
+        const merged = mergeTimeline(fresh, existing);
+        expect(merged.indexOf('## Week of Jun 8, 2026')).toBeLessThan(merged.indexOf('## Week of Jun 1, 2026'));
+    });
+});
 
 // ─── getMonday ────────────────────────────────────────────────────────────────
 

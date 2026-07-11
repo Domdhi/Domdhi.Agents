@@ -217,8 +217,17 @@ function matchesPattern(command, pattern) {
         }
     }
 
-    // Plain substring match (case-insensitive)
-    return command.toLowerCase().includes(pattern.toLowerCase());
+    // Plain substring match (case-insensitive), whitespace-normalized (C3).
+    // Collapsing runs of whitespace to a single space on BOTH the command and
+    // the pattern means token-separating whitespace variations cannot evade a
+    // multi-token block/nudge pattern: `git  push  --force` (double space) and
+    // `git\tpush\t--force` (tabs) still match the "git push --force" family, as
+    // do `format  c:`, `dd  if=/dev/zero`, etc. Regex patterns (handled above)
+    // are NOT normalized here — they carry their own `\s+` tolerance.
+    const cmdStr = typeof command === 'string' ? command : '';
+    const normCommand = cmdStr.replace(/\s+/g, ' ').toLowerCase();
+    const normPattern = pattern.replace(/\s+/g, ' ').toLowerCase();
+    return normCommand.includes(normPattern);
 }
 
 /**
@@ -294,8 +303,20 @@ function globMatchesPath(glob, absPath) {
 
     // Directory-prefix glob (ends with /)
     if (normGlob.endsWith('/')) {
-        return normPath.toLowerCase().includes('/' + normGlob.toLowerCase())
-            || normPath.toLowerCase().includes(normGlob.toLowerCase());
+        const gl = normGlob.toLowerCase();        // e.g. "bin/"
+        const glNoSlash = gl.slice(0, -1);        // "bin"
+        const pl = normPath.toLowerCase();
+        // Segment-boundary anchored (m2): a `bin/` glob must match the directory
+        // itself or files under it, but NOT an unrelated path that merely
+        // contains the substring (`cabin/foo`, `cobweb/`). It matches when:
+        //   - the path is inside that directory     ".../bin/..."
+        //   - the path IS that directory (no slash)  ".../bin"   (G2 — path.resolve
+        //     collapses `node_modules/../.git` to a trailing-slash-free dir)
+        //   - the path itself starts with the glob   "bin/..." / "bin"
+        return pl.includes('/' + gl)
+            || pl.endsWith('/' + glNoSlash)
+            || pl === glNoSlash
+            || pl.startsWith(gl);
     }
 
     // Wildcard glob — convert to regex (only * supported for now)

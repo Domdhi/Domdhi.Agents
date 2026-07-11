@@ -63,6 +63,11 @@ function logCommand(commandName, durationMs = null, projectRoot = getProjectRoot
         command: commandName,
         duration_ms: typeof durationMs === 'number' && !Number.isNaN(durationMs) ? durationMs : null,
         source: 'self-instrumented',
+        // Stable per-session identifier — set by Claude Code in every spawned subprocess's env
+        // (this script runs via the Bash tool), so it's present here the same way it is in
+        // command-usage-logger.cjs's hook subprocess. Lets one session's command chain be isolated
+        // from a concurrent session sharing the working tree.
+        session_id: process.env.CLAUDE_CODE_SESSION_ID || null,
     };
 
     const jsonlPath = getJsonlPath(projectRoot, 'command-usage.jsonl');

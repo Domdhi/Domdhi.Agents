@@ -214,7 +214,27 @@ function main() {
     console.log('[commit] staged all changes (git add -A)');
   }
 
+  // TOCTOU guard for the scan→commit window. runScan reads the STAGED content
+  // (`git show :<file>`); a concurrent stager (`git add` from a parallel
+  // /run-todo or a background agent sharing this working tree) could slip
+  // unscanned content into the shared index between the scan and the commit.
+  // `git write-tree` reifies the current index into a tree oid WITHOUT mutating
+  // it, so capturing the oid before the scan and re-checking it immediately
+  // before the commit detects any index change under us. With the only-staged
+  // default and a single stager the oids always match and this never fires.
+  let stagedTreeOid = null;
+  try { stagedTreeOid = git('write-tree').trim(); } catch { /* unborn/empty index — no tree to guard */ }
+
   runScan(noScan);
+
+  if (stagedTreeOid !== null) {
+    let treeNow = null;
+    try { treeNow = git('write-tree').trim(); } catch { /* leave null → skip the compare */ }
+    if (treeNow !== null && treeNow !== stagedTreeOid) {
+      console.error('[commit] ABORT: the staged set changed between the secret scan and the commit (a concurrent `git add`?). Re-run so the new content is scanned before it is committed.');
+      process.exit(1);
+    }
+  }
 
   // When -m is used, pass the final message directly via args array (safe — spawnSync
   // does NOT go through a shell, so no quoting risk). Otherwise use -F for file-based.

@@ -36,14 +36,21 @@ const {
     invokeModel,
     tryParseInnerJson,
 } = require('./_lib/model-runner');
+const { resolveProjectRoot } = require('./_lib/project-root');
+const { memoryPaths } = require('./_lib/memory-paths');
 
 const MAX_ENTRIES_PER_RUN = 10;
 
 class MemoryExtractor {
     constructor() {
-        this.projectRoot = process.env.CLAUDE_PROJECT_DIR || path.resolve(__dirname, '..', '..');
-        this.dailyDir = path.join(this.projectRoot, 'docs', '.output', '.state', 'memory-daily');
-        this.extractedDir = path.join(this.projectRoot, 'docs', '.output', '.state', 'memory-extracted');
+        // Worktree-safe resolution (M5): the gitignored .state/ daily+extracted dirs
+        // anchor to the MAIN worktree via memoryPaths(); projectRoot (model cwd /
+        // git history) uses resolveProjectRoot() — matching memory-manager.js.
+        const fallbackDir = path.resolve(__dirname, '..', '..');
+        this.projectRoot = resolveProjectRoot(fallbackDir);
+        const paths = memoryPaths(fallbackDir);
+        this.dailyDir = paths.dailyDir;
+        this.extractedDir = paths.extractedDir;
     }
 
     /**
@@ -72,12 +79,25 @@ class MemoryExtractor {
 
     /**
      * Mark an entry as processed by appending [extracted] to its heading line.
-     * Reads the file, replaces the exact heading, writes back.
+     * Reads the file, marks the first still-UNMARKED occurrence of the heading, writes back.
+     *
+     * A plain `content.replace(heading, ...)` matches the first LITERAL occurrence
+     * in the whole file. Daily-log headings are minute-granularity ("## HH:MM —
+     * post-commit"), so two commits in the same minute produce byte-identical
+     * headings; once the first is marked to "…post-commit [extracted]", that marked
+     * line still CONTAINS the bare heading as a prefix, so the literal replace keeps
+     * re-marking entry A and never touches entry B — B is reprocessed forever (M3).
+     * Anchoring the match to a COMPLETE line (^…$) skips the already-marked prefix
+     * and marks the first genuinely-unmarked heading. Re-reading fresh each call
+     * also sidesteps the offset-shift a precomputed index would suffer once an
+     * earlier " [extracted]" is inserted.
      */
     async markProcessed(filePath, originalHeading) {
         const content = await fsPromises.readFile(filePath, 'utf-8');
         const markedHeading = `${originalHeading} [extracted]`;
-        const updated = content.replace(originalHeading, markedHeading);
+        const escaped = originalHeading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const lineRe = new RegExp('^' + escaped + '$', 'm');
+        const updated = content.replace(lineRe, () => markedHeading);
         await fsPromises.writeFile(filePath, updated, 'utf-8');
     }
 

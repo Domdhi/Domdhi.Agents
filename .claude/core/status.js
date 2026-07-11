@@ -531,16 +531,25 @@ function regenerateMasterIndex(projectRoot, opts = {}) {
     const checklistPath = resolveEpicChecklist(root, epicId, checklistIdx >= 0 ? cells[checklistIdx] : '');
     if (checklistPath) {
       const parsed = parseTodoFile(checklistPath);
-      epicStats.set(idKey, { done: parsed.stories.done, total: parsed.stories.total, resolved: true, planned });
+      epicStats.set(idKey, {
+        done: parsed.stories.done, total: parsed.stories.total,
+        blocked: parsed.stories.blocked, deferred: parsed.stories.deferred,
+        resolved: true, planned,
+      });
     } else {
-      epicStats.set(idKey, { done: 0, total: planned, resolved: false, planned });
+      epicStats.set(idKey, { done: 0, total: planned, blocked: 0, deferred: 0, resolved: false, planned });
     }
   }
 
-  // Tri-state marker from done/total: all done → [x]; some done → [>]; none → [ ].
-  const markerFor = (done, total) => {
+  // Status marker from the checklist's story markers. all done → [x]; any story
+  // blocked → [!]; some done → [>]; any deferred → [~]; none → [ ]. Deriving
+  // blocked/deferred from the checklist (M4) stops regen from silently reverting
+  // a hand-set [!] BLOCKED / [~] DEFERRED epic to [>] on every /do,/end call.
+  const markerFor = (done, total, blocked = 0, deferred = 0) => {
     if (total > 0 && done >= total) return '[x]';
+    if (blocked > 0) return '[!]';
     if (done > 0) return '[>]';
+    if (deferred > 0) return '[~]';
     return '[ ]';
   };
   // An epic's denominator: actual checklist total when resolved, else the plan.
@@ -576,7 +585,7 @@ function regenerateMasterIndex(projectRoot, opts = {}) {
       const storiesIdx = colIndex(epicHeader, 'Stories');
       const statusIdx = colIndex(epicHeader, 'Status');
       if (storiesIdx >= 0) cells[storiesIdx] = String(stat.total);
-      if (statusIdx >= 0) cells[statusIdx] = markerFor(stat.done, stat.total);
+      if (statusIdx >= 0) cells[statusIdx] = markerFor(stat.done, stat.total, stat.blocked, stat.deferred);
       epicsRefreshed++;
       return joinRow(cells);
     }

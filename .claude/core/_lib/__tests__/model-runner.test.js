@@ -15,12 +15,28 @@ const {
     parseModelResult,
     tryParseInnerJson,
     extractTokenCounts,
+    invokeModel,
 } = require('../model-runner');
 
 // Note: `invokeModel` + `checkClaudeCli` hit the real subprocess by design.
 // The existing curator/benchmark/extractor test suites cover those paths by
 // mocking execSync via require.cache injection (see claude-mock.js). Here we
-// test only the pure parsers that don't need a subprocess.
+// test only the pure parsers that don't need a subprocess — plus the model-id
+// validation guard, which rejects BEFORE any subprocess is spawned.
+
+// ─── invokeModel model-id guard (sec-n2) ─────────────────────────────────────
+
+describe('invokeModel model-id validation', () => {
+    // A model carrying shell metacharacters was interpolated unquoted into the
+    // shelled `claude -p … --model ${model}` command. The guard must reject it and
+    // return null WITHOUT spawning — so these calls never reach the real CLI.
+    it('returns null for a model containing shell metacharacters', () => {
+        expect(invokeModel('hi', { model: 'sonnet; rm -rf /', logTag: null })).toBeNull();
+        expect(invokeModel('hi', { model: 'x$(whoami)', logTag: null })).toBeNull();
+        expect(invokeModel('hi', { model: 'a`id`', logTag: null })).toBeNull();
+        expect(invokeModel('hi', { model: 'a b', logTag: null })).toBeNull();
+    });
+});
 
 // ─── parseModelResult ────────────────────────────────────────────────────────
 

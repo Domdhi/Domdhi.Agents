@@ -89,7 +89,10 @@ function parseRemoteUrl(url) {
   if (!url || typeof url !== 'string') {
     throw new Error('no origin remote URL — is this a git repo with an `origin`?');
   }
-  const u = url.trim().replace(/\.git$/, '');
+  // Strip a trailing slash BEFORE `.git` so `…/repo.git/` and `…/repo/` both
+  // normalize (some clones/config emit a trailing slash), otherwise the `$`-anchored
+  // host regexes fall through to the unrecognized-host throw.
+  const u = url.trim().replace(/\/+$/, '').replace(/\.git$/, '');
 
   // GitHub — https://github.com/<org>/<repo>  or  git@github.com:<org>/<repo>
   let m = u.match(/github\.com[/:]([^/]+)\/([^/]+)$/i);
@@ -276,11 +279,11 @@ function runCreate(opts, remote) {
   }
 
   // Post-create verification — assert auto-merge/complete ACTUALLY took.
-  verifyAutoComplete(remote, branch);
+  verifyAutoComplete(remote, branch, base);
 }
 
 /** Re-query the PR and assert auto-merge/auto-complete is set. Loud failure if not. */
-function verifyAutoComplete(remote, branch) {
+function verifyAutoComplete(remote, branch, base) {
   if (remote.host === 'github') {
     const out = captureTool('gh', ['pr', 'view', branch, '--json', 'number,state,autoMergeRequest']);
     let json;
@@ -296,7 +299,15 @@ function verifyAutoComplete(remote, branch) {
   const showOut = captureTool('az', ['repos', 'pr', 'list', '--source-branch', branch, '--output', 'json']);
   let list;
   try { list = JSON.parse(showOut); } catch { list = []; }
-  const pr = Array.isArray(list) && list.length ? list[0] : null;
+  const arr = Array.isArray(list) ? list : [];
+  // A branch can legitimately have >1 open PR (e.g. targeting two branches); pick the
+  // one whose target is the base we just opened against, so we verify the RIGHT PR
+  // rather than an arbitrary list[0]. Fall back to the full list when the target isn't
+  // known or no row matches (older az output may omit targetRefName).
+  const wantTarget = base ? `refs/heads/${String(base).replace(/^refs\/heads\//, '')}` : null;
+  const matched = wantTarget ? arr.filter((p) => p && p.targetRefName === wantTarget) : [];
+  const pool = matched.length ? matched : arr;
+  const pr = pool.length ? pool[0] : null;
   if (!pr) {
     console.error('[pr] ⚠ could not find the created PR to verify auto-complete. Check manually.');
     process.exit(1);

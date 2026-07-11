@@ -10,6 +10,7 @@
     "test:coverage": "vitest run --coverage",
     "publish:public": "node tools/publish.js",
     "fleet:status": "node tools/fleet.js status",
+    "fleet:diverge": "node tools/fleet.js diverge",
     "fleet:sync": "node tools/fleet.js sync",
     "fleet:release": "node tools/fleet.js release",
     "guardrail:stats": "node .claude/core/guardrail-stats.js",

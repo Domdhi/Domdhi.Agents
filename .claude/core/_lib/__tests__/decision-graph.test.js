@@ -13,11 +13,15 @@ import path from 'node:path';
 import fs from 'node:fs';
 
 const require = createRequire(import.meta.url);
-const { loadDecisionData } = require('../decision-graph');
+const { loadDecisionData, parseADRs } = require('../decision-graph');
 const { createTmpDir } = require('../../__tests__/_helpers/tmp-dir');
 const { createConcept } = require('../../__tests__/_helpers/concept-fixture');
+const { fileURLToPath } = require('node:url');
 
 const CATEGORIES = ['patterns', 'constraints', 'decisions', 'workflows', 'rejected-approaches'];
+
+// __tests__ → _lib → core → .claude → repo root
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
 
 let tmp;
 beforeEach(() => { tmp = createTmpDir({ prefix: 'decision-graph-' }); });
@@ -96,20 +100,24 @@ describe('loadDecisionData', () => {
     expect(Array.isArray(c.sources)).toBe(true);
   });
 
-  it('loadDecisionData_withADRDoc_parsesADRsFromArchitectureFile', () => {
-    // Arrange — write minimal architecture/overview.md with one ADR section
-    const archContent = `# Project Architecture
+  it('loadDecisionData_withADRFile_parsesADRsFromDecisionsDir', () => {
+    // M7: the current convention is one file per ADR under
+    // docs/architecture/decisions/NNNN-*.md with a `| **Status** |` table row —
+    // NOT inline `### ADR-N:` sections in overview.md (the superseded form).
+    const adrContent = `# ADR: Use Node.js for core scripts
 
-## Architecture Decision Records
+| Attribute | Value |
+|-----------|-------|
+| **Status** | Accepted |
+| **Date** | 2026-01-10 |
 
-### ADR-1: Use Node.js for core scripts
+---
 
-**Status:** Accepted
-**Date:** 2026-01-10
+## Context
 
 Using Node.js for portability across CI environments.
 `;
-    tmp.write('docs/architecture/overview.md', archContent);
+    tmp.write('docs/architecture/decisions/0001-node-core.md', adrContent);
 
     const cutoffDate = new Date('2000-01-01');
     const result = loadDecisionData({
@@ -121,7 +129,7 @@ Using Node.js for portability across CI environments.
     // Assert — ADR extracted correctly
     expect(result.adrs).toHaveLength(1);
     const adr = result.adrs[0];
-    expect(adr.number).toBe(1);
+    expect(adr.number).toBe(1);          // from the NNNN filename prefix
     expect(adr.title).toContain('Node.js');
     expect(adr.status).toMatch(/accepted/i);
     expect(adr.date).toBe('2026-01-10');
@@ -260,4 +268,62 @@ Using Node.js for portability across CI environments.
     expect(m.description).toBe('A test decision memory');
   });
 
+});
+
+// ─── parseADRs (M7 — decisions/ directory) ───────────────────────────────────
+
+describe('parseADRs', () => {
+  it('parses one record per NNNN-*.md file and ignores non-ADR files', () => {
+    tmp.write('docs/architecture/decisions/0001-first-thing.md', [
+      '# ADR: First Thing',
+      '',
+      '| Attribute | Value |',
+      '|-----------|-------|',
+      '| **Status** | Accepted |',
+      '| **Date** | 2026-03-01 |',
+      '',
+      '---',
+      '',
+      '## Context',
+      '',
+      'We needed to decide the first thing.',
+    ].join('\n'));
+    tmp.write('docs/architecture/decisions/0002-second-thing.md', [
+      '# ADR: Second Thing',
+      '',
+      '| **Status** | Proposed |',
+      '',
+      '## Context',
+      '',
+      'The second thing follows.',
+    ].join('\n'));
+    tmp.write('docs/architecture/decisions/README.md', '# not an ADR');
+
+    const adrs = parseADRs({ projectRoot: tmp.root });
+    expect(adrs).toHaveLength(2);
+    const first = adrs.find(a => a.number === 1);
+    expect(first.title).toBe('First Thing');   // "ADR:" prefix stripped
+    expect(first.status).toBe('Accepted');
+    expect(first.date).toBe('2026-03-01');
+    expect(adrs.find(a => a.number === 2).status).toBe('Proposed');
+  });
+
+  it('returns [] when the decisions/ directory does not exist', () => {
+    expect(parseADRs({ projectRoot: tmp.root })).toEqual([]);
+  });
+
+  it("finds THIS repo's real ADRs under docs/architecture/decisions/", () => {
+    // The old parser scanned overview.md for `### ADR-N:` and returned [] on the
+    // current one-file-per-ADR layout, leaving the dashboard's Decisions track
+    // permanently empty. Guard against that regression on the real repo.
+    const adrs = parseADRs({ projectRoot: REPO_ROOT });
+    expect(adrs.length).toBeGreaterThanOrEqual(7);
+    for (const a of adrs) {
+      expect(typeof a.number).toBe('number');
+      expect(a.title.length).toBeGreaterThan(0);
+      expect(typeof a.status).toBe('string');
+    }
+    const nums = adrs.map(a => a.number);
+    expect(nums).toEqual([...nums].sort((x, y) => x - y)); // ascending by number
+  });
 });

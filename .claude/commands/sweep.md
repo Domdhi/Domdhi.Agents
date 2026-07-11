@@ -116,7 +116,7 @@ Auto-apply the retro's concrete outputs. This is the step that turns a retro fro
    - `Skill: …` → edit the named `.claude/skills/*/SKILL.md`. **In an adopter** (not the workshop), project-specific additions to a *template* skill go below a `<!-- @@project-additions -->` marker (create if absent) — edits above it are clobbered on the next sync. See `skill-authoring`.
    - `Command: …` → edit the named `.claude/commands/**/*.md`.
    - `Memory: …` → create/boost the memory (cap rule above).
-3. **Code-review MAJOR/CRITICAL fixes** — if a finding is a real bug (not a style nit) AND the fix is ≤5 files, dispatch a `general-purpose` agent to fix it, then **the orchestrator runs the gate** (`node .claude/core/gate.js test` — auto-detects the stack). Agents never build/test. If the gate fails → **stop the sweep, report.** MINOR/NIT findings are logged for the user, not auto-fixed (avoid churn on stable code).
+3. **Code-review fixes — every finding, nits-and-up.** Fix each finding CRITICAL down to NIT in-pass (the operating standard: `verification-before-completion` → "Autonomous & batch commands"; no "MINOR/NIT logged not fixed" tier). Dispatch a `general-purpose` agent for anything beyond a trivial edit (batch related small fixes to keep dispatches efficient), then **the orchestrator runs the gate** (`node .claude/core/gate.js test` — auto-detects the stack). Agents never build/test. If the gate fails → **stop the sweep, report.** The only carve-out is SCOPE, not severity: don't expand scope to churn unrelated code the sweep isn't examining, and skip generated/vendored artifacts.
 4. Commit: `feat: /sweep p3 — applied {N} retro recs, {M} memories staged, {K} fixes`.
 
 > **Phase 3 ↔ Phase 5 boundary:** Phase 3 applies the retro's *specific, named* improvements (surgical). Phase 5 does the *broad, systematic* codebase→agent re-alignment + proven-pattern injection. They are complementary; do not redo Phase 3's edits in Phase 5.
@@ -242,7 +242,7 @@ Everything this sweep could resolve, it resolved in-pass (the Autonomy Contract 
 
 - Do NOT defrag before Phases 2–5 run — the new memories must land first.
 - Do NOT force-write into a near-cap category — stage to inbox, let Phase 6 resolve.
-- Do NOT churn already-merged code for NIT/style findings — and do NOT park them in the report either. Per the operating standard, not-worth-fixing = not-worth-surfacing: drop them. A MINOR genuinely worth fixing gets fixed in-pass like anything else; the report is forks-only.
+- Fix EVERY in-scope finding, NIT-level and up, in-pass — no "logged for the user" tier (the operating standard; `verification-before-completion` → "Autonomous & batch commands"). The report is forks-only: findings aren't surfaced-and-left, they're resolved. The only limit is SCOPE — don't expand beyond what the sweep is examining to churn unrelated already-merged code, and skip generated/vendored artifacts. A genuinely unrelated pre-existing issue outside scope may be a residual follow-up.
 - Do NOT push to remote — the user decides when to push.
 - Agents never build/test — only the orchestrator runs `gate.js`.
 - Use this repo's commit convention (`.commit-msg` + `commit.js`) — never inline `git commit -m`.

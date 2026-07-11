@@ -386,6 +386,13 @@ function mergeAgentFile(srcPath, dstPath, opts) {
     // catches both the src skills list and bespoke unions.
     result = stripExcludedSkills(result, opts.excludedSkills);
 
+    // Preserve the dest file's line endings. parseAgentSections normalizes CRLF→LF
+    // and reassembly emits LF, so a CRLF-checkout adopter (Windows / core.autocrlf
+    // off) would otherwise be rewritten to LF on EVERY sync — a large content-free
+    // diff and a spurious "changed" even when nothing semantic moved. Re-emit with
+    // the dest's EOL before the comparison, mirroring stripExcludedSkills.
+    if (destContent.includes('\r\n')) result = result.replace(/\r?\n/g, '\r\n');
+
     const changed = result !== destContent;
     if (changed) {
         fs.mkdirSync(path.dirname(dstPath), { recursive: true });

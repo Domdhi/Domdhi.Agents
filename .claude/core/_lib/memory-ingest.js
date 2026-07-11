@@ -41,11 +41,21 @@ function typeToCategory(type) {
 }
 
 /**
- * Derive a memory id from a markdown filename:
- *   feedback_execsync_spy_destructured.md → feedback-execsync-spy-destructured
+ * Derive a memory id from a markdown filename (or a relative path):
+ *   feedback_execsync_spy_destructured.md          → feedback-execsync-spy-destructured
+ *   general-purpose/feedback_testing.md            → general-purpose-feedback-testing
+ *
+ * Path separators become part of the id (M9): all 11 agents recommend the SAME
+ * generic filenames (feedback_testing.md, user_role.md, …), so a basename-only id
+ * collided two agents' files onto one (category, id) and silently dropped the
+ * second. Including the agent (parent) dir namespaces them apart. A bare filename
+ * with no separator is unchanged, preserving the prior behavior.
  */
 function idFromFilename(filename) {
-    return filename.replace(/\.md$/i, '').replace(/_/g, '-');
+    return filename
+        .replace(/\.md$/i, '')
+        .replace(/[\\/]/g, '-')   // path separators → per-agent namespace
+        .replace(/_/g, '-');
 }
 
 /**
@@ -107,6 +117,16 @@ async function ingestAgentMemory(sourcePath, { dryRun = false, readMemory, creat
     const files = await findMarkdownFiles(sourcePath);
     if (files.length === 0) return report;
 
+    // Namespace derived ids by their path RELATIVE to the walked root (M9): for a
+    // directory source (e.g. .claude/agent-memory/) that yields "{agent}/{file}.md"
+    // so two agents' same-named files get distinct ids. For a single-file source,
+    // relative-to-its-dir collapses to the basename — the prior behavior.
+    let sourceRoot = sourcePath;
+    try {
+        const st = await fs.stat(sourcePath);
+        if (st.isFile()) sourceRoot = path.dirname(sourcePath);
+    } catch { /* findMarkdownFiles already returned [] on a bad path */ }
+
     for (const file of files) {
         let raw;
         try {
@@ -130,7 +150,7 @@ async function ingestAgentMemory(sourcePath, { dryRun = false, readMemory, creat
             continue;
         }
 
-        const id = idFromFilename(path.basename(file));
+        const id = idFromFilename(path.relative(sourceRoot, file));
         const existing = await readMemory(category, id);
         if (existing) {
             report.skipped++;

@@ -431,7 +431,12 @@ function main() {
 }
 
 if (require.main === module) {
-  main().catch(err => { console.error(err.message); process.exit(1); });
+  try {
+    main();
+  } catch (err) {
+    console.error(err.message);
+    process.exit(1);
+  }
 }
 
 module.exports = { buildReport, prettyReport, computeTelemetry, computeGit, computeTodos, findTodoFiles, parseTodoFileStories };

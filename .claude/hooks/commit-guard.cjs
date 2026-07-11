@@ -55,8 +55,16 @@ function hasAmendFlag(tail) {
 }
 
 function hasInlineMessageFlag(tail) {
-  // -m, -am, -cm, -sm (combined short flags containing m), or --message[=]
-  return /(^|\s)-[a-zA-Z]*m(\s|=|$)/.test(tail) || /(^|\s)--message(\s|=|$)/.test(tail);
+  // -m, -am, -cm, -sm (combined short flags ending in m), or --message[=].
+  // The value may be DETACHED (`-m "x"`, `-m=x`, `-m` then a separate token) OR
+  // ATTACHED directly to the flag — git accepts `-m"x"`, `-mhello`, `-am"x"`.
+  // The attached forms were previously missed (the char after `m` had to be
+  // space/`=`/end), so they slipped past the guard AND skipped commit.js's
+  // pre-commit secret scan. Match both: `m` followed by whitespace/`=`/end, or
+  // by an attached quote or non-space value character.
+  return /(^|\s)-[a-zA-Z]*m(\s|=|$)/.test(tail)
+    || /(^|\s)-[a-zA-Z]*m["'\S]/.test(tail)
+    || /(^|\s)--message(\s|=|$)/.test(tail);
 }
 
 /**

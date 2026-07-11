@@ -28,6 +28,7 @@ const PATTERNS = [
     { name: 'Azure SAS Token', regex: /[?&]sig=[A-Za-z0-9%+/=]{43,}(?:&|$)/g },
     { name: 'GCP Service Account', regex: /"private_key":\s*"-----BEGIN [A-Z ]+ PRIVATE KEY-----/g },
     { name: 'GCP API Key', regex: /AIza[0-9A-Za-z_-]{35}/g },
+    { name: 'Google OAuth Client Secret', regex: /GOCSPX-[A-Za-z0-9_-]{28}/g },
     { name: 'DigitalOcean PAT', regex: /dop_v1_[a-f0-9]{64}/g },
     { name: 'DigitalOcean OAuth', regex: /doo_v1_[a-f0-9]{64}/g },
 
@@ -186,8 +187,13 @@ const SKIP_PATHS = [
     /secret-scanner\.cjs$/,
     /secret-patterns\.cjs$/,
     /post-read-scrubber\.cjs$/,
-    /\.claude\/skills\//,
-    /\.claude\/templates\//,
+    // NOTE: .claude/skills/ and .claude/templates/ are deliberately NOT skipped.
+    // .claude/ is exactly what publishes to every fleet adopter, so a secret
+    // authored into a SKILL.md, a skill asset, or a template config must be
+    // scanned — the same blind-spot class as the removed docs/.output/ skip
+    // (a live key once leaked through that hole). A secret-authoring skill whose
+    // example text trips a generic pattern should rely on the placeholder
+    // allowlist, NOT a subtree-wide exemption.
     /node_modules\//,
     /\.git\//,
     // NOTE: docs/.output/ is deliberately NOT skipped. It holds generated
@@ -229,6 +235,14 @@ function isHighRiskFile(filePath) {
 
 function scanContent(content, filePath) {
     const findings = [];
+
+    // Coerce non-string content so a legitimate but non-string payload (a numeric
+    // or object `content` / `new_string` in a tool event) still gets scanned
+    // instead of throwing `content.split is not a function`. Uncaught, that throw
+    // failed the hook OPEN (exit 1 = non-blocking) and let the write through
+    // unscanned. The scanner's runClaudeHook also fail-closes on any throw; this
+    // coercion means legitimate non-string content is scanned rather than blocked.
+    if (typeof content !== 'string') content = String(content ?? '');
 
     if (filePath && isHighRiskFile(filePath)) {
         findings.push({

@@ -1,11 +1,31 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { createRequire } from 'node:module';
+import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
 const require = createRequire(import.meta.url);
 
 const { createGitRepo, gitAvailable } = require('./_helpers/git-fixture');
+const METRICS_CLI = require.resolve('../metrics');
+
+// Regression (M1): `main()` was synchronous but invoked as `main().catch(...)`,
+// so every real CLI run threw an uncaught TypeError and exited 1 AFTER printing
+// the report. The existing suite only exercises the pure exports, so it never
+// caught this — a child_process smoke test on the actual CLI does.
+describe('metrics CLI (child process) — M1 exit code', () => {
+    it('`metrics.js report` prints JSON and exits 0', () => {
+        // execFileSync throws if the process exits non-zero; a clean return proves exit 0.
+        const out = execFileSync('node', [METRICS_CLI, 'report'], { encoding: 'utf8' });
+        const parsed = JSON.parse(out);
+        expect(parsed).toHaveProperty('generated');
+    });
+
+    it('`metrics.js report --pretty` exits 0', () => {
+        const out = execFileSync('node', [METRICS_CLI, 'report', '--pretty'], { encoding: 'utf8' });
+        expect(out).toContain('Workflow Metrics');
+    });
+});
 
 // metrics.js captures PROJECT_ROOT (from CLAUDE_PROJECT_DIR) at module-load
 // time. Every test that needs metrics to read from a temp dir must:

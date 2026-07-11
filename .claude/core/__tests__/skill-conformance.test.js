@@ -22,11 +22,14 @@ describe('skill-conformance', () => {
         expect(typeof m.scanAll).toBe('function');
     });
 
-    it('countLines matches wc -l semantics (trailing newline not counted)', () => {
+    it('countLines matches wc -l semantics (counts newline characters)', () => {
+        // N1: wc -l counts NEWLINES, so an unterminated final line is not counted.
+        // `printf 'a\nb\nc' | wc -l` → 2; `printf 'a\nb\nc\n' | wc -l` → 3. The old
+        // split/pop form over-counted the no-trailing-newline case by one.
         const { countLines } = require('../skill-conformance');
         expect(countLines('')).toBe(0);
-        expect(countLines('a\nb\nc')).toBe(3);       // no trailing newline
-        expect(countLines('a\nb\nc\n')).toBe(3);     // trailing newline
+        expect(countLines('a\nb\nc')).toBe(2);       // no trailing newline → 2 newlines
+        expect(countLines('a\nb\nc\n')).toBe(3);     // trailing newline → 3 newlines
         expect(countLines('a\n'.repeat(600))).toBe(600);
     });
 

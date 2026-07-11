@@ -153,7 +153,11 @@ function tallyVotes(finding, votes) {
  */
 function classify(finding, tally) {
     const isHigh = severityRank(finding.severity) >= SEVERITY_ORDER.MAJOR;
-    if (tally.refutes > tally.confirms) return isHigh ? 'contested' : 'refuted';
+    // Only a CRITICAL is immune from outright 'refuted' (per the docstring) — it
+    // downgrades to 'contested' instead. A MAJOR with more refutes than confirms
+    // IS refuted; using isHigh here wrongly shielded MAJOR too.
+    const isCritical = severityRank(finding.severity) >= SEVERITY_ORDER.CRITICAL;
+    if (tally.refutes > tally.confirms) return isCritical ? 'contested' : 'refuted';
     if (tally.confirms >= 2 && tally.confirms > tally.refutes) {
         return tally.refutes > 0 && isHigh ? 'contested' : 'confirmed';
     }

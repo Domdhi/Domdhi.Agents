@@ -213,7 +213,7 @@ function collectMemories(memRoot, categories = ['workflows', 'patterns']) {
     for (const cat of categories) {
         const catDir = path.join(memRoot, cat);
         if (!fs.existsSync(catDir)) continue;
-        for (const file of fs.readdirSync(catDir).filter((f) => f.endsWith('.json'))) {
+        for (const file of fs.readdirSync(catDir).sort().filter((f) => f.endsWith('.json'))) {
             try {
                 const m = JSON.parse(fs.readFileSync(path.join(catDir, file), 'utf8'));
                 const desc = (m.content && m.content.description) || '';

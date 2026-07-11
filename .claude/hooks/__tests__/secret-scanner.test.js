@@ -483,4 +483,40 @@ describe('runClaudeHook (spawned process)', () => {
             tmp.cleanup();
         }
     });
+
+    // Non-string `content` (e.g. a numeric payload) once threw
+    // `content.split is not a function`, which — uncaught — exited 1. Exit 1 is a
+    // NON-blocking error in Claude Code, so the write proceeded UNSCANNED. The
+    // fix coerces non-string content AND fail-closes on any scan error. The
+    // contract: NEVER exit 1 here. A high-risk target still blocks (exit 2); a
+    // benign target scans clean (exit 0). Either is acceptable — a fall-through
+    // exit 1 is not.
+    it('hookMode_nonStringContentToHighRiskFile_failsClosedExit2NotExit1', () => {
+        const tmp = createTmpDir('scanner-hook-mode');
+        try {
+            const result = runHook({
+                tool_name: 'Write',
+                tool_input: { file_path: '/x/.env', content: 12345 },
+            }, tmp.root);
+            expect(result.exitCode).not.toBe(1); // never the fail-OPEN code
+            expect(result.exitCode).toBe(2);     // .env is high-risk → block
+            expect(result.stderr).toContain('Sensitive file type');
+        } finally {
+            tmp.cleanup();
+        }
+    });
+
+    it('hookMode_nonStringContentToBenignFile_scansCleanNotExit1', () => {
+        const tmp = createTmpDir('scanner-hook-mode');
+        try {
+            const result = runHook({
+                tool_name: 'Write',
+                tool_input: { file_path: '/x/hello.js', content: 12345 },
+            }, tmp.root);
+            expect(result.exitCode).not.toBe(1); // never the fail-OPEN code
+            expect(result.exitCode).toBe(0);     // coerced + clean → allow
+        } finally {
+            tmp.cleanup();
+        }
+    });
 });

@@ -418,6 +418,20 @@ function aggregateIteration(iterationDir, opts = {}) {
             warnings.push(`eval-${r.eval_id}: has ${TREATMENT} but NO baseline run — its delta is omitted from the summary.`);
         } else if (!hasTreatment && hasBaseline) {
             warnings.push(`eval-${r.eval_id}: has a baseline but NO ${TREATMENT} run — its delta is omitted from the summary.`);
+        } else if (!hasTreatment && !hasBaseline) {
+            // N5: neither config loaded — the record is counted in n_evals but
+            // contributes zero data. The pair-mismatch checks above miss it.
+            warnings.push(`eval-${r.eval_id}: has NEITHER ${TREATMENT} nor a baseline run — it contributes no data yet is counted in n_evals.`);
+        }
+    }
+    // M9: the summary aggregates ONE iteration-wide baseline config (the first
+    // eval that names one). An eval whose baseline is the OTHER dir is dropped
+    // from the headline delta while still counted in n_evals — flag the mixed
+    // baselines so the delta isn't silently built on a subset.
+    const chosenBaseline = records.find((r) => r.baselineConfig)?.baselineConfig || BASELINE_DIRS[0];
+    for (const r of records) {
+        if (r.baselineConfig && r.baselineConfig !== chosenBaseline) {
+            warnings.push(`eval-${r.eval_id}: baseline "${r.baselineConfig}" differs from the iteration's aggregated baseline "${chosenBaseline}" — this eval is excluded from the headline delta (mixed baselines in one iteration).`);
         }
     }
     const iteration = opts.iteration || path.basename(iterationDir);

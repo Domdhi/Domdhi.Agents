@@ -247,6 +247,41 @@ describe('markProcessed', () => {
     expect(updated).toContain('**Branch:** feature-x');
     expect(updated).toContain('Some important notes.');
   });
+
+  it('markProcessed_duplicateSameMinuteHeadings_marksEachExactlyOnce', async () => {
+    // M3: two commits in the same clock minute produce byte-identical headings
+    // ("## 10:15 — post-commit"). The old literal replace kept re-marking the FIRST
+    // entry (its already-marked line still contains the bare heading as a prefix),
+    // so the second entry was never marked → reprocessed forever. Marking the two in
+    // sequence, as extract() does, must mark each exactly once and leave none unmarked.
+    const extractor = new MemoryExtractor();
+    const heading = '## 10:15 — post-commit';
+    const content = [
+      heading, '', 'body A — first commit this minute', '',
+      heading, '', 'body B — second commit this minute', '',
+    ].join('\n');
+    const filePath = tmp.write('docs/.output/.state/memory-daily/2026-04-19.md', content);
+
+    // Same heading string for both entries — exactly what parseDailyFile yields.
+    await extractor.markProcessed(filePath, heading);
+    await extractor.markProcessed(filePath, heading);
+
+    const updated = fs.readFileSync(filePath, 'utf-8');
+    const markedLines = updated.split('\n').filter(l => l === `${heading} [extracted]`);
+    const unmarkedLines = updated.split('\n').filter(l => l === heading);
+    expect(markedLines).toHaveLength(2);   // both entries marked
+    expect(unmarkedLines).toHaveLength(0); // none left to reprocess
+    // No heading accumulated a second tag (the old double-mark bug).
+    expect(updated).not.toContain('[extracted] [extracted]');
+    // Bodies untouched.
+    expect(updated).toContain('body A — first commit this minute');
+    expect(updated).toContain('body B — second commit this minute');
+
+    // And parseDailyFile now sees both as processed (extract would skip them).
+    const entries = extractor.parseDailyFile(updated, '2026-04-19');
+    expect(entries).toHaveLength(2);
+    expect(entries.every(e => extractor.isProcessed(e.heading))).toBe(true);
+  });
 });
 
 // ---------------------------------------------------------------------------

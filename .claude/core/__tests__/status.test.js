@@ -398,6 +398,33 @@ describe('status', () => {
             }
         });
 
+        // Epic 01: 2 stories, one BLOCKED via its header marker.
+        const EPIC01_BLOCKED = [
+            '# TODO: Epic 01 — Alpha',
+            '',
+            '## Story 1.1: First `[!]`',
+            '- [ ] task',
+            '',
+            '## Story 1.2: Second `[ ]`',
+            '- [ ] task',
+            '',
+        ].join('\n');
+
+        it('regenerateMasterIndex_epicBlocked_preservesBangMarker (M4)', () => {
+            // A blocked story in the checklist must surface as [!] on the epic row —
+            // the old markerFor(done,total) had no blocked param and reverted it to [ ].
+            const root = makeProject({ master: MASTER, epic01: EPIC01_BLOCKED, epic02: EPIC02_NONE, backlog: BACKLOG });
+            try {
+                const { regenerateMasterIndex } = loadStatusWithRoot(root);
+                regenerateMasterIndex(root, { today: '2026-06-13' });
+                const out = fs.readFileSync(path.join(root, 'docs', 'TODO_MyProj.md'), 'utf8');
+                // Epic 1 has a blocked story → [!], not [ ] or [>].
+                expect(out).toMatch(/\| 1 \| Alpha \| 2 \| 5\.5h \| \[!\] \|/);
+            } finally {
+                fs.rmSync(root, { recursive: true, force: true });
+            }
+        });
+
         it('regenerateMasterIndex_recomputesPhaseMapDoneAndTotal', () => {
             const root = makeProject({ master: MASTER, epic01: EPIC01_ALL_DONE, epic02: EPIC02_NONE, backlog: BACKLOG });
             try {

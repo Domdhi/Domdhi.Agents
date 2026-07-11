@@ -435,10 +435,19 @@ describe('council', () => {
             expect(council.classify(finding, tally)).toBe('contested');
         });
 
-        it('MAJOR finding with refutes > confirms → contested (NEVER refuted)', () => {
+        // M8: only a CRITICAL is immune from outright 'refuted' (per the docstring).
+        // A MAJOR with more refutes than confirms IS refuted — the old code used
+        // `isHigh = >= MAJOR` for the immunity branch, wrongly shielding MAJOR too.
+        it('MAJOR finding with refutes > confirms → refuted (only CRITICAL is immune)', () => {
             const finding = { severity: 'MAJOR' };
             const tally = { confirms: 1, refutes: 2 };
-            expect(council.classify(finding, tally)).toBe('contested');
+            expect(council.classify(finding, tally)).toBe('refuted');
+        });
+
+        it('MAJOR refuted by ALL votes → refuted', () => {
+            const finding = { severity: 'MAJOR' };
+            const tally = { confirms: 1, refutes: 4 }; // independentRaises floors confirms at 1
+            expect(council.classify(finding, tally)).toBe('refuted');
         });
 
         it('single-lens finding with 0 votes → unconfirmed', () => {

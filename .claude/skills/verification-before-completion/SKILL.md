@@ -94,6 +94,7 @@ The token belongs to the judge: it is emitted by evidence, not by opinion.
 | Edit to existing component is safe | Grep tests that render/construct it — all pass | The component's own test passes |
 | Symbol/file safe to delete | Grep all consumers (src/tests/js/barrels): none | The AC says "delete X" |
 | Files I claimed to create exist | Re-read each created file: present + correct content | "I wrote it", no write error shown |
+| Guard/hook/gate/release path is safe | Adversarial test: malformed input, a thrown exception, and a failed sub-step each → fails CLOSED **and** exits non-zero | The happy-path test passed |
 
 ## Resolve, Don't Defer — the other half of the gate
 
@@ -109,8 +110,9 @@ Verification finds problems. The job is not done when you've *found* them — it
 
 Autonomous / auto-approved commands — `/sweep`, `/retro`, `/run-todo`, `/do` — are bound by this standard at full strength. Their default is **resolve, not report**:
 
-- **Any finding worth surfacing is worth fixing — so fix it, in the same pass, and re-verify.** A report line that says "consider running X", "you should fix Y", or "Z still needs attention" for something the command *could have done itself* is a standard violation, not a courtesy. Don't hand the human a to-do list of things the command was capable of resolving.
-- **If a finding isn't worth fixing, it isn't worth reporting either — drop it.** There is no "surface-but-don't-fix" middle tier. (The one carve-out: NIT-level churn on *already-merged* code — don't reformat shipped code for style; that's noise, so it is neither fixed nor surfaced.)
+- **Every finding, NIT-level and up, gets resolved in the same pass, then re-verified — no skipping.** There is no "MINOR/NIT logged for the user" tier and no "too small to bother" tier. A report line that says "consider running X", "you should fix Y", or "Z still needs attention" for something the command *could have done itself* is a standard violation, not a courtesy. Don't hand the human a to-do list of things the command was capable of resolving. Perfect means perfect: fix the nit too.
+- **The only carve-out is SCOPE, not severity.** Fix everything within what the pass is examining; don't *expand scope* to churn unrelated already-merged code the review isn't looking at (a security review of auth code doesn't reformat an untouched module), and don't review generated/vendored artifacts (lockfiles, `dist/`, `*.min.*`, snapshots). A genuinely unrelated pre-existing issue *outside* the pass's scope may be surfaced as a residual follow-up. But an in-scope nit is fixed like anything else — "already-merged" and "pre-existing" describe a finding's origin, never a license to leave it.
+- **Role translation — fixing vs read-only.** Acting passes that *edit* (`/sweep`, `/retro` resolution, `/run-todo`, `/do`) **fix** every in-scope finding nits-and-up in-pass. Read-only reviews that only report (`/review:code-review`, a `security-auditor`/`code-reviewer` dispatch) **surface** every finding nits-and-up — never filter nits out of the findings — so the acting pass or human resolves them all. Both honor "no skipping," each in its nature.
 - **A human-facing report section in an autonomous command is for GENUINE FORKS ONLY** — mutually-exclusive approaches the user must choose between, irreversible/outward actions (push, publish, delete), work that genuinely cannot be auto-resolved (needs a credential, an external decision, a human judgment call), or a phase that halted. Nothing else earns a line.
 - **Default posture is autonomous.** Assume the user wants the run to resolve everything it can without pausing. Reserve interruption for the forks above. "Almost always, autonomous" is the rule — perfectionism means *being* awesome by default, not narrating a punch-list of what awesome would require.
 
@@ -179,6 +181,13 @@ This skill is the canonical home of the project's operating standard (the missio
 ✅ Agent reports success → Check VCS diff → Verify changes → Report actual state
 ❌ Trust agent report
 ```
+
+**Fail-closed / surface-non-zero (guards, gates, hooks, release pipelines):**
+```
+✅ On ANY unexpected error or failed sub-step → block/abort AND exit non-zero → test it (throw an exception, pass malformed input, fail a sub-step)
+❌ try/catch that swallows and continues; a sub-step failure printed but not folded into the exit code; "the happy path works"
+```
+A guard that only WARNS is not a guard, and a pipeline that prints an error but exits 0 is a false-green. Fixing one instance does not inoculate the class — after closing a fail-open, grep its sibling call sites for the same shape. (Evidence: 2026-07-09 sweep found the secret-scanner exit-1 fix reappearing as an uncaught-exception fail-open, plus a false-green `fleet release` and a crash-after-success `metrics report` — same class, three mechanisms. See memory `fail-open-recurs-as-a-class-not-an-instance`.)
 
 ## Why This Matters
 

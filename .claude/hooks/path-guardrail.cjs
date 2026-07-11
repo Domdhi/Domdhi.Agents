@@ -90,14 +90,35 @@ function processEvent(parsedJson) {
 
     // 2. Four-tier path check (A3). Missing/malformed rules file → emptyRules
     // → all paths pass; matches the Bash hook's graceful posture.
+    //
+    // hooks-m3 — fail CLOSED on an UNEXPECTED error. `_lib/loadRules` is graceful
+    // (missing/unreadable/malformed → emptyRules(), never throws), so the soft
+    // tiers still pass through when rules are simply absent. Reaching a catch
+    // here means a genuine surprise where we cannot classify the target's tier —
+    // block rather than silently permit what could be a zeroAccessPaths write.
     let rules;
     try {
         rules = loadRules(resolveRulesPath());
     } catch {
-        return null;
+        const resp = buildHookResponse('block', {
+            command: `${toolName} ${targetPath}`,
+            pattern: 'guardrail rule-load error — failing closed',
+            tier: 'zeroAccessPaths',
+        });
+        return { block: true, feedback: resp.stderr };
     }
 
-    const access = checkPathAccess(absPath, 'write', rules);
+    let access;
+    try {
+        access = checkPathAccess(absPath, 'write', rules);
+    } catch {
+        const resp = buildHookResponse('block', {
+            command: `${toolName} ${targetPath}`,
+            pattern: 'guardrail tier-check error — failing closed',
+            tier: 'zeroAccessPaths',
+        });
+        return { block: true, feedback: resp.stderr };
+    }
     if (!access.allowed) {
         const resp = buildHookResponse('block', {
             command: `${toolName} ${targetPath}`,

@@ -50,6 +50,17 @@ describe('pull-request.js parseRemoteUrl', () => {
     expect(() => pr.parseRemoteUrl('')).toThrow(/no origin remote/);
     expect(() => pr.parseRemoteUrl(null)).toThrow(/no origin remote/);
   });
+
+  it('tolerates a trailing slash on the origin URL (n2)', () => {
+    // Some clones/config emit a trailing slash; the $-anchored host regexes would
+    // otherwise fall through to the unrecognized-host throw.
+    expect(pr.parseRemoteUrl('https://github.com/Domdhi/Domdhi.Agents/'))
+      .toEqual({ host: 'github', org: 'Domdhi', project: null, repo: 'Domdhi.Agents' });
+    expect(pr.parseRemoteUrl('https://github.com/Domdhi/Domdhi.Agents.git/'))
+      .toEqual({ host: 'github', org: 'Domdhi', project: null, repo: 'Domdhi.Agents' });
+    expect(pr.parseRemoteUrl('https://NMMFA@dev.azure.com/NMMFA/Mfa.Hub/_git/Mfa.Hub/'))
+      .toEqual({ host: 'azure', org: 'NMMFA', project: 'Mfa.Hub', repo: 'Mfa.Hub' });
+  });
 });
 
 // ─── parseArgs ───────────────────────────────────────────────────────────────

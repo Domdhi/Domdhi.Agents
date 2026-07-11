@@ -61,6 +61,7 @@ const path = require('path');
 const { rankConcepts, parseMemory } = require('../hooks/session-start-prime.cjs');
 const MemoryManager = require('./memory-manager');
 const CONSTANTS = require('./constants');
+const { memoryPaths } = require('./_lib/memory-paths');
 
 const MEMORY_CATEGORIES = Object.values(CONSTANTS.MEMORY_CATEGORIES);
 const DEFAULT_N = 8;
@@ -311,9 +312,12 @@ function main() {
     const asJson = args.includes('--json');
     const seed = parseInt(getFlag('--seed', '1337'), 10) || 1337;
 
-    const projectDir = process.env.CLAUDE_PROJECT_DIR || path.resolve(__dirname, '..', '..');
-    const memoriesDir = path.join(projectDir, 'docs', '.output', '.memory');
-    const telemetryPath = path.join(projectDir, 'docs', '.output', '.state', 'telemetry', 'memory-injection.jsonl');
+    // Worktree-safe resolution (M5): the tracked .memory/ source follows the CURRENT
+    // worktree while the gitignored .state/ telemetry anchors to the MAIN worktree —
+    // memoryPaths() splits both, matching memory-manager.js.
+    const paths = memoryPaths(path.resolve(__dirname, '..', '..'));
+    const memoriesDir = paths.jsonRoot;
+    const telemetryPath = path.join(paths.stateRoot, 'telemetry', 'memory-injection.jsonl');
 
     const realConcepts = loadRealConcepts(memoriesDir);
     if (realConcepts.length === 0) {

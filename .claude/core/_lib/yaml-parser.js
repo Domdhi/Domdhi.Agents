@@ -37,6 +37,15 @@
 'use strict';
 
 /**
+ * Keys that must never be assigned from parsed input — assigning a nested value
+ * under `__proto__` (or `constructor` / `prototype`) pollutes Object.prototype
+ * for the whole process. parseYaml is only pointed at the trusted
+ * guardrail-rules.yaml today, but this is cheap defense-in-depth so a future
+ * caller pointed at an adopter-supplied rules file cannot be poisoned (sec-m1).
+ */
+const UNSAFE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+
+/**
  * Parse a minimal YAML text into a plain JS object.
  *
  * Supports the subset documented in the module header. Anything outside
@@ -63,6 +72,14 @@ function parseYaml(text) {
             const colonIdx = line.indexOf(':');
             const key = line.slice(0, colonIdx).trim();
             const value = line.slice(colonIdx + 1).trim();
+            if (UNSAFE_KEYS.has(key)) {
+                // Refuse to assign a prototype-polluting key. Close any open
+                // parent so subsequent indented items are ignored, not
+                // reattached to the previous key. (sec-m1)
+                currentTopKey = null;
+                currentSubKey = null;
+                continue;
+            }
             if (value === '[]' || value === '{}') {
                 // Empty flow sequence / mapping — treat as empty array.
                 // The key is closed; subsequent indented items belong to a
@@ -106,6 +123,11 @@ function parseYaml(text) {
             const colonIdx = line.indexOf(':');
             const key = line.slice(0, colonIdx).trim();
             const value = line.slice(colonIdx + 1).trim();
+            if (UNSAFE_KEYS.has(key)) {
+                // Refuse a prototype-polluting nested key. (sec-m1)
+                currentSubKey = null;
+                continue;
+            }
             if (value === '[]' || value === '{}') {
                 // Empty flow form under a sub-key — close the sub-key so
                 // subsequent `- item` lines don't accidentally fall back to

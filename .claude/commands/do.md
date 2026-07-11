@@ -372,6 +372,20 @@ The prompt to the implementation agent MUST include all of the following. **Cont
 6. PATTERNS TO FOLLOW:
    {Code snippets from similar existing implementations found in Step 3}
 
+   MIRROR-PATTERN PRECONDITION — when a pattern above is presented as "build this
+   the same way {X} already works," name the STRUCTURAL PRECONDITION that makes X's
+   pattern correct (e.g. "X has an internal trigger, so the open event fires on
+   every open"), and instruct the agent to verify the new file actually shares that
+   precondition before copying the pattern verbatim. A pattern copied without its
+   precondition compiles and looks correct but is either dead code or silently
+   wrong — each file is internally consistent, the mismatch only exists between
+   them. This applies equally to REUSING A GENERIC HELPER built for another
+   table/context ("reuse helper {H}" is a mirror-pattern dispatch even though it
+   doesn't read like one — name the schema/state precondition H's original home
+   satisfied, e.g. does the target table have the same done-state / does the helper
+   accept a transaction handle). If the precondition doesn't hold, report
+   DONE_WITH_CONCERNS describing the gap, don't silently adapt the pattern.
+
 7. CONSTRAINTS:
    {Relevant ADRs, architecture rules, CLAUDE.md conventions}
 
@@ -491,6 +505,8 @@ node .claude/core/gate.js test
 
 **If gate.js doesn't exist or project has no build system:** Skip gracefully. Log "No build gate configured" in the report.
 
+**Pre-existing, unrelated build failure.** If the gate fails on a package/area your task never touched, don't treat it as this task's failure and don't silently skip the gate either. Confirm it's pre-existing by inspecting directly (`ls -la` the missing file/symlink, `git log`/`git diff HEAD` on the path) — never `git stash`/reset to test a before/after on a shared working tree (it mutates the entire tree, clobbering any concurrent session). Once confirmed unrelated: run a scoped build for the area this task actually changed, verify it passes clean, and document the pre-existing gap explicitly in the plan's Completion section rather than fixing it (out of scope) or ignoring it (silent gap).
+
 **E2E leg on contract changes (R1).** `gate.js test` runs only the unit/static subset. A task that changes a **contract** an untouched E2E suite covers — an API route/response shape, a shared type or schema, a public signature, a DB migration, an IPC/config contract — passes the unit gate green while the behavior regression only surfaces in manual/E2E testing. Run the E2E leg when `--e2e` is passed (always) or when this task's diff touched any such surface (default safety net):
 
 ```bash
@@ -546,6 +562,7 @@ Only after spec passes. Check:
 - No hardcoded values that should be configurable
 - Test coverage matches AC bullets (each AC has a corresponding test)
 - File responsibility — no god files doing everything
+- **If this task added a new canonical/shared type** (e.g. one introduced specifically to stop hand-duplication elsewhere), grep the repo for pre-existing hand-duplicated versions of that exact type and consolidate them onto the new canonical one now — don't leave it for a later review to find.
 
 **Output:** AC verification table:
 ```
@@ -596,6 +613,9 @@ Agent(
      - {date}: {story ID} — {one-line summary}
   3. Add to Key Decisions if approach deviated from plan:
      - {decision}: {rationale}
+     If the decision states a numeric threshold, range, or formula-derived
+     value, {rationale} must include a one-line hand-verified recomputation
+     of that arithmetic — don't transcribe a stated number without confirming it.
   Do NOT modify any other stories or sections.
   """,
   description: "Update TODO for {story-id}"

@@ -31,6 +31,8 @@ const {
 } = require('./_lib/model-runner');
 const { appendJsonl } = require('./_lib/jsonl-writer');
 const { getTelemetryDir, getJsonlPath } = require('./_lib/telemetry-paths');
+const { resolveProjectRoot } = require('./_lib/project-root');
+const { memoryPaths } = require('./_lib/memory-paths');
 
 const MAX_ENTRIES_PER_RUN = 10;
 const MIN_AGE_DAYS = 7;
@@ -47,9 +49,15 @@ const HAIKU_OUTPUT_PRICE = 0.000004;
 
 class MemoryBenchmark {
     constructor() {
-        this.projectRoot = process.env.CLAUDE_PROJECT_DIR || path.resolve(__dirname, '..', '..');
-        this.dailyDir = path.join(this.projectRoot, 'docs', '.output', '.state', 'memory-daily');
-        this.conceptsDir = path.join(this.projectRoot, 'docs', '.output', '.state', 'memory-concepts');
+        // Worktree-safe resolution (M5): all benchmark paths (daily logs, concepts,
+        // telemetry) are gitignored .state/ — anchor to the MAIN worktree via
+        // resolveProjectRoot()/memoryPaths() so a run inside a linked worktree
+        // reads/writes the shared store, not a soon-deleted worktree-local one.
+        const fallbackDir = path.resolve(__dirname, '..', '..');
+        this.projectRoot = resolveProjectRoot(fallbackDir);
+        const paths = memoryPaths(fallbackDir);
+        this.dailyDir = paths.dailyDir;
+        this.conceptsDir = paths.conceptsDir;
         this.indexPath = path.join(this.conceptsDir, 'index.md');
         this.telemetryDir = getTelemetryDir(this.projectRoot);
         this.jsonlPath = getJsonlPath(this.projectRoot, 'memory-benchmark.jsonl');

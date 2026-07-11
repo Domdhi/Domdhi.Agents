@@ -76,19 +76,54 @@ function snapshotsToPrune(names, keep) {
   return snaps.slice(0, Math.max(0, snaps.length - keep));
 }
 
+/**
+ * Resolve an FTS5-capable SQLite opener, preferring the SAME backend order as
+ * memory-manager.js (M7): on Node 24+ the built-in node:sqlite leads — it's the
+ * toolkit's zero-dependency default, so probing it first is what makes the
+ * corruption gate actually fire on a plain `git clone` (no `npm install`). Older
+ * Node falls back to the optional better-sqlite3. Returns a `(dbPath) => db`
+ * factory, or null when neither driver can be loaded.
+ *
+ * The probe (an in-memory construct) proves the driver LOADS; it does NOT touch
+ * the real db — so a driver-missing case is cleanly separated from a genuine
+ * open/integrity failure on the actual file (which stays a corruption verdict).
+ */
+function resolveSqliteOpener() {
+  const nodeMajor = Number(process.versions.node.split('.')[0]) || 0;
+  const nodeOpener = () => {
+    const { DatabaseSync } = require('node:sqlite');
+    new DatabaseSync(':memory:').close(); // probe: module present & constructs
+    return (p) => new DatabaseSync(p, { readOnly: true });
+  };
+  const betterOpener = () => {
+    const Database = require('better-sqlite3');
+    new Database(':memory:').close(); // probe: native binding loads
+    return (p) => new Database(p, { readonly: true });
+  };
+  const order = nodeMajor >= 24 ? [nodeOpener, betterOpener] : [betterOpener, nodeOpener];
+  for (const make of order) {
+    try { return make(); } catch { /* driver unavailable — try the next */ }
+  }
+  return null;
+}
+
 /** PRAGMA integrity_check on the db. Returns 'ok' | '<error text>' | 'unavailable' | 'missing'. */
 function checkDbIntegrity(dbPath) {
   if (!fs.existsSync(dbPath)) return 'missing';
-  let Database;
-  try { Database = require('better-sqlite3'); }
-  catch { return 'unavailable'; } // no driver — skip the check, still back up the bytes
+  const open = resolveSqliteOpener();
+  if (!open) return 'unavailable'; // no driver at all — skip the check, still back up the bytes
   try {
-    const db = new Database(dbPath, { readonly: true });
-    const row = db.prepare('PRAGMA integrity_check').get();
-    db.close();
-    const val = row && (row.integrity_check ?? Object.values(row)[0]);
-    return val === 'ok' ? 'ok' : String(val);
+    const db = open(dbPath);
+    try {
+      const row = db.prepare('PRAGMA integrity_check').get();
+      const val = row && (row.integrity_check ?? Object.values(row)[0]);
+      return val === 'ok' ? 'ok' : String(val);
+    } finally {
+      try { db.close(); } catch { /* non-fatal */ }
+    }
   } catch (e) {
+    // Driver loaded but opening/checking the real file threw — that is a corruption
+    // signal, not a missing driver, so it stays an 'error:' verdict (isCorrupt → true).
     return `error: ${e.message}`;
   }
 }
@@ -98,10 +133,24 @@ function isCorrupt(integrity) {
   return !(integrity === 'ok' || integrity === 'unavailable' || integrity === 'missing');
 }
 
-/** Replace destDir with a fresh recursive copy of srcDir (clears stale files first). */
+/**
+ * Replace destDir with a fresh recursive copy of srcDir, atomically (M8).
+ *
+ * The old rm-then-cp deleted the last-good mirror BEFORE writing the new one, so a
+ * crash/kill/disk-full landing mid-copy destroyed the very backup this script
+ * exists to protect. Instead: build the full copy in a temp sibling FIRST (the
+ * slow step now runs while destDir is still intact — a crash here leaves last-good
+ * untouched), then swap it in with a fast rm + rename. renameSync can't overwrite a
+ * non-empty dir, hence rm-then-rename; the remaining failure window is two metadata
+ * ops rather than the whole copy. destDir is always under the backup root, never
+ * the source.
+ */
 function mirror(srcDir, destDir) {
-  fs.rmSync(destDir, { recursive: true, force: true }); // destDir is always under the backup root, never the source
-  fs.cpSync(srcDir, destDir, { recursive: true });
+  const tmpDir = `${destDir}.tmp-${process.pid}`;
+  fs.rmSync(tmpDir, { recursive: true, force: true }); // clear any prior aborted run
+  fs.cpSync(srcDir, tmpDir, { recursive: true });       // parent of destDir now exists
+  fs.rmSync(destDir, { recursive: true, force: true });
+  fs.renameSync(tmpDir, destDir);
 }
 
 function countJson(dir) {

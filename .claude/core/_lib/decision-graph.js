@@ -23,6 +23,7 @@
 const fs = require('fs');
 const path = require('path');
 const childProcess = require('child_process');
+const { readStatus, ADR_FILE_RE } = require('../adr-lint');
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
@@ -213,55 +214,79 @@ function parseGitLog({ projectRoot, cutoffDate, execSync = childProcess.execSync
   return commits;
 }
 
-// ── Parser 4: ADRs from architecture doc ─────────────────────────────────────
+// ── Parser 4: ADRs from the decisions/ directory ─────────────────────────────
+
+// First prose paragraph of an ADR — preferably from the `## Context` section,
+// skipping headings, table rows, list bullets, and the `---` rule.
+function extractAdrSummary(content) {
+  const ctx = content.match(/^##\s+Context\s*\r?\n([\s\S]*?)(?=\r?\n##\s|\r?\n---|$)/mi);
+  const block = ctx ? ctx[1] : content;
+  for (const raw of block.split('\n')) {
+    const t = raw.trim();
+    if (!t || t.startsWith('#') || t.startsWith('|') || t === '---'
+      || t.startsWith('- ') || t.startsWith('* ') || /^\d+\.\s/.test(t)) continue;
+    return t.slice(0, 200);
+  }
+  return '';
+}
 
 /**
+ * Parse one ADR file per record from docs/architecture/decisions/NNNN-*.md — the
+ * current convention (ADR 0005). The number comes from the NNNN filename prefix,
+ * the Status from the `| **Status** |` table row (reusing adr-lint's readStatus so
+ * the two parsers can't diverge), the title from the first `#` heading.
+ *
+ * Replaces the old parser that only understood inline `### ADR-N:` sections in a
+ * single overview.md — that convention is superseded, so on a real repo it
+ * returned [] and the dashboard's Decisions track was permanently empty (M7).
+ *
  * @param {string} projectRoot  Absolute path to the project root
  * @returns {object[]}
  */
 function parseADRs({ projectRoot }) {
   const adrs = [];
-  const archPaths = [
-    path.join(projectRoot, 'docs', 'architecture/overview.md'),
-  ];
+  const decisionsDir = path.join(projectRoot, 'docs', 'architecture', 'decisions');
+  if (!fs.existsSync(decisionsDir)) return adrs;
 
-  let content = null;
-  for (const p of archPaths) {
-    content = safeReadFile(p);
-    if (content) break;
+  let files;
+  try {
+    files = fs.readdirSync(decisionsDir).sort();
+  } catch {
+    warn(`Cannot read directory: ${decisionsDir}`);
+    return adrs;
   }
 
-  if (!content) return adrs;
+  for (const name of files) {
+    const m = name.match(ADR_FILE_RE); // NNNN-title.md
+    if (!m) continue;
+    const content = safeReadFile(path.join(decisionsDir, name));
+    if (!content) continue;
 
-  // Match ### ADR-N: Title sections
-  // \Z is not a valid JS anchor (it only matches literal 'Z'); use $ for end-of-string.
-  const adrRegex = /### ADR-(\d+)[:\s]+(.+?)(?:\r?\n)([\s\S]*?)(?=\r?\n### |\r?\n## |$)/g;
-  let match;
+    const number = parseInt(m[1], 10);
 
-  while ((match = adrRegex.exec(content)) !== null) {
-    const number = parseInt(match[1], 10);
-    const title = match[2].trim();
-    const body = match[3].trim();
+    // Title: first heading, stripped of an "ADR:" / "ADR NNNN:" / "NNNN." prefix.
+    const headingMatch = content.match(/^#\s+(.+?)\s*$/m);
+    let title = headingMatch ? headingMatch[1].trim() : name.replace(/\.md$/, '');
+    title = title
+      .replace(/^ADR\b[-\s]*\d*\s*[:.–-]?\s*/i, '')
+      .replace(/^\d+\s*[.–-]\s*/, '')
+      .trim() || name.replace(/\.md$/, '');
 
-    // Try to extract status. Pattern handles both "**Status:** Accepted"
-    // (bold colon style) and "Status: Accepted" (plain style).
-    // \*?\*? only matches 0-1 asterisks each, missing the ** around the colon —
-    // using \*{0,2} and matching the colon+trailing-asterisks explicitly fixes it.
-    const statusMatch = body.match(/\*{0,2}Status\*{0,2}:\*{0,2}\s*(\w+)/i);
-    const status = statusMatch ? statusMatch[1] : 'unknown';
+    // Status: reuse adr-lint's table/bullet reader; take the first word ("Accepted").
+    const statusRaw = readStatus(content).value;
+    const status = statusRaw
+      ? statusRaw.replace(/\*/g, '').trim().split(/\s+/)[0]
+      : 'unknown';
 
-    // Try to extract date. Same bold-colon fix as status.
-    const dateMatch = body.match(/\*{0,2}Date\*{0,2}:\*{0,2}\s*([\d-]+)/i)
-      || body.match(/(\d{4}-\d{2}-\d{2})/);
+    // Date: `| **Date** | YYYY-MM-DD |` table row, else the first ISO date in the body.
+    const dateMatch = content.match(/^\|\s*\*\*Date\*\*\s*\|\s*([\d-]+)/mi)
+      || content.match(/(\d{4}-\d{2}-\d{2})/);
     const date = dateMatch ? dateMatch[1] : null;
 
-    // First non-metadata paragraph as summary
-    const lines = body.split('\n').filter(l => l.trim() && !l.match(/^\*?\*?(Status|Date|Context|Decision|Consequences)\*?\*?/i));
-    const summary = lines[0] ? lines[0].trim().slice(0, 200) : '';
-
-    adrs.push({ number, title, status, date, summary });
+    adrs.push({ number, title, status, date, summary: extractAdrSummary(content) });
   }
 
+  adrs.sort((a, b) => a.number - b.number);
   return adrs;
 }
 

@@ -189,7 +189,24 @@ async function runClaudeHook() {
         process.exit(0); // Not JSON, nothing to scan
     }
 
-    const result = processEvent(data);
+    let result;
+    try {
+        result = processEvent(data);
+    } catch (err) {
+        // FAIL CLOSED. An unexpected error while scanning (non-string content, a
+        // regex/runtime fault, an unforeseen payload shape) must NEVER let the
+        // write proceed unscanned. Claude Code blocks a PreToolUse call ONLY on
+        // exit 2 — exiting 1 here would be a NON-blocking error and the write
+        // would go through unscanned (the fail-open class fixed in 10325a7,
+        // re-entering via an uncaught exception). So block on any error.
+        recordScannerBlock();
+        process.stderr.write(
+            '[secret-scanner] FAIL-CLOSED: unexpected error during scan — blocking the write to be safe.\n' +
+            '  ' + (err && err.message ? err.message : String(err)) + '\n'
+        );
+        process.exit(2);
+    }
+
     if (result) {
         recordScannerBlock(); // source-tagged guardrail event for the feedback digest
         // Output to stderr so Claude sees the warning
@@ -229,8 +246,16 @@ async function runGitPrecommit() {
                 'git', ['show', `:${file}`],
                 { cwd: getProjectRoot(), encoding: 'utf8', windowsHide: true }
             );
-        } catch {
-            continue; // File might be binary or deleted
+        } catch (err) {
+            // File might be binary or deleted — but a TRANSIENT `git show` error
+            // on a file that DOES carry a secret would otherwise be skipped
+            // silently. Surface skips at precommit so the gap is visible.
+            console.error(
+                `[secret-scanner] WARNING: could not read staged content for "${file}" ` +
+                `(${(err && err.message) || 'unknown error'}); skipping. ` +
+                `If this file may contain a secret, verify it manually.`
+            );
+            continue;
         }
 
         const findings = scanContent(content, file);

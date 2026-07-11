@@ -19,6 +19,8 @@ const CONSTANTS = require('./constants');
 const { calculateDecayedConfidence, createActiveDaysResolver } = require('./_lib/memory-decay');
 const { parseFrontmatter: parseFm } = require('./_lib/frontmatter');
 const { readConcepts } = require('./_lib/concept-reader');
+const { resolveProjectRoot } = require('./_lib/project-root');
+const { memoryPaths } = require('./_lib/memory-paths');
 const {
     checkClaudeCli,
     invokeModel,
@@ -39,11 +41,16 @@ const CATEGORIES = Object.values(CONSTANTS.MEMORY_CATEGORIES);
 
 class MemoryCurator {
     constructor() {
-        const projectRoot = process.env.CLAUDE_PROJECT_DIR || path.resolve(__dirname, '..', '..');
+        // Worktree-safe resolution (M5): gitignored .state/ dirs anchor to the MAIN
+        // worktree via memoryPaths(), matching memory-manager.js — the old naive
+        // per-__dirname fallback lost these in a linked git worktree.
+        const fallbackDir = path.resolve(__dirname, '..', '..');
+        const projectRoot = resolveProjectRoot(fallbackDir);
+        const paths = memoryPaths(fallbackDir);
         this.projectRoot = projectRoot;
-        this.dailyDir = path.join(projectRoot, 'docs', '.output', '.state', 'memory-daily');
-        this.conceptsDir = path.join(projectRoot, 'docs', '.output', '.state', 'memory-concepts');
-        this.pendingDir = path.join(projectRoot, 'docs', '.output', '.state', 'memory-pending-curation');
+        this.dailyDir = paths.dailyDir;
+        this.conceptsDir = paths.conceptsDir;
+        this.pendingDir = paths.pendingDir;
         this._activeDaysResolver = createActiveDaysResolver({ projectRoot });
     }
 
