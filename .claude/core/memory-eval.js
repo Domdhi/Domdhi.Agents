@@ -396,14 +396,19 @@ function hitAtK(results, expectedIds, k) {
  * @param {Array}  queries         - fixture query entries
  * @param {number} k               - hit@k window
  * @param {boolean} includeSuperseded
+ * @param {boolean} [recordRecall=true] - F11: pass false for the --real pass
+ *   against the actual project store, so this evaluation run doesn't inflate
+ *   usage_count / pollute memory-injection.jsonl hit-rate analytics. The
+ *   self-seeding demo passes (throwaway temp stores) leave this true — nothing
+ *   downstream reads their analytics.
  * @returns {Promise<{hits: number, total: number, perQuery: Array}>}
  */
-async function runPass(manager, queries, k, includeSuperseded) {
+async function runPass(manager, queries, k, includeSuperseded, recordRecall = true) {
     let hits = 0;
     const perQuery = [];
 
     for (const entry of queries) {
-        const results = await manager.searchMemories(entry.query, { includeSuperseded });
+        const results = await manager.searchMemories(entry.query, { includeSuperseded, recordRecall });
         const hit = hitAtK(results, entry.expected, k);
         if (hit) hits++;
 
@@ -589,10 +594,10 @@ async function main() {
             console.log(`[memory-eval] Using real store at: ${realManager.memoriesDir}\n`);
 
             console.log('[memory-eval] Running pruned pass (default: superseded excluded from FTS)...');
-            const prunedResult = await runPass(realManager, queries, k, false);
+            const prunedResult = await runPass(realManager, queries, k, false, false);
 
             console.log('[memory-eval] Running keep-everything pass (includeSuperseded: true)...');
-            const keepAllResult = await runPass(realManager, queries, k, true);
+            const keepAllResult = await runPass(realManager, queries, k, true, false);
 
             printReport(prunedResult, keepAllResult, k);
         } else {

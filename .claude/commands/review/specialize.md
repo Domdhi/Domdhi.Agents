@@ -331,7 +331,7 @@ For each technology in Backend, Frontend, Database, and Testing:
 
 **This step does NOT modify or delete existing skills.** It classifies and identifies gaps.
 
-> **Marker rule.** If you ever append project-specific guidance to an existing *template* skill (rather than creating a new project skill in 3d), it MUST go below a `<!-- @@project-additions -->` marker (create it if absent) — anything above the marker is template-owned and is clobbered on the next `template-updater`/`fleet:sync`. Prefer a brand-new project-added skill dir for substantial content; new skill dirs are never touched by sync. See `skill-authoring`.
+> **Marker rule.** If you ever add project-specific guidance to an existing *template* skill (rather than creating a new project skill in 3d), it MUST use a project-additions sentinel — plain edits to template prose are clobbered on the next `template-updater`/`fleet:sync`. A whole new section appended at the end → `<!-- @@project-additions -->` (create it if absent), everything below preserved. A bullet or paragraph inserted INSIDE an existing section (e.g. adding a project-specific escalation rule to `code-review/SKILL.md`'s existing rule list, or a stack-specific test pattern to `qa-engineer/SKILL.md`'s existing patterns) → wrap it in an anchored `<!-- @@project-additions:start -->` / `:end` fence instead — the whole-tail marker cannot protect content injected mid-section. Prefer a brand-new project-added skill dir for substantial content; new skill dirs are never touched by sync. Full doctrine + rules: `skill-authoring`.
 
 ### 3d. Generate Stack Skills
 

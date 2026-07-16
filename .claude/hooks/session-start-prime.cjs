@@ -196,16 +196,22 @@ ${lines.join('\n')}
  * Staleness = newest JSON mtime under any .memory category dir vs the db mtime.
  * Until the rebuild lands, search degrades to the JSON-scan fallback — never empty.
  */
-function maybeRebuildIndex(jsonRoot, dbPath, projectDir) {
+function maybeRebuildIndex(jsonRoot, dbPath, projectDir, newestJsonMtime) {
     try {
-        let newestJson = 0;
-        for (const category of MEMORY_CATEGORIES) {
-            let files;
-            try { files = fs.readdirSync(path.join(jsonRoot, category)); } catch { continue; }
-            for (const f of files) {
-                if (!f.endsWith('.json')) continue;
-                const m = fs.statSync(path.join(jsonRoot, category, f)).mtimeMs;
-                if (m > newestJson) newestJson = m;
+        // F78: processEvent's memory-read loop already stats every JSON file —
+        // it passes the newest mtime in, so this hot SessionStart path walks
+        // the store ONCE, not twice. The self-scan below remains for callers
+        // that don't have the value in hand.
+        let newestJson = typeof newestJsonMtime === 'number' ? newestJsonMtime : 0;
+        if (newestJson === 0 && newestJsonMtime === undefined) {
+            for (const category of MEMORY_CATEGORIES) {
+                let files;
+                try { files = fs.readdirSync(path.join(jsonRoot, category)); } catch { continue; }
+                for (const f of files) {
+                    if (!f.endsWith('.json')) continue;
+                    const m = fs.statSync(path.join(jsonRoot, category, f)).mtimeMs;
+                    if (m > newestJson) newestJson = m;
+                }
             }
         }
         if (newestJson === 0) return;                 // no source → nothing to rebuild
@@ -234,16 +240,17 @@ function processEvent(_parsedJson) {
 
     if (!fs.existsSync(memoriesDir)) return { output: null };
 
-    // Self-heal the FTS5 index from the synced JSON source before anything reads
-    // it this session (background, non-blocking — see maybeRebuildIndex).
-    maybeRebuildIndex(memoriesDir, dbPath, projectDir);
-
     const rawN = parseInt(process.env.MEMORY_PRIME_COUNT, 10);
     const N = Number.isFinite(rawN)
         ? Math.min(MAX_N, Math.max(1, rawN))
         : DEFAULT_N;
 
+    // F78: ONE pass over the store — this loop reads every memory anyway, so it
+    // also tracks the newest JSON mtime for the index-freshness check below
+    // (maybeRebuildIndex used to run its own second readdir+stat traversal
+    // first, on a latency-budgeted SessionStart path).
     const memories = [];
+    let newestJsonMtime = 0;
     for (const category of MEMORY_CATEGORIES) {
         const catDir = path.join(memoriesDir, category);
         if (!fs.existsSync(catDir)) continue;
@@ -254,8 +261,11 @@ function processEvent(_parsedJson) {
             continue;
         }
         for (const file of files) {
+            const filePath = path.join(catDir, file);
             try {
-                const content = fs.readFileSync(path.join(catDir, file), 'utf8');
+                const m = fs.statSync(filePath).mtimeMs;
+                if (m > newestJsonMtime) newestJsonMtime = m;
+                const content = fs.readFileSync(filePath, 'utf8');
                 const parsed = parseMemory(content, category, file);
                 // Never inject a superseded memory (ME-3.x / ME-4.2).
                 if (parsed && !parsed.invalid_at) memories.push(parsed);
@@ -264,6 +274,11 @@ function processEvent(_parsedJson) {
             }
         }
     }
+
+    // Self-heal the FTS5 index from the synced JSON source (background,
+    // non-blocking spawn — ordering vs the JSON reads above is irrelevant,
+    // they never touch the db). Newest mtime handed in from the single pass.
+    maybeRebuildIndex(memoriesDir, dbPath, projectDir, newestJsonMtime);
 
     if (memories.length === 0) return { output: null };
 
@@ -331,4 +346,8 @@ if (require.main === module) {
     })();
 }
 
+// CONTRACT (F49): rankConcepts + parseMemory are consumed by
+// .claude/core/memory-stability.js — the benchmark deliberately drives THIS
+// file's real injection ranker, not a reimplementation. Renaming or inlining
+// either export breaks that tool; update both files together.
 module.exports = { processEvent, rankConcepts, renderOutput, parseMemory };

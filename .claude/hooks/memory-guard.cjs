@@ -17,17 +17,10 @@ const CONSTANTS = require('../core/constants');
 
 const MAX_MEMORIES_PER_CATEGORY = parseInt(process.env.MEMORY_MAX_PER_CATEGORY, 10) || CONSTANTS.MEMORY_FILTERS.MEMORY_MAX_PER_CATEGORY;
 
-function readStdin() {
-    return new Promise((resolve) => {
-        if (process.stdin.isTTY) { resolve(''); return; }
-        let data = '';
-        process.stdin.setEncoding('utf8');
-        process.stdin.on('data', (chunk) => { data += chunk; });
-        process.stdin.on('end', () => resolve(data));
-        process.stdin.on('error', () => resolve(''));
-        setTimeout(() => resolve(data), 1000);
-    });
-}
+// F65: shared stdin plumbing — the local copy this replaced had the same
+// TTY guard + 1000ms timeout readHookInput() defaults to.
+const { readHookInput } = require('../core/_lib/hook-input');
+const readStdin = () => readHookInput();
 
 /**
  * Count .json files in a category directory.
@@ -106,6 +99,12 @@ async function main() {
 }
 
 if (require.main === module) {
+    // P1.7 — hook duration instrumentation (F66), same pattern as siblings.
+    const { startHookTiming, emitHookEvent } = require('../core/_lib/hook-telemetry');
+    const _hookToken = startHookTiming('memory-guard');
+    process.on('exit', () => {
+        try { emitHookEvent(_hookToken, 'success'); } catch { /* never fail on telemetry */ }
+    });
     main().catch(() => process.exit(0));
 }
 

@@ -546,8 +546,10 @@ describe('memory-compiler', () => {
       fs.writeFileSync(path.join(patternsDir, 'concept-alpha.md'), fileABody, 'utf8');
       fs.writeFileSync(path.join(patternsDir, 'concept-beta.md'), fileBBody, 'utf8');
 
-      // Act
-      const pairCount = await compiler.generateCrossReferences([]);
+      // Act (no conceptScan arg → the lib walks the tree itself; the old
+      // zero-parameter signature ignored a stray [] here, the new F4 signature
+      // would treat it as a real — empty — shared scan)
+      const pairCount = await compiler.generateCrossReferences();
 
       // Assert: cross-references.json written
       const crossRefPath = path.join(conceptsBase, 'cross-references.json');
@@ -638,6 +640,153 @@ describe('memory-compiler', () => {
       const updatedAlpha = fs.readFileSync(path.join(patternsDir, 'alpha.md'), 'utf8');
       expect(updatedAlpha).toContain('## Related Concepts');
       expect(updatedAlpha).toContain('[[beta|Beta Concept]]');
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // F4/F5 (council-260715-2244): shared per-compile concepts scan + bounded
+  // pairwise Jaccard
+  // ---------------------------------------------------------------------------
+  describe('shared conceptScan (F4) + bounded pairwise Jaccard (F5)', () => {
+    const { generateCrossReferences, MAX_PAIR_COMPARISONS } = require('../_lib/cross-references');
+    const { generateIndex, injectRelatedConcepts } = require('../_lib/concept-index');
+    const { scanConceptFiles } = require('../_lib/concept-reader');
+
+    const mkScanEntry = (slug, category, title, summary) => ({
+      slug,
+      filename: `${slug}.md`,
+      category,
+      content: `---\ntitle: ${title}\ncategory: ${category}\n---\n\n## Summary\n\n${summary}\n\n## Evidence\n\n_empty_`,
+      fm: { title, category },
+    });
+
+    it('generateCrossReferences consumes a provided conceptScan WITHOUT touching the tree (single-pass proof)', async () => {
+      // conceptsDir points at a real (writable) dir, but the scan entries do
+      // NOT exist on disk — pairs can only come from the provided scan.
+      const conceptsBase = path.join(tmp.root, 'docs', '.output', '.state', 'memory-concepts');
+      fs.mkdirSync(conceptsBase, { recursive: true });
+      const conceptScan = [
+        mkScanEntry('scan-alpha', 'patterns', 'Alpha Token Pipeline', 'oauth token pipeline refresh strategy'),
+        mkScanEntry('scan-beta', 'patterns', 'Beta Middleware Flow', 'oauth middleware flow authorization refresh'),
+      ];
+
+      const pairCount = await generateCrossReferences({
+        conceptsDir: conceptsBase,
+        categories: ['patterns'],
+        crossRefThreshold: 0.15,
+        similarityThreshold: 0.3,
+        conceptScan,
+      });
+
+      expect(pairCount).toBe(1); // Jaccard 0.2 — from the scan, not the (empty) disk tree
+      const parsed = JSON.parse(fs.readFileSync(path.join(conceptsBase, 'cross-references.json'), 'utf8'));
+      expect(parsed['scan-alpha'].related).toContain('scan-beta');
+    });
+
+    it('keyword-disjoint concepts produce zero pairs (F5 pre-filter is exact — Jaccard 0 can never cross a positive threshold)', async () => {
+      const conceptsBase = path.join(tmp.root, 'docs', '.output', '.state', 'memory-concepts');
+      fs.mkdirSync(conceptsBase, { recursive: true });
+      const conceptScan = [
+        mkScanEntry('one', 'patterns', 'Apples Oranges', 'fruit basket citrus'),
+        mkScanEntry('two', 'patterns', 'Sockets Threads', 'network kernel epoll'),
+      ];
+      const pairCount = await generateCrossReferences({
+        conceptsDir: conceptsBase,
+        categories: ['patterns'],
+        crossRefThreshold: 0.15,
+        similarityThreshold: 0.3,
+        conceptScan,
+      });
+      expect(pairCount).toBe(0);
+      expect(MAX_PAIR_COMPARISONS).toBeGreaterThan(0); // the hard bound exists and is exported
+    });
+
+    it('generateIndex merges on-disk concepts from the provided conceptScan (no re-walk)', async () => {
+      const conceptsBase = path.join(tmp.root, 'docs', '.output', '.state', 'memory-concepts');
+      fs.mkdirSync(conceptsBase, { recursive: true });
+      const conceptScan = [
+        mkScanEntry('only-in-scan', 'patterns', 'Only In Scan', 'this article exists only in the shared scan'),
+      ];
+
+      await generateIndex([], {
+        conceptsDir: conceptsBase,
+        categories: ['patterns'],
+        formatDateOnly: (iso) => String(iso).slice(0, 10),
+        conceptScan,
+      });
+
+      const index = fs.readFileSync(path.join(conceptsBase, 'index.md'), 'utf8');
+      expect(index).toContain('[[only-in-scan|Only In Scan]]'); // provable single source: the file is not on disk
+    });
+
+    it('injectRelatedConcepts builds its lookup from the provided conceptScan (scan title wins over a disk re-read)', async () => {
+      const conceptsBase = path.join(tmp.root, 'docs', '.output', '.state', 'memory-concepts');
+      const patternsDir = path.join(conceptsBase, 'patterns');
+      fs.mkdirSync(patternsDir, { recursive: true });
+      // Real article files (injection writes into them)…
+      fs.writeFileSync(path.join(patternsDir, 'inj-a.md'), '---\ntitle: Disk Title A\ncategory: patterns\n---\n\n## Summary\n\nx\n\n## Evidence\n\n_empty_', 'utf8');
+      fs.writeFileSync(path.join(patternsDir, 'inj-b.md'), '---\ntitle: Disk Title B\ncategory: patterns\n---\n\n## Summary\n\ny\n\n## Evidence\n\n_empty_', 'utf8');
+      fs.writeFileSync(path.join(conceptsBase, 'cross-references.json'), JSON.stringify({
+        'inj-a': { related: ['inj-b'], category: 'patterns' },
+        'inj-b': { related: ['inj-a'], category: 'patterns' },
+      }), 'utf8');
+      // …but the scan carries a DIFFERENT title for inj-b. If the function
+      // re-walked the disk, the injected link would say "Disk Title B".
+      const conceptScan = [
+        { slug: 'inj-a', filename: 'inj-a.md', category: 'patterns', content: '', fm: { title: 'Disk Title A' } },
+        { slug: 'inj-b', filename: 'inj-b.md', category: 'patterns', content: '', fm: { title: 'Scan Title B' } },
+      ];
+
+      await injectRelatedConcepts([], { conceptsDir: conceptsBase, categories: ['patterns'], conceptScan });
+
+      const updatedA = fs.readFileSync(path.join(patternsDir, 'inj-a.md'), 'utf8');
+      expect(updatedA).toContain('[[inj-b|Scan Title B]]');
+    });
+
+    it('concept-article Evidence section is bounded — oldest blocks rotate out past the cap (F3)', async () => {
+      const { writeConceptArticle } = require('../_lib/concept-article');
+      const conceptsBase = path.join(tmp.root, 'docs', '.output', '.state', 'memory-concepts');
+      fs.mkdirSync(path.join(conceptsBase, 'patterns'), { recursive: true });
+
+      const deps = {
+        conceptsDir: conceptsBase,
+        detectCategory: () => 'patterns',
+        generateTitle: () => 'Rotation Probe',
+        getConceptId: () => 'rotation-probe',
+        generateSummary: () => 'rotation probe summary',
+        addDailyBacklinks: (t) => t,
+        formatDateOnly: (iso) => String(iso).slice(0, 10),
+      };
+      const entry = (day, hhmm) => ({
+        date: `2026-06-${String(day).padStart(2, '0')}`, time: hhmm,
+        rawText: `evidence for day ${day}`, keywords: new Set(['rotation', 'probe']),
+      });
+
+      // 30 merges of one block each — well past the 20-block cap.
+      for (let d = 1; d <= 30; d++) {
+        await writeConceptArticle([entry(d, '10:00')], deps);
+      }
+
+      const article = fs.readFileSync(path.join(conceptsBase, 'patterns', 'rotation-probe.md'), 'utf8');
+      const blockCount = (article.match(/^### \d{4}-\d{2}-\d{2} /gm) || []).length;
+      expect(blockCount).toBeLessThanOrEqual(20);
+      expect(article).toContain('evidence for day 30');      // newest kept
+      expect(article).not.toContain('evidence for day 1\n'); // oldest rotated out
+      expect(article).toMatch(/_\d+ older evidence block\(s\) rotated out/); // and the loss is visible
+    });
+
+    it('scanConceptFiles returns {slug, filename, category, content, fm} per parsable article', async () => {
+      const conceptsBase = path.join(tmp.root, 'docs', '.output', '.state', 'memory-concepts');
+      const patternsDir = path.join(conceptsBase, 'patterns');
+      fs.mkdirSync(patternsDir, { recursive: true });
+      fs.writeFileSync(path.join(patternsDir, 'real.md'), '---\ntitle: Real Article\ncategory: patterns\n---\n\n## Summary\n\nz', 'utf8');
+      fs.writeFileSync(path.join(patternsDir, 'no-frontmatter.md'), 'plain text, not a concept', 'utf8');
+
+      const scan = await scanConceptFiles({ conceptsDir: conceptsBase, categories: ['patterns', 'absent-category'] });
+
+      expect(scan).toHaveLength(1);
+      expect(scan[0]).toMatchObject({ slug: 'real', filename: 'real.md', category: 'patterns' });
+      expect(scan[0].fm.title).toBe('Real Article');
     });
   });
 });

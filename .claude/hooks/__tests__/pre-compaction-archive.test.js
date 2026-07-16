@@ -143,14 +143,31 @@ describe('buildSnapshot', () => {
     });
 
     it('buildSnapshot_containsGitBranch', () => {
+        // F74: the branch now rides the `git status --short --branch` header
+        // (one spawn) instead of a separate `git branch --show-current`.
         const mockLog = makeMockLog({
             run: vi.fn(cmd => {
-                if (cmd && cmd.includes('git branch')) return 'feature-x';
+                if (cmd && cmd.includes('git status')) return '## feature-x...origin/feature-x [ahead 1]\n M some/file.js';
                 return '';
             })
         });
         const snap = buildSnapshot(tmp.root, mockLog, 'test');
-        expect(snap).toContain('feature-x');
+        expect(snap).toContain('**Branch:** feature-x');
+        // the header line is stripped back out of the status block
+        expect(snap).toContain('M some/file.js');
+        expect(snap).not.toContain('## feature-x...');
+    });
+
+    it('buildSnapshot_branchEdgeCases_detachedAndUnborn (F74)', () => {
+        const detached = buildSnapshot(tmp.root, makeMockLog({
+            run: vi.fn(cmd => (cmd && cmd.includes('git status')) ? '## HEAD (no branch)' : ''),
+        }), 'test');
+        expect(detached).toContain('**Branch:** \n');
+
+        const unborn = buildSnapshot(tmp.root, makeMockLog({
+            run: vi.fn(cmd => (cmd && cmd.includes('git status')) ? '## No commits yet on main' : ''),
+        }), 'test');
+        expect(unborn).toContain('**Branch:** main');
     });
 
     it('buildSnapshot_containsTimestampField', () => {
@@ -287,6 +304,70 @@ describe('processEvent_dailyLogCapture', () => {
 // Extraction moved to the session-handoff skill 2026-04-20. This hook must
 // never spawn the extractor again, regardless of env vars or profile.
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// getProjectRoot — worktree-safe resolution (F72, council-260715-2244)
+// ---------------------------------------------------------------------------
+// getProjectRoot() must route through the worktree-safe _lib/project-root.js
+// resolveProjectRoot() instead of the naive
+// `CLAUDE_PROJECT_DIR || path.resolve(__dirname,...)` fallback — the latter
+// anchors the shared GITIGNORED daily-log/session-snapshot writes to whichever
+// worktree happens to be current instead of the shared main worktree (the
+// same bug class already fixed in memory-capture.cjs/session-start-prime.cjs;
+// see project memory `worktree-root-retrofit-must-sweep-all-callsites`).
+
+describe('processEvent_worktreeSafeProjectRoot', () => {
+    it('getProjectRoot() invokes resolveProjectRoot() and writes under ITS resolved root, not a naive __dirname fallback', () => {
+        const projectRootCachePath = require.resolve('../../core/_lib/project-root');
+        const hookCachePath = require.resolve('../pre-compaction-archive.cjs');
+        const savedProjectRoot = require.cache[projectRootCachePath];
+        const savedHook = require.cache[hookCachePath];
+
+        // A fake resolved root, distinct from both CLAUDE_PROJECT_DIR (unset in
+        // this test) and the real repo path a naive __dirname fallback would
+        // produce. fs writes are spied/no-op'd so this never touches disk
+        // regardless of which path the implementation actually resolves.
+        // path.resolve makes the fake root platform-absolute ('C:\fake\…' on win32) so
+        // the implementation's path.join output still startsWith it — a bare '/fake/…'
+        // gets its separators flipped by win32 path.join and the prefix check fails.
+        const fakeRoot = path.resolve('/fake/f72-main-worktree-root');
+        let calledWithFallback = null;
+
+        require.cache[projectRootCachePath] = {
+            id: projectRootCachePath, filename: projectRootCachePath, loaded: true, children: [], paths: [],
+            exports: {
+                resolveProjectRoot: (fallbackDir) => { calledWithFallback = fallbackDir; return fakeRoot; },
+                resolveWorktreeRoot: (fallbackDir) => fallbackDir,
+            },
+        };
+        delete require.cache[hookCachePath];
+
+        const mkdirSpy = vi.spyOn(fs, 'mkdirSync').mockImplementation(() => {});
+        const writeSpy = vi.spyOn(fs, 'writeFileSync').mockImplementation(() => {});
+        delete process.env.CLAUDE_PROJECT_DIR;
+
+        try {
+            const fresh = require('../pre-compaction-archive.cjs');
+            const mockLog = makeMockLog();
+            injectDailyLogMock(mockLog);
+
+            fresh.processEvent({ trigger: 'test' });
+
+            expect(calledWithFallback).toBeTruthy(); // resolveProjectRoot() was actually called
+            const sessionsMkdirCall = mkdirSpy.mock.calls.find(
+                ([p]) => typeof p === 'string' && p.includes('sessions')
+            );
+            expect(sessionsMkdirCall).toBeTruthy();
+            expect(sessionsMkdirCall[0].startsWith(fakeRoot)).toBe(true);
+        } finally {
+            mkdirSpy.mockRestore();
+            writeSpy.mockRestore();
+            require.cache[projectRootCachePath] = savedProjectRoot;
+            if (savedHook) require.cache[hookCachePath] = savedHook;
+            else delete require.cache[hookCachePath];
+        }
+    });
+});
 
 describe('processEvent_noExtractorSpawn', () => {
     it('processEvent_profileStandard_neverSpawns', () => {

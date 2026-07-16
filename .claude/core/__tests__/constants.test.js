@@ -20,10 +20,10 @@ describe('constants', () => {
     }
   });
 
-  it('memoryFilters_maxPerCategory_is100', () => {
+  it('memoryFilters_maxPerCategory_is150', () => {
     // Arrange / Act / Assert — the single source of truth for the per-category
-    // cap (env-overridden at call sites). Static 100 keeps require() deterministic.
-    expect(constants.MEMORY_FILTERS.MEMORY_MAX_PER_CATEGORY).toBe(100);
+    // cap (env-overridden at call sites). Static 150 keeps require() deterministic.
+    expect(constants.MEMORY_FILTERS.MEMORY_MAX_PER_CATEGORY).toBe(150);
   });
 
   it('memoryFilters_nearLimitPct_is080', () => {

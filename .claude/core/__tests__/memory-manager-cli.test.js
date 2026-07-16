@@ -42,6 +42,18 @@ describe('memory-manager CLI entry point', () => {
         expect(status).toBe(0);
     });
 
+    // F40: an unknown/typo'd subcommand must exit non-zero (false-success guard).
+    // Siblings memory-curator.js/memory-benchmark.js do process.exit(command ? 1 : 0).
+    it('exits 1 for an unrecognized command', () => {
+        const { status } = runCli(['not-a-real-command']);
+        expect(status).toBe(1);
+    });
+
+    it('exits 0 for bare help (no command)', () => {
+        const { status } = runCli([]);
+        expect(status).toBe(0);
+    });
+
     it('returns lint output as valid JSON', () => {
         const { status, stdout } = runCli(['lint']);
         expect(status).toBe(0);

@@ -62,8 +62,6 @@
 
 'use strict';
 
-const { execFileSync } = require('child_process');
-
 // ── path classification (pure) ────────────────────────────────────────────────
 // A repo-relative path is "code" (scrutinize), "disposable" (regenerable working
 // state — safe), or "other" (unknown — review). Tech-agnostic defaults; the
@@ -136,24 +134,10 @@ function basenameInSiblingDir(byBasename, f) {
 }
 
 // ── git helpers (impure) ───────────────────────────────────────────────────────
-// `argv` is an argument ARRAY passed straight to git via execFileSync — NO shell,
-// so a branch name containing $(), backticks, ;, |, & can never be interpreted as
-// a command (was the RCE in the old string-interpolated execSync). Every call site
-// passes an array; string args are a programming error.
-function git(argv, { cwd, raw } = {}) {
-  // git names with slashes mangle under MSYS path-conversion; disable it.
-  const out = execFileSync('git', argv, {
-    encoding: 'utf8',
-    cwd: cwd || process.cwd(),
-    stdio: ['ignore', 'pipe', 'pipe'],
-    env: { ...process.env, MSYS_NO_PATHCONV: '1' },
-  });
-  // raw: keep leading whitespace (porcelain XY status lines start with a space);
-  // a blanket .trim() would eat the first line's leading space and shift the path.
-  return raw ? out.replace(/\n+$/, '') : out.trim();
-}
-function gitSafe(args, o) { try { return git(args, o); } catch { return ''; } }
-function gitOk(args, o) { try { git(args, o); return true; } catch { return false; } }
+// Shared argv-array wrapper (F27) — this file's original implementation moved
+// verbatim to _lib/git.js so commit.js/pull-request.js stop re-declaring subsets.
+// Re-exported below: tests and callers import git/gitSafe/gitOk from here.
+const { git, gitSafe, gitOk } = require('./_lib/git');
 
 // ── audits (impure) ────────────────────────────────────────────────────────────
 function auditBranch(branch, ctx) {
@@ -166,8 +150,16 @@ function auditBranch(branch, ctx) {
   // exact "gone" case), so gitSafe swallowed it to '' and this always reported
   // 'none' — the documented corroborating signal could never fire. for-each-ref's
   // %(upstream:track) survives a pruned ref and reports the literal "[gone]".
-  const track = gitSafe(['for-each-ref', '--format=%(upstream:track)', 'refs/heads/' + branch]);
-  const hasUpstreamConfig = gitOk(['config', '--get', 'branch.' + branch + '.merge']);
+  // F24: main() batches this for ALL branches in two upfront calls (one
+  // for-each-ref, one config --get-regexp) threaded through ctx — the
+  // per-branch spawns below are the fallback for hand-built ctx (tests,
+  // library callers) so behavior is identical either way.
+  const track = ctx.trackByBranch
+    ? (ctx.trackByBranch.get(branch) || '')
+    : gitSafe(['for-each-ref', '--format=%(upstream:track)', 'refs/heads/' + branch]);
+  const hasUpstreamConfig = ctx.upstreamConfigured
+    ? ctx.upstreamConfigured.has(branch)
+    : gitOk(['config', '--get', 'branch.' + branch + '.merge']);
   let upstreamState = 'none';
   if (track.includes('[gone]')) upstreamState = 'gone';
   else if (hasUpstreamConfig) upstreamState = 'tracking';
@@ -187,7 +179,13 @@ function auditBranch(branch, ctx) {
   const docs = [];
   for (const f of files) {
     if (classifyPath(f) === 'code') {
-      const present = gitOk(['cat-file', '-e', BASE + ':' + f]);
+      // F25: BASE's full tree listing is already in memory (main() loads it to
+      // build baseByBasename) — answer "does BASE contain f" from that Set
+      // instead of a git cat-file spawn per file. Per-file spawn remains only
+      // for hand-built ctx without the Set.
+      const present = ctx.baseFilesSet
+        ? ctx.baseFilesSet.has(f)
+        : gitOk(['cat-file', '-e', BASE + ':' + f]);
       code.push({ file: f, sig: codeFileSignature(present, basenameInSiblingDir(baseByBasename, f)) });
     } else {
       docs.push(f);
@@ -248,7 +246,28 @@ function main(argv) {
     if (!dirs) baseByBasename.set(b, (dirs = new Set()));
     dirs.add(dirOf(f));
   }
-  const ctx = { BASE, baseTree, PROTECTED, baseByBasename };
+  // F25: the same listing answers per-file "present in BASE?" — no cat-file spawns.
+  const baseFilesSet = new Set(baseFiles);
+
+  // F24: batch the per-branch upstream-tracking spawns. ONE for-each-ref lists
+  // every local branch's %(upstream:track); ONE config --get-regexp lists every
+  // branch with upstream config (the exact predicate the old per-branch
+  // `config --get branch.<b>.merge` probed). 4N+ spawns → N+2 for N branches.
+  // NUL separator — `|` is legal in a ref name, and a branch literally named
+  // `a|b` with a gone upstream would mis-key a pipe-split map onto branch `a`.
+  // Git forbids NUL in ref names, so %00 can never collide.
+  const trackByBranch = new Map();
+  for (const line of gitSafe(['for-each-ref', '--format=%(refname:short)%00%(upstream:track)', 'refs/heads/']).split('\n')) {
+    const sep = line.indexOf('\0');
+    if (sep > 0) trackByBranch.set(line.slice(0, sep), line.slice(sep + 1));
+  }
+  const upstreamConfigured = new Set();
+  for (const line of gitSafe(['config', '--get-regexp', '^branch\\..*\\.merge$']).split('\n')) {
+    const m = line.match(/^branch\.(.+)\.merge(\s|$)/);
+    if (m) upstreamConfigured.add(m[1]);
+  }
+
+  const ctx = { BASE, baseTree, PROTECTED, baseByBasename, baseFilesSet, trackByBranch, upstreamConfigured };
 
   const branches = git(['for-each-ref', '--format=%(refname:short)', 'refs/heads/'])
     .split('\n').map((s) => s.trim()).filter(Boolean)

@@ -44,7 +44,12 @@ async function main() {
         case 'create': {
             const [category, id] = args;
             const content = unwrapContentEnvelope(JSON.parse(args[2] || '{}'));
-            await manager.createMemory(category, id, content);
+            const overwrite = args.includes('--overwrite');
+            const created = await manager.createMemory(category, id, content, { overwrite });
+            if (!created) {
+                console.error(`❌ Create failed: ${category}/${id} already exists (pass --overwrite to replace) or the category is full`);
+                process.exit(1);
+            }
             break;
         }
         case 'read': {
@@ -386,7 +391,10 @@ Memory Manager (JSON + SQLite FTS5)
 ====================================
 
 Usage:
-  node memory-manager-cli.js create <category> <id> <content>
+  node memory-manager-cli.js create <category> <id> <content> [--overwrite]
+    Refuses by default when <id> already exists in <category> (no silent
+    clobber). Pass --overwrite to intentionally replace it, or use 'update'
+    to merge new fields into the existing memory instead.
   node memory-manager-cli.js read <category> <id>
   node memory-manager-cli.js update <category> <id> <content-json>
   node memory-manager-cli.js list <category>
@@ -431,6 +439,10 @@ Inbox (R-A — sub-agent draft memory pattern):
 Categories: patterns, constraints, decisions, workflows, rejected-approaches
 Storage: docs/.output/.memory/ (JSON) + memories.db (SQLite FTS5)
             `);
+            // Exit non-zero for an unknown/typo'd subcommand so callers don't read
+            // a false success; bare help (no command) exits 0. Matches siblings
+            // memory-curator.js:387 / memory-benchmark.js:451.
+            process.exit(command ? 1 : 0);
     }
 }
 

@@ -29,7 +29,7 @@
 // module.exports for testing, require.main guard). Thin wrapper over gh/az + git —
 // no new abstraction layer.
 
-const { execFileSync, spawnSync } = require('node:child_process');
+const { spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 
@@ -45,10 +45,34 @@ const DEFAULT_BODY_FILE = path.join('docs', '.output', '.state', '.pr-body');
 // the safe array form (no shell, no quoting).
 const IS_WIN = process.platform === 'win32';
 
-/** cmd.exe-quote an arg iff it contains whitespace or shell metacharacters. */
+/**
+ * cmd.exe-quote an arg iff it contains whitespace or shell metacharacters.
+ *
+ * F54: cmd.exe does NOT treat `\"` as an escaped quote — it treats the `\` as a
+ * literal backslash and the `"` as an unescaped quote-terminator. That means an
+ * arg like `x" & calc & "y` — escaped the old way as `"x\" & calc & \"y"` —
+ * actually closes the quoted region at the first `\"`, leaving ` & calc & ` to
+ * run as a live cmd.exe command. The cmd.exe-correct way to embed a literal `"`
+ * inside a quoted argument is to DOUBLE it (`""`), which keeps the whole
+ * argument — metacharacters included — inside one quoted region.
+ *
+ * m3: a value ENDING in one or more backslashes needs its own hardening. The
+ * downstream argv parser (CommandLineToArgvW-style: consumed by the eventual
+ * child process, and mirrored by cmd.exe's own quote handling) treats
+ * backslashes immediately preceding a `"` as escape sequences consumed in
+ * pairs — so naively quoting `a b\` as `"a b\"` puts a single backslash right
+ * before the closing quote, which the parser reads as an ESCAPED literal `"`
+ * rather than the string terminator (the quoted region never closes). Fix:
+ * double any run of trailing backslashes before adding the closing quote —
+ * `a b\` → `"a b\\"` and `a b\\` → `"a b\\\\"` — so the parser always sees an
+ * even count and the closing `"` is read as a real terminator.
+ */
 function winQuote(a) {
   const s = String(a);
-  return /[\s"&()<>|^@%!]/.test(s) ? `"${s.replace(/"/g, '\\"')}"` : s;
+  if (!/[\s"&()<>|^@%!]/.test(s)) return s;
+  const quoted = s.replace(/"/g, '""');
+  const withDoubledTrailingBackslashes = quoted.replace(/\\+$/, (run) => run + run);
+  return `"${withDoubledTrailingBackslashes}"`;
 }
 
 /** spawnSync a CLI safely across platforms. On win32: shell:true + per-arg quoting. */
@@ -174,14 +198,12 @@ function buildCreatePlan({ host, branch, base, title, bodyFile, draft, project, 
 
 // ── git seams ────────────────────────────────────────────────────────────────
 
-function git(...a) {
-  return execFileSync('git', a, { encoding: 'utf8' });
-}
+const { git } = require('./_lib/git');
 
 /** Resolve the remote default branch (origin/HEAD), falling back to 'main'. */
 function defaultBranch() {
   try {
-    const ref = git('symbolic-ref', '--quiet', 'refs/remotes/origin/HEAD').trim();
+    const ref = git(['symbolic-ref', '--quiet', 'refs/remotes/origin/HEAD']);
     const name = ref.replace(/^refs\/remotes\/origin\//, '');
     if (name) return name;
   } catch { /* origin/HEAD not set — fall through */ }
@@ -196,7 +218,7 @@ function defaultBranch() {
  * in-flight-CI check from abort to warn.
  */
 function preflight({ force } = {}) {
-  const branch = git('rev-parse', '--abbrev-ref', 'HEAD').trim();
+  const branch = git(['rev-parse', '--abbrev-ref', 'HEAD']);
   const base = defaultBranch();
 
   // 1. On a feature branch, not the default.
@@ -207,8 +229,8 @@ function preflight({ force } = {}) {
 
   // 2. Up to date with origin/<base>.
   try {
-    git('fetch', 'origin', base);
-    const behind = git('rev-list', '--count', `${branch}..origin/${base}`).trim();
+    git(['fetch', 'origin', base]);
+    const behind = git(['rev-list', '--count', `${branch}..origin/${base}`]);
     if (behind !== '0') {
       console.error(`[pr] refusing: branch is ${behind} commit(s) behind origin/${base}. Merge origin/${base} first (else the PR stalls on conflicts).`);
       process.exit(1);
@@ -238,7 +260,7 @@ function runCreate(opts, remote) {
   // step, and the only network op preflight does (fetch) is read-only.
   let branch, base;
   if (dryRun) {
-    branch = git('rev-parse', '--abbrev-ref', 'HEAD').trim();
+    branch = git(['rev-parse', '--abbrev-ref', 'HEAD']);
     base = defaultBranch();
   } else {
     ({ branch, base } = preflight({ force }));
@@ -320,7 +342,7 @@ function verifyAutoComplete(remote, branch, base) {
 }
 
 function runStatus(opts, remote) {
-  const branch = git('rev-parse', '--abbrev-ref', 'HEAD').trim();
+  const branch = git(['rev-parse', '--abbrev-ref', 'HEAD']);
   if (remote.host === 'github') {
     const ref = opts.id ? String(opts.id) : branch;
     const res = runTool('gh', ['pr', 'view', ref, '--json', 'number,state,mergeStateStatus,autoMergeRequest,title', '--template',
@@ -336,15 +358,101 @@ function runStatus(opts, remote) {
 }
 
 function runWatch(opts, remote) {
-  const branch = git('rev-parse', '--abbrev-ref', 'HEAD').trim();
+  const branch = git(['rev-parse', '--abbrev-ref', 'HEAD']);
   if (remote.host === 'github') {
     // gh's own --watch polls real state to a terminal status (no iteration counter).
     const ref = opts.id ? String(opts.id) : branch;
     const res = runTool('gh', ['pr', 'checks', ref, '--watch'], { stdio: 'inherit' });
     exitFromSpawn(res);
   }
-  console.error('[pr] watch for Azure DevOps is not yet implemented — use: az repos pr show --id <N>');
-  process.exit(1);
+  return runAzureWatch(opts, branch);
+}
+
+/**
+ * Resolve the PR id from --id, else the open PR for this branch. Null if none.
+ * A source branch can legitimately have >1 open PR to different targets, so —
+ * matching verifyAutoComplete's own targetRefName filter above — prefer one
+ * targeting the repo's default branch and only fall back to the first result
+ * when none match.
+ */
+function azurePrId(opts, branch) {
+  if (opts.id) return String(opts.id);
+  let list;
+  try { list = JSON.parse(captureTool('az', ['repos', 'pr', 'list', '--source-branch', branch, '--output', 'json'])); }
+  catch (e) { console.error(`[pr] az repos pr list failed: ${e.message}`); list = []; }
+  const arr = Array.isArray(list) ? list : [];
+  const wantTarget = `refs/heads/${defaultBranch()}`;
+  const matched = arr.filter((p) => p && p.targetRefName === wantTarget);
+  const pool = matched.length ? matched : arr;
+  const pr = pool.length ? pool[0] : null;
+  return pr ? String(pr.pullRequestId) : null;
+}
+
+/**
+ * Azure DevOps has no native `pr --watch`. Poll the PR's authoritative STATUS field
+ * (the only trustworthy merge signal — never infer merge from build numbers) to a
+ * terminal state, AND surface the PR's own build-validation policy evaluation so a
+ * failed build holding up auto-complete isn't silent (the PR stays `active` forever
+ * on CI fail — status alone would hang).
+ *
+ * IMPORTANT: this uses `az repos pr policy list --id <id>`, NOT `az pipelines runs
+ * list --branch refs/heads/<branch>`. PR-triggered builds run against a synthetic
+ * merge ref (`refs/pull/<id>/merge`), not the source branch's own ref — querying by
+ * `refs/heads/<branch>` silently matches zero runs and the old code's bare `catch {}`
+ * swallowed that as "no news," so a build that failed within a minute of PR creation
+ * went unreported for the entire watch session (adopter incident, 2026-07-15: build
+ * failed at T+1min, watcher printed nothing for 10+ minutes). The policy-list API is
+ * scoped to the PR itself, so it can't drift from the thing being watched. Dedupes
+ * on real state transitions (no iteration counter), so it reads the same whether
+ * freshly armed or resumed. Exits 0 on merge, 1 on abandon.
+ */
+function runAzureWatch(opts, branch) {
+  const id = azurePrId(opts, branch);
+  if (!id) { console.error(`[pr] no open PR found for branch ${branch} (and no --id given).`); process.exit(1); }
+  const POLL_MS = 90_000;
+  const MAX_CONSECUTIVE_FAILURES = 5;
+  const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  let lastBuildStatus = '';
+  let consecutiveFailures = 0;
+  console.log(`[pr] watching PR #${id} (${branch}) — polling status + build policy every ${POLL_MS / 1000}s. Ctrl-C to stop.`);
+  for (;;) {
+    // 1) PR status — the authoritative merge signal. Terminal on completed/abandoned.
+    let status = '';
+    let policies = [];
+    try {
+      const pr = JSON.parse(captureTool('az', ['repos', 'pr', 'show', '--id', id, '--output', 'json']));
+      status = pr.status || '';
+      policies = JSON.parse(captureTool('az', ['repos', 'pr', 'policy', 'list', '--id', id, '--output', 'json']));
+      if (!Array.isArray(policies)) policies = [];
+      consecutiveFailures = 0;
+    } catch (e) {
+      consecutiveFailures += 1;
+      console.error(`[pr] poll error (PR #${id}): ${e.message} — retrying next cycle (${consecutiveFailures}/${MAX_CONSECUTIVE_FAILURES})`);
+      if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+        console.error(`[pr] ${MAX_CONSECUTIVE_FAILURES} consecutive poll failures for PR #${id} — az CLI may be unauthenticated or unreachable. Stopping watch (last known state is unknown, NOT a merge/abandon signal).`);
+        process.exit(1);
+      }
+      sleep(POLL_MS);
+      continue;
+    }
+    if (status === 'completed') { console.log(`[pr] ✓ PR #${id} MERGED (status=completed).`); process.exit(0); }
+    if (status === 'abandoned') { console.log(`[pr] ✗ PR #${id} ABANDONED — not merged.`); process.exit(1); }
+
+    // 2) Build-validation policy evaluation for THIS PR — emit on any state change so
+    //    a rejected build (CI failure) surfaces immediately instead of hanging silent
+    //    behind the still-active PR status.
+    const buildPolicy = policies.find((p) => p && p.configuration && p.configuration.type && p.configuration.type.displayName === 'Build');
+    const buildStatus = buildPolicy ? (buildPolicy.status || '') : '';
+    if (buildStatus && buildStatus !== lastBuildStatus) {
+      lastBuildStatus = buildStatus;
+      const buildId = buildPolicy.context && buildPolicy.context.buildId;
+      if (buildStatus === 'rejected') console.log(`[pr] ⚠ CI build FAILED for PR #${id} (buildId=${buildId ?? '?'}) — will NOT auto-merge; investigate the build.`);
+      else if (buildStatus === 'approved') console.log(`[pr] CI build succeeded for PR #${id} (buildId=${buildId ?? '?'}) — auto-complete should merge shortly.`);
+      else if (buildStatus === 'queued' || buildStatus === 'running') console.log(`[pr] CI build ${buildStatus} for PR #${id}...`);
+      else console.log(`[pr] CI build policy state: ${buildStatus}`);
+    }
+    sleep(POLL_MS);
+  }
 }
 
 // ── Main ─────────────────────────────────────────────────────────────────────
@@ -358,7 +466,7 @@ function main() {
 
   let remote;
   try {
-    const url = git('remote', 'get-url', 'origin').trim();
+    const url = git(['remote', 'get-url', 'origin']);
     remote = parseRemoteUrl(url);
   } catch (e) {
     console.error(`[pr] ${e.message}`);
@@ -370,7 +478,7 @@ function main() {
   if (opts.sub === 'watch') return runWatch(opts, remote);
 }
 
-module.exports = { parseRemoteUrl, parseArgs, buildCreatePlan, defaultBranch, winQuote, runTool, main };
+module.exports = { parseRemoteUrl, parseArgs, buildCreatePlan, defaultBranch, winQuote, runTool, azurePrId, main };
 
 if (require.main === module) {
   main();

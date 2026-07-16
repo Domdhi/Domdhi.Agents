@@ -237,6 +237,8 @@ Main Agent writes the TODO directly. Do NOT delegate assembly to a subagent — 
 
 **Total: N stories. Estimated: ~N hours.**
 
+**`⚠ PROD-VERIFY-REQUIRED` marker:** if a story ships a behavior change whose safety depends on a fact only provable in staging/prod (a data-coverage query, a human sign-off, a volume check) — tag its Status cell `⚠ PROD-VERIFY-REQUIRED` in addition to `[ ]`/`[x]`, regardless of which wave it's in. Don't rely on "gated on prod verification" language attached only to a LATER wave (e.g. a deferred final-wave retirement step) to imply earlier waves carry no such gate — an earlier-wave story can independently need the same checkpoint (e.g. a Wave 2 story ships a financial- or data-integrity-affecting behavior change while the TODO's gating language only calls out a later wave as "gated on prod verification" — the earlier wave's own risk goes unflagged). `/run-todo` should not mark a `⚠ PROD-VERIFY-REQUIRED` story's wave "complete" without surfacing that the checkpoint is still outstanding.
+
 ---
 
 ## Wave Plan

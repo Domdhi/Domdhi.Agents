@@ -223,10 +223,16 @@ async function runClaudeHook() {
 async function runGitPrecommit() {
     const { execFileSync } = require('child_process');
 
+    // --diff-filter=ACMRT: Added/Copied/Modified/Renamed/Type-changed. Renamed
+    // (R) MUST be included — a rename ≥50% similar that ALSO modifies content
+    // (e.g. `git mv old.js new.js` + appending a secret) reports status R, and
+    // the old ACM-only filter silently excluded it: `--name-only` still prints
+    // just the new path, so `git show :<newpath>` below reads the staged
+    // (modified) content correctly once the file survives this filter.
     let stagedFiles;
     try {
         stagedFiles = execFileSync(
-            'git', ['diff', '--cached', '--name-only', '--diff-filter=ACM'],
+            'git', ['diff', '--cached', '--name-only', '--diff-filter=ACMRT'],
             { cwd: getProjectRoot(), encoding: 'utf8', windowsHide: true }
         ).trim().split('\n').filter(Boolean);
     } catch {
@@ -244,7 +250,10 @@ async function runGitPrecommit() {
         try {
             content = execFileSync(
                 'git', ['show', `:${file}`],
-                { cwd: getProjectRoot(), encoding: 'utf8', windowsHide: true }
+                // maxBuffer: the 1MB default ENOBUFS'd on a 2MB staged report and the
+                // scan SKIPPED it (fail-open on exactly the large generated reviews
+                // most likely to echo a secret — observed 2026-07-16).
+                { cwd: getProjectRoot(), encoding: 'utf8', windowsHide: true, maxBuffer: 64 * 1024 * 1024 }
             );
         } catch (err) {
             // File might be binary or deleted — but a TRANSIENT `git show` error

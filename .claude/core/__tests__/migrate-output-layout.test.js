@@ -500,3 +500,45 @@ describe('runRefs / runVerify — fileset rewrite & exit semantics', () => {
         expect(after.violations).toEqual([]);
     });
 });
+
+// F52 (council-260715-2244) + W6-M1: the batched first-add map. The header
+// sentinel must be shape-matched — repo paths legitimately start with '@'
+// (`@scope/pkg/x.js`), and a bare startsWith('@') parse swallowed such a FILE
+// line as a header, clobbering the current stamp and dropping every path after
+// it in that commit (live repro emptied the whole map).
+describe('buildCreateStampMap — one batched git pass (F52), @-path safe (W6-M1)', () => {
+    function gitAvailable() {
+        try { execFileSync('git', ['--version'], { stdio: 'ignore' }); return true; } catch { return false; }
+    }
+
+    it.skipIf(!gitAvailable())('maps every file to its first-add stamp even when an @-prefixed path shares the commit', () => {
+        const root = mkTmp();
+        try {
+            const run = (args) => execFileSync('git', args, { cwd: root, stdio: 'pipe', env: { ...process.env, GIT_AUTHOR_DATE: '2026-05-01T10:00:00', GIT_COMMITTER_DATE: '2026-05-01T10:00:00' } });
+            run(['init', '-b', 'main']);
+            run(['config', 'user.name', 'T']);
+            run(['config', 'user.email', 't@example.com']);
+            run(['config', 'commit.gpgsign', 'false']);
+            write(root, '@scope/pkg/a.js', 'a');
+            write(root, 'plain.md', 'p');
+            write(root, 'zz-after.md', 'z');
+            run(['add', '-A']);
+            run(['commit', '-m', 'seed']);
+
+            const hist = mig.buildCreateStampMap(root);
+            expect(hist).toBeTruthy();
+            // All three files stamped — including the @-path itself and the
+            // files listed AFTER it in the same commit (the old parse dropped both).
+            expect(hist.map.get('@scope/pkg/a.js')).toBe('260501-1000');
+            expect(hist.map.get('plain.md')).toBe('260501-1000');
+            expect(hist.map.get('zz-after.md')).toBe('260501-1000');
+
+            // stampFromMap resolves files directly and directories by prefix.
+            expect(mig.stampFromMap(hist, path.join(root, 'plain.md'))).toBe('260501-1000');
+            expect(mig.stampFromMap(hist, path.join(root, '@scope'))).toBe('260501-1000');
+            expect(mig.stampFromMap(hist, path.join(root, 'never-added.md'))).toBeNull();
+        } finally {
+            fs.rmSync(root, { recursive: true, force: true });
+        }
+    });
+});

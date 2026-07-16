@@ -17,6 +17,7 @@
 const fs = require('fs');
 const path = require('path');
 const { mergeAgentFile } = require('./agent-merger');
+const { safeCopy } = require('./fs-safe');
 
 /**
  * Copy srcPath to dstPath with zone-aware enforcement.
@@ -27,11 +28,13 @@ const { mergeAgentFile } = require('./agent-merger');
  * @param {object} [opts]
  * @param {boolean} [opts.merge]   — handle mixed-zone files with section-aware merge
  * @param {boolean} [opts.dryRun]  — preview actions without writing any files
+ * @param {string}  [opts.containRoot] — destination project root; enables the
+ *                  symlinked-ancestor guard in safeCopy (fleet:sync trust boundary)
  * @returns {{ action: string, changed?: boolean, diff?: string }}
  */
 function copyWithZoneEnforcement(srcPath, dstPath, zone, opts) {
     opts = opts || {};
-    const { merge = false, dryRun = false } = opts;
+    const { merge = false, dryRun = false, containRoot } = opts;
 
     switch (zone) {
         case 'template': {
@@ -39,7 +42,7 @@ function copyWithZoneEnforcement(srcPath, dstPath, zone, opts) {
                 return { action: 'would-copy' };
             }
             fs.mkdirSync(path.dirname(dstPath), { recursive: true });
-            fs.copyFileSync(srcPath, dstPath);
+            safeCopy(srcPath, dstPath, containRoot);
             return { action: 'copy' };
         }
 

@@ -38,12 +38,16 @@ const { loadMemoryMetrics } = require('./_lib/memory-metrics');
 const { loadGitMetrics }    = require('./_lib/git-metrics');
 const { readSummary }       = require('./_lib/gate-summary');
 const { generateHtml, esc } = require('./_lib/status-html');
+const { getJsonlPath }      = require('./_lib/telemetry-paths');
+const { OUTPUT_ROOT, compartmentDir } = require('./_lib/output-paths');
+const { DOC_PATHS }         = require('./constants');
 
 const PROJECT_ROOT = process.env.CLAUDE_PROJECT_DIR || path.resolve(__dirname, '..', '..');
 // ADR 0006: generated dashboards are regenerable state → docs/.output/.state/.
 // OUTPUT_DIR feeds both status.html and the decisions.html link below (line ~688),
-// so both land in .state together.
-const OUTPUT_DIR   = path.join(PROJECT_ROOT, 'docs', '.output', '.state');
+// so both land in .state together. The `docs/.output` prefix comes from the
+// output-paths.js "only door" (OUTPUT_ROOT); `.state` is the stable zone segment.
+const OUTPUT_DIR   = path.join(PROJECT_ROOT, OUTPUT_ROOT, '.state');
 const OUTPUT_FILE  = path.join(OUTPUT_DIR, 'status.html');
 const TEXT_ONLY    = process.argv.includes('--text-only');
 
@@ -237,7 +241,7 @@ function parseStoryHeaderChecklist(lines, result, storyHeader) {
 // directory layout and have no other consumers.
 
 function computeTelemetryMetrics(projectRoot) {
-  const telemetryFile = path.join(projectRoot, 'docs', '.output', '.state', 'telemetry', 'command-usage.jsonl');
+  const telemetryFile = getJsonlPath(projectRoot, 'command-usage.jsonl');
   if (!fs.existsSync(telemetryFile)) return null;
   let raw;
   try { raw = fs.readFileSync(telemetryFile, 'utf8'); } catch { return null; }
@@ -269,7 +273,7 @@ function computeTelemetryMetrics(projectRoot) {
   }
 
   let sessions = 0;
-  const sessionsDir = path.join(projectRoot, 'docs', '.output', '.state', 'sessions');
+  const sessionsDir = path.join(projectRoot, compartmentDir('state/sessions'));
   try {
     if (fs.existsSync(sessionsDir))
       sessions = fs.readdirSync(sessionsDir, { withFileTypes: true }).filter(e => e.isDirectory()).length;
@@ -281,7 +285,7 @@ function computeTelemetryMetrics(projectRoot) {
 
 // Parse memory-benchmark.jsonl for last-30-days hit rate (AMEM-8.1).
 function parseMemoryBenchmark(projectRoot) {
-  const file = path.join(projectRoot, 'docs', '.output', '.state', 'telemetry', 'memory-benchmark.jsonl');
+  const file = getJsonlPath(projectRoot, 'memory-benchmark.jsonl');
   if (!fs.existsSync(file)) return null;
   let raw;
   try { raw = fs.readFileSync(file, 'utf8'); } catch { return null; }
@@ -365,7 +369,7 @@ function printTextSummary(files, telemetry, gitMetrics, memMetrics, gateSummary 
     } else {
       console.log('    Gates: no gate data');
     }
-    const commitVelocity = gitMetrics ? gitMetrics.activeDays : 0;
+    const commitVelocity = gitMetrics ? gitMetrics.commits7d : 0;
     console.log(`    Commits (7d): ${commitVelocity}  |  Sessions: ${telemetry.sessions}`);
     if (telemetry.memoryBenchmark) {
       const mb = telemetry.memoryBenchmark;
@@ -461,7 +465,7 @@ function resolveEpicChecklist(projectRoot, epicId, checklistCell) {
   const num = String(epicId).match(/\d+/);
   if (!num) return null;
   const nn = num[0].padStart(2, '0');
-  const todoDir = path.join(projectRoot, 'docs', 'work', 'todo');
+  const todoDir = path.join(projectRoot, 'docs', DOC_PATHS.todo);
   if (!fs.existsSync(todoDir)) return null;
   let entries;
   try { entries = fs.readdirSync(todoDir); } catch { return null; }
@@ -474,7 +478,7 @@ function resolveEpicChecklist(projectRoot, epicId, checklistCell) {
 // `## Phase N:` / `### Epic N:` grouping. Returns null if the backlog is
 // absent/unparseable — callers then leave per-phase Done cells unchanged.
 function buildPhaseEpicMap(projectRoot) {
-  const backlogPath = path.join(projectRoot, 'docs', 'work', 'backlog.md');
+  const backlogPath = path.join(projectRoot, 'docs', DOC_PATHS.backlog);
   if (!fs.existsSync(backlogPath)) return null;
   let content;
   try { content = fs.readFileSync(backlogPath, 'utf8'); } catch { return null; }

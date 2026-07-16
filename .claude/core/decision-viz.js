@@ -27,12 +27,15 @@ const path = require('path');
 const CONSTANTS = require('./constants');
 const { loadDecisionData } = require('./_lib/decision-graph');
 const { renderDecisionHtml, printTextSummary, esc } = require('./_lib/decision-html');
+const { OUTPUT_ROOT } = require('./_lib/output-paths');
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const PROJECT_ROOT = process.env.CLAUDE_PROJECT_DIR || path.resolve(__dirname, '..', '..');
 // ADR 0006: generated dashboards are regenerable state → docs/.output/.state/.
-const OUTPUT_DIR = path.join(PROJECT_ROOT, 'docs', '.output', '.state');
+// The `docs/.output` prefix comes from the output-paths.js "only door" (OUTPUT_ROOT);
+// `.state` is the stable regenerable-state zone segment.
+const OUTPUT_DIR = path.join(PROJECT_ROOT, OUTPUT_ROOT, '.state');
 const OUTPUT_FILE = path.join(OUTPUT_DIR, 'decisions.html');
 const TEXT_ONLY = process.argv.includes('--text-only');
 
@@ -63,6 +66,20 @@ function collectData() {
 }
 
 /**
+ * F8: resolve the display name from PROJECT_ROOT — the renderer's own fallback
+ * reads process.cwd(), so a dashboard generated from any other working
+ * directory silently picked up the WRONG project name. This is the anchoring
+ * convention every other caller-side path already follows.
+ */
+function projectNameFromRoot(root) {
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+    if (pkg.name) return pkg.name;
+  } catch { /* no/invalid package.json — use the folder name */ }
+  return path.basename(root);
+}
+
+/**
  * Render the decisions HTML from a data object.
  * Backward-compat wrapper — was generateHtml(data) in the original.
  *
@@ -70,7 +87,7 @@ function collectData() {
  * @returns {string}
  */
 function generateHtml(data) {
-  return renderDecisionHtml(data, { _maxDays: MAX_DAYS });
+  return renderDecisionHtml(data, { _maxDays: MAX_DAYS, _projectName: projectNameFromRoot(PROJECT_ROOT) });
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
@@ -86,7 +103,7 @@ function main() {
     }
     // renderDecisionHtml internally invokes toTimelineNodes + toNetworkGraph on
     // `data`; no need to call them here separately.
-    const html = renderDecisionHtml(data, { _maxDays: MAX_DAYS });
+    const html = renderDecisionHtml(data, { _maxDays: MAX_DAYS, _projectName: projectNameFromRoot(PROJECT_ROOT) });
     fs.writeFileSync(OUTPUT_FILE, html, 'utf8');
     console.log(`  Dashboard: ${path.relative(PROJECT_ROOT, OUTPUT_FILE)}`);
     console.log('');

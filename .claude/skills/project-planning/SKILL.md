@@ -1,6 +1,6 @@
 ---
 name: project-planning
-description: "Use when creating or updating any project planning document — brainstorm/research, project brief, requirements/PRD, epics/stories backlog, or the project-context quick-reference. Covers: brainstorm, research, problem space, ideation, market analysis, validation, project brief, vision, strategic, PRD, requirements, functional requirements, non-functional, MoSCoW, user stories, epic, story, backlog, sprint, acceptance criteria, dependency ordering, estimation, project context, project setup, project overview."
+description: "Use WHEN creating or updating any project planning document — brainstorm/research, project brief, requirements/PRD, epics/stories backlog, or the project-context quick-reference. Covers: brainstorm, research, problem space, ideation, market analysis, validation, project brief, vision, strategic, PRD, requirements, functional requirements, non-functional, MoSCoW, user stories, epic, story, backlog, sprint, acceptance criteria, dependency ordering, estimation, project context, project setup, project overview."
 metadata:
   version: 1.1.0
   author: Domdhi.Agents
@@ -51,6 +51,12 @@ These rules apply across every document in the pipeline:
    - If the user volunteers a pick, record it as a **stated preference for the architecture phase to weigh**, not as a locked decision. Don't recommend tools the user didn't ask for. A premature pick in a planning doc anchors every downstream agent into rubber-stamping or arguing against it, and collides with the architecture phase's own (correct) reasoning. Strip the pick and the architect reasons cleanly from the constraints — which is its job.
 
 5. **Verify an asserted fact before you build a plan on it.** Before sizing a TODO/backlog around a claimed *system behavior* (a capability gap, a missing dependency, a limitation) or around a *research/synthesis doc's recommendation*, prove the claim against reality first — a 30-second probe, or a grep/read of the live code. Do not trust the assertion (or a stale research doc) on faith. A whole remediation backlog was once built on "FTS5 needs an npm install" — false; a one-line `node -e` probe disproved it. Verify *each* "we should fix X" against the actual files before it becomes scoped work; an unverified premise produces a plan that solves a problem that does not exist.
+
+6. **File Ownership Matrix: trace each AC bullet to the file it actually forces a change in.** A wave's "disjoint files" claim built from each story's *stated* file budget is unreliable: a story whose AC dictates new branching logic INSIDE a method owned by another story in the same wave is a same-file conflict regardless of its stated budget (calling another file's public method is parallel-safe; requiring new behavior inside it is not). Trace the AC → behavior-target file before declaring a wave parallelizable. (Field-proven on an adopter project: a wave collapsed to sequential when two stories' ACs both forced changes inside one method — retro-calendar-recurrence.)
+
+7. **Precedent citations in dispatch prompts must name the file TYPE and match it.** When a plan or dispatch prompt cites an existing file as precedent for a pattern that a guard test polices (e.g. direct factory injection), verify the cited file's type matches the target's — a code-behind precedent does NOT justify the same pattern in a markup file when the guard exempts one and fails the other. (Field-proven: a story failed its gate because the cited precedent was a file type the guard exempted.)
+
+8. **HIGH-risk epics get the 4-layer review chain as standing wave-plan line items:** per-wave review → mid-epic checkpoint → full-epic cross-wave pass → independent retro. Each layer has found real, non-overlapping MAJORs in the field (one integration-breaking bug survived 3 prior passes and fell to the fourth). Schedule the mid-epic checkpoint and full-epic pass in the plan itself, not ad hoc.
 
 ---
 

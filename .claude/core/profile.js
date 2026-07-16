@@ -11,8 +11,12 @@
  * Default: 'standard'. Unknown values fall back to 'standard' with a one-time stderr warning.
  */
 
-const PROFILE_ORDER = ['minimal', 'standard', 'strict'];
-const DEFAULT_PROFILE = 'standard';
+// F53: single-sourced from constants.js (whose file-level contract is "all
+// configurable values are defined here") — the local literals this replaced
+// could silently drift from MEMORY_PROFILE.ORDER/.DEFAULT.
+const { MEMORY_PROFILE } = require('./constants');
+const PROFILE_ORDER = MEMORY_PROFILE.ORDER;
+const DEFAULT_PROFILE = MEMORY_PROFILE.DEFAULT;
 
 let warned = false;
 

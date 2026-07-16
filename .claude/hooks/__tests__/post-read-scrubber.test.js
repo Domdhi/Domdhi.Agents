@@ -15,7 +15,7 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 
-const { processEvent, extractOutput, inferToolKind } = require('../post-read-scrubber.cjs');
+const { processEvent, extractOutput, inferToolKind, capForScan, BASH_SCAN_HEAD_BYTES, BASH_SCAN_TAIL_BYTES } = require('../post-read-scrubber.cjs');
 
 // ─── Fake secret builders (runtime concatenation avoids pre-commit hook) ──────
 
@@ -115,6 +115,46 @@ describe('post-read-scrubber', () => {
             }
         });
 
+        // F8 (260716 code review): stderr was never included in the scan
+        // target — a command that only prints a secret to stderr (e.g. a
+        // failing curl echoing a leaked token) reached the model unscrubbed.
+        it('processEvent_bashStderrOnlySecret_emitsRedactionJson', () => {
+            const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+            try {
+                processEvent({
+                    tool_name: 'Bash',
+                    tool_input: { command: 'curl https://example.com' },
+                    tool_response: { stdout: '', stderr: `curl: auth failed for token=${fakeAwsKey()}` },
+                });
+                const out = stdoutSpy.mock.calls.map(c => c[0]).join('');
+                expect(out).toMatch(/updatedToolOutput/);
+                expect(out).toMatch(/<REDACTED:/);
+            } finally {
+                stdoutSpy.mockRestore();
+            }
+        });
+
+        it('processEvent_bashStdoutAndStderrSecrets_bothRedacted', () => {
+            const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+            try {
+                processEvent({
+                    tool_name: 'Bash',
+                    tool_input: { command: 'some-script' },
+                    tool_response: {
+                        stdout: `out: ${fakeAwsKey()}`,
+                        stderr: `err: ${fakeAwsKey()}`,
+                    },
+                });
+                const out = stdoutSpy.mock.calls.map(c => c[0]).join('');
+                const payload = JSON.parse(out);
+                const redacted = payload.hookSpecificOutput.updatedToolOutput;
+                expect(redacted).not.toContain(fakeAwsKey());
+                expect(redacted).toContain('<REDACTED:');
+            } finally {
+                stdoutSpy.mockRestore();
+            }
+        });
+
         it('processEvent_readSecret_redactionNoteInWarning', () => {
             const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
             try {
@@ -151,6 +191,67 @@ describe('post-read-scrubber', () => {
             expect(extractOutput({ tool_response: 'c' })).toBe('c');
             expect(extractOutput({ tool_output: 'd' })).toBe('d');
             expect(extractOutput({})).toBe('');
+        });
+
+        // F8 (260716 code review): stderr must be part of the scan target.
+        it('reads stderr-only Bash output', () => {
+            expect(extractOutput({ tool_response: { stdout: '', stderr: 'err text' } })).toBe('err text');
+        });
+
+        it('concatenates stdout and stderr when both are present', () => {
+            expect(extractOutput({ tool_response: { stdout: 'out text', stderr: 'err text' } }))
+                .toBe('out text\nerr text');
+        });
+    });
+
+    // F70 (council-260715-2244): the 55-regex sweep over Bash stdout is capped —
+    // head + tail only past the byte cap, so a 200k-line build log can't add
+    // ~1s+ of synchronous hook latency to every Bash call.
+    describe('capForScan (F70 Bash stdout cap)', () => {
+        it('returns small input unchanged', () => {
+            expect(capForScan('short output')).toBe('short output');
+        });
+
+        it('bounds large input to head + tail (never scans the full log)', () => {
+            const line = 'npm WARN deprecated something@1.0.0: use another package\n';
+            const big = line.repeat(Math.ceil((BASH_SCAN_HEAD_BYTES + BASH_SCAN_TAIL_BYTES) * 4 / line.length));
+            const capped = capForScan(big);
+            expect(capped.length).toBeLessThanOrEqual(BASH_SCAN_HEAD_BYTES + BASH_SCAN_TAIL_BYTES + 1);
+            expect(capped.startsWith(big.slice(0, 200))).toBe(true);
+            expect(capped.endsWith(big.slice(-200))).toBe(true);
+        });
+
+        it('a secret in the HEAD or TAIL of an over-cap Bash log is still detected', () => {
+            const filler = 'x'.repeat(200) + '\n';
+            const noise = filler.repeat(Math.ceil((BASH_SCAN_HEAD_BYTES + BASH_SCAN_TAIL_BYTES) * 2 / filler.length));
+            for (const stdout of [`AWS_KEY=${fakeAwsKey()}\n${noise}`, `${noise}\nAWS_KEY=${fakeAwsKey()}`]) {
+                const writes = [];
+                const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation((s) => { writes.push(String(s)); return true; });
+                try {
+                    processEvent({ tool_name: 'Bash', tool_input: { command: 'env' }, tool_response: { stdout } });
+                } finally {
+                    stdoutSpy.mockRestore();
+                }
+                expect(writes.join('')).toContain('REDACTED');
+            }
+        });
+
+        it('DOCUMENTED DEGRADATION: a secret ONLY in the skipped middle of an over-cap log is NOT detected', () => {
+            // This pins the F70 trade-off exactly. If the cap is ever widened,
+            // narrowed, or removed, this test flags the change in either direction.
+            const filler = 'x'.repeat(200) + '\n';
+            const half = filler.repeat(Math.ceil((BASH_SCAN_HEAD_BYTES + BASH_SCAN_TAIL_BYTES) / filler.length));
+            const stdout = `${half}AWS_KEY=${fakeAwsKey()}\n${half}`;
+            const writes = [];
+            const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation((s) => { writes.push(String(s)); return true; });
+            let result;
+            try {
+                result = processEvent({ tool_name: 'Bash', tool_input: { command: 'env' }, tool_response: { stdout } });
+            } finally {
+                stdoutSpy.mockRestore();
+            }
+            expect(result).toBeNull();
+            expect(writes.join('')).not.toContain('REDACTED');
         });
     });
 });

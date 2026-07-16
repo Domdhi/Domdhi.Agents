@@ -37,9 +37,10 @@
 // moves. Override per-project/session via the CLAUDE_COMMIT_TRAILER env var, e.g.
 //   CLAUDE_COMMIT_TRAILER='Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>'
 
-const { execFileSync, spawnSync } = require('node:child_process');
+const { spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
+const { git } = require('./_lib/git');
 
 const TRAILER =
   process.env.CLAUDE_COMMIT_TRAILER || 'Co-Authored-By: Claude <noreply@anthropic.com>';
@@ -84,19 +85,15 @@ function parseArgs(args) {
   return { stageAll, amend, dryRun, fileIdx, msgFile, inlineMsg, noScan, paths };
 }
 
-function git(...a) {
-  return execFileSync('git', a, { encoding: 'utf8' });
-}
-
 // `git rev-parse --abbrev-ref HEAD` fails on an unborn branch (a fresh `git init`
 // with zero commits yet) — HEAD is a symref with nothing to resolve to. This is
 // exactly the state of a brand-new scaffolded repo's FIRST commit, so fall back to
 // `symbolic-ref`, which reads the symref name directly and works with no commits.
 function currentBranch() {
   try {
-    return git('symbolic-ref', '--short', 'HEAD').trim();
+    return git(['symbolic-ref', '--short', 'HEAD']);
   } catch {
-    return git('rev-parse', '--abbrev-ref', 'HEAD').trim();
+    return git(['rev-parse', '--abbrev-ref', 'HEAD']);
   }
 }
 
@@ -204,13 +201,13 @@ function main() {
     // Stage EXACTLY the listed paths. NOTE: --paths *adds* to the index — any
     // files staged before this call are still committed. For strict isolation,
     // commit from a clean index.
-    git('add', '--', ...paths);
+    git(['add', '--', ...paths]);
     console.log(`[commit] staged paths: ${paths.join(' ')}`);
-    const stagedSet = git('diff', '--cached', '--name-only').trim();
+    const stagedSet = git(['diff', '--cached', '--name-only']);
     console.log('[commit] staged set now:');
     console.log(stagedSet ? stagedSet.split('\n').map((f) => `  ${f}`).join('\n') : '  (nothing staged)');
   } else if (stageAll) {
-    git('add', '-A');
+    git(['add', '-A']);
     console.log('[commit] staged all changes (git add -A)');
   }
 
@@ -223,13 +220,13 @@ function main() {
   // before the commit detects any index change under us. With the only-staged
   // default and a single stager the oids always match and this never fires.
   let stagedTreeOid = null;
-  try { stagedTreeOid = git('write-tree').trim(); } catch { /* unborn/empty index — no tree to guard */ }
+  try { stagedTreeOid = git(['write-tree']); } catch { /* unborn/empty index — no tree to guard */ }
 
   runScan(noScan);
 
   if (stagedTreeOid !== null) {
     let treeNow = null;
-    try { treeNow = git('write-tree').trim(); } catch { /* leave null → skip the compare */ }
+    try { treeNow = git(['write-tree']); } catch { /* leave null → skip the compare */ }
     if (treeNow !== null && treeNow !== stagedTreeOid) {
       console.error('[commit] ABORT: the staged set changed between the secret scan and the commit (a concurrent `git add`?). Re-run so the new content is scanned before it is committed.');
       process.exit(1);
@@ -261,7 +258,7 @@ function main() {
     }
   }
 
-  console.log(`[commit] done: ${git('log', '-1', '--format=%h %s').trim()}`);
+  console.log(`[commit] done: ${git(['log', '-1', '--format=%h %s'])}`);
 }
 
 if (require.main === module) {

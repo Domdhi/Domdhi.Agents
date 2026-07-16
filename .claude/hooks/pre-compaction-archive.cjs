@@ -20,40 +20,53 @@
 const fs = require('fs');
 const path = require('path');
 const DailyLog = require('../core/daily-log');
+const { resolveProjectRoot } = require('../core/_lib/project-root');
 
 // Anchor writes to the repo root — not the caller's CWD. Without this, a prior
 // `cd src && ...` in the same shell session leaves the hook's CWD at `src/`,
 // and a subsequent /compact dumps the snapshot into `src/docs/.output/.state/sessions/`
 // and the daily log into `src/docs/.output/.state/memory-daily/`. Match the
 // convention used by command-usage-logger.cjs, gate.js, and ~10 other core
-// scripts: CLAUDE_PROJECT_DIR env var first, else resolve from __dirname
-// (hook lives at .claude/hooks/, so ../../ is repo root).
+// scripts: CLAUDE_PROJECT_DIR env var first, else resolve worktree-safely via
+// _lib/project-root.js's resolveProjectRoot() (git-common-dir — anchors the
+// GITIGNORED docs/.output/.state/ writes to the shared MAIN worktree instead
+// of whichever linked worktree happens to be current; hook lives at
+// .claude/hooks/, so ../../ is repo root).
 //
 // Resolved lazily (not at module load) so in-process tests can set
 // CLAUDE_PROJECT_DIR per test case via beforeEach/afterEach without having to
 // reload the module.
 function getProjectRoot() {
-    return process.env.CLAUDE_PROJECT_DIR || path.resolve(__dirname, '..', '..');
+    return resolveProjectRoot(path.resolve(__dirname, '..', '..'));
 }
 
-function readStdin() {
-    return new Promise((resolve) => {
-        let data = '';
-        process.stdin.setEncoding('utf8');
-        process.stdin.on('data', (chunk) => { data += chunk; });
-        process.stdin.on('end', () => resolve(data));
-        process.stdin.on('error', () => resolve(''));
-        setTimeout(() => resolve(data), 1000);
-    });
-}
+// F73: shared stdin plumbing — the hand-rolled copy this replaced had DROPPED
+// hook-input.js's TTY fast-path (a manual terminal invocation hung on the
+// 1000ms timeout instead of resolving immediately). readHookInput() restores it.
+const { readHookInput } = require('../core/_lib/hook-input');
+const readStdin = () => readHookInput({ timeoutMs: 1000 });
 
 function buildSnapshot(projectRoot, log, trigger) {
     const now = new Date();
     const timestamp = now.toISOString().slice(0, 19).replace('T', ' ');
 
-    const gitStatus = log.run('git status --short');
+    // F74: two git spawns, not three — `--branch` folds the branch name into
+    // the status output's first line (`## <branch>...<upstream>`), replacing
+    // the separate `git branch --show-current` subprocess. Strip that header
+    // line back off so gitStatus stays the bare --short listing it always was.
+    const statusWithBranch = log.run('git status --short --branch');
+    const statusLines = statusWithBranch.split('\n');
+    const branchHeader = statusLines[0] && statusLines[0].startsWith('## ') ? statusLines.shift() : null;
+    const gitStatus = statusLines.join('\n').replace(/\n+$/, '');
     const gitLog = log.run('git log --oneline -5');
-    const branch = log.run('git branch --show-current');
+    // `## main...origin/main [ahead 1]` → `main`; detached HEAD reports
+    // `## HEAD (no branch)` → '' (same empty result `--show-current` gives);
+    // an unborn branch reports `## No commits yet on <branch>`.
+    let branch = '';
+    if (branchHeader && !branchHeader.startsWith('## HEAD')) {
+        const unborn = branchHeader.match(/^## No commits yet on (.+)$/);
+        branch = unborn ? unborn[1].trim() : branchHeader.slice(3).split('...')[0].trim();
+    }
     const inProgress = log.findInProgressTodos();
     const decisions = log.findKeyDecisions();
 
@@ -203,6 +216,12 @@ async function main() {
 }
 
 if (require.main === module) {
+    // P1.7 — hook duration instrumentation (F75), same pattern as siblings.
+    const { startHookTiming, emitHookEvent } = require('../core/_lib/hook-telemetry');
+    const _hookToken = startHookTiming('pre-compaction-archive');
+    process.on('exit', () => {
+        try { emitHookEvent(_hookToken, 'success'); } catch { /* never fail on telemetry */ }
+    });
     main();
 }
 

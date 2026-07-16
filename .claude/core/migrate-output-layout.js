@@ -367,6 +367,72 @@ function createStamp(fromAbs, gitCwd) {
 }
 
 /**
+ * F52: one batched first-add map for the whole repo, replacing a full
+ * `git log --reverse` spawn PER parked artifact under --date-undated. One
+ * oldest-first `--diff-filter=A --name-only` pass records each path's first
+ * add stamp; lookups are O(1) per file. Returns null when git is unavailable
+ * (callers fall back to the per-file query / fs birthtime).
+ * @returns {{ repoRoot: string, map: Map<string, string> } | null}
+ */
+function buildCreateStampMap(gitCwd) {
+    if (!gitCwd) return null;
+    try {
+        const repoRoot = execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd: gitCwd })
+            .toString().trim();
+        const out = execFileSync(
+            'git',
+            ['log', '--reverse', '--diff-filter=A', '--name-only', '--format=@%ad', '--date=format:%y%m%d-%H%M'],
+            { cwd: gitCwd, maxBuffer: 256 * 1024 * 1024 },
+        ).toString();
+        const map = new Map();
+        let cur = null;
+        for (const line of out.split('\n')) {
+            // Sentinel by SHAPE, not prefix — repo paths legitimately start
+            // with '@' (`@scope/pkg/x.js`), and a bare startsWith('@') would
+            // swallow such a file line as a "header", clobbering `cur` and
+            // dropping every path after it in that commit (W6-M1, live repro).
+            // A `--date=format:%y%m%d-%H%M` header always matches this shape;
+            // an @-path never does.
+            if (/^@\d{6}-\d{4}$/.test(line)) { cur = line.slice(1); continue; }
+            const t = line.trim();
+            // first sighting wins — the log is oldest-first, so this is the first add
+            if (t && cur && !map.has(t)) map.set(t, cur);
+        }
+        // Canonicalize: git emits the LONG-name root while Node-fs callers can hold
+        // the 8.3 short-name alias (Windows profile with a dotted username sets
+        // %TEMP% to DBACA~1-style paths) — path.relative on the mixed pair mangles
+        // every key and each stamp lookup silently misses (memory:
+        // windows-short-name-tempdir-breaks-git-path-equality).
+        return { repoRoot: canonicalAbs(repoRoot), map };
+    } catch {
+        return null;
+    }
+}
+
+/** Long-name canonical form of an absolute path; falls back to the input when it doesn't resolve. */
+function canonicalAbs(p) {
+    try { return fs.realpathSync.native(p); } catch { return p; }
+}
+
+/**
+ * Resolve a parked item's stamp from the batched map: exact path for files;
+ * for a DIRECTORY (git records file paths only) the earliest add under its
+ * prefix — the same commit the old per-path `git log -- <dir>` found first.
+ * Returns null on a miss (item untracked) — caller falls to fs birthtime.
+ */
+function stampFromMap(stampHistory, fromAbs) {
+    const key = path.relative(stampHistory.repoRoot, canonicalAbs(fromAbs)).replace(/\\/g, '/');
+    const direct = stampHistory.map.get(key);
+    if (direct) return direct;
+    const prefix = key + '/';
+    let earliest = null; // YYMMDD-HHMM sorts lexically = chronologically
+    for (const [k, v] of stampHistory.map) {
+        if (k.startsWith(prefix) && (earliest === null || v < earliest)) earliest = v;
+    }
+    return earliest;
+}
+
+/**
  * Plan a real home for each parked artifact:
  *   - LEDGER_KEEP file → {targetDir}/{name}            (root, no month, no date)
  *   - otherwise        → {targetDir}/{YYYY-MM}/{stamp}-{name}   (dated + bucketed)
@@ -423,8 +489,15 @@ function runMove(outputRoot, { apply = false, dateUndated = false } = {}) {
     const gitCwd = isGitTracked(absOut) ? absOut : null;
     const plan = planMoves(absOut);
     if (dateUndated) {
+        // F52: ONE history pass for all parked items; per-item lookup, with the
+        // fs-birthtime fallback (createStamp with no gitCwd) for untracked
+        // items. If the batched query itself failed, degrade to the original
+        // per-file git query.
+        const stampHistory = buildCreateStampMap(gitCwd);
         const { homed, stillParked } = datedHoming(plan.parked, absOut, {
-            stampFn: (fromAbs) => createStamp(fromAbs, gitCwd),
+            stampFn: (fromAbs) => stampHistory
+                ? (stampFromMap(stampHistory, fromAbs) || createStamp(fromAbs, null))
+                : createStamp(fromAbs, gitCwd),
         });
         plan.homed = homed;
         plan.parked = stillParked;
@@ -672,6 +745,8 @@ module.exports = {
     planMoves,
     datedHoming,
     createStamp,
+    buildCreateStampMap,
+    stampFromMap,
     LEDGER_KEEP,
     runMove,
     rewriteLine,

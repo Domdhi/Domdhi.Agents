@@ -56,7 +56,13 @@ function entry(kind) {
     const e = OUTPUT_PATHS[kind];
     if (!e) {
         // Open taxonomy — treat the kind itself as the dir, default durable/discrete/month.
-        return { dir: kind, zone: 'durable', shape: 'discrete', bucket: 'month', _synthetic: true };
+        // F16: an unregistered `kind` is caller-controlled and, unlike `slug`, was never
+        // sanitized — '../../../../etc' or an absolute path rode straight into
+        // compartmentDir()'s path.join()+mkdirSync(recursive) and escaped OUTPUT_ROOT.
+        // sanitizeKindPath() closes that BEFORE the dir is ever used. Registered kinds
+        // (the `e` branch below) are a fixed, hardcoded whitelist in constants.js and
+        // never need this — their `dir` (incl. legitimately nested ones) passes through.
+        return { dir: sanitizeKindPath(kind), zone: 'durable', shape: 'discrete', bucket: 'month', _synthetic: true };
     }
     if (e.group) {
         throw new Error(`"${kind}" is a grouping compartment — use a sub-compartment (e.g. "${kind}/...").`);
@@ -72,6 +78,24 @@ function slugify(raw) {
         .replace(/-+/g, '-')
         .replace(/^-|-$/g, '')
         .toLowerCase() || 'untitled';
+}
+
+/**
+ * F16: sanitize a caller-supplied `kind` before it becomes a directory segment
+ * for an UNREGISTERED (open-taxonomy) compartment. Splits on both `/` and `\`,
+ * drops empty / `.` / `..` segments (kills path traversal AND an absolute-path
+ * leader, since a leading separator just yields an empty segment that's
+ * dropped), then slugify()s each surviving segment (kills anything outside the
+ * filename-safe charset — slugify alone is not enough here since it allows
+ * `.`, so a literal '..' segment would otherwise survive untouched).
+ */
+function sanitizeKindPath(kind) {
+    const segments = String(kind == null ? '' : kind)
+        .split(/[\\/]+/)
+        .map((seg) => seg.trim())
+        .filter((seg) => seg !== '' && seg !== '.' && seg !== '..')
+        .map((seg) => slugify(seg));
+    return segments.length ? segments.join('/') : 'untitled';
 }
 
 /** The bucket segment (YYYY-MM) for a compartment, or null when bucket:'none'. */

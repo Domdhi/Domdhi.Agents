@@ -1,11 +1,11 @@
 // AC→source map (P2.4 / git-metrics):
-//   loadGitMetrics(projectRoot, options?) → { commitCount: number, branch: string, lastCommitAt: string|null, activeDays: number }
+//   loadGitMetrics(projectRoot, options?) → { commitCount: number, branch: string, lastCommitAt: string|null, commits7d: number }
 //   - Accepts optional { execSync } injection for testability (DI test-seam pattern)
 //   - commitCount = total commits on current branch
 //   - branch = current branch name (or 'HEAD' if detached)
 //   - lastCommitAt = ISO date string of most recent commit, null if no commits
-//   - activeDays = distinct commit days in the last 30 days
-//   - Returns safe defaults when git is unavailable: { commitCount: 0, branch: 'unknown', lastCommitAt: null, activeDays: 0 }
+//   - commits7d = commit instances in the last 7 days (F11: renamed from "activeDays")
+//   - Returns safe defaults when git is unavailable: { commitCount: 0, branch: 'unknown', lastCommitAt: null, commits7d: 0 }
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { createRequire } from 'node:module';
@@ -59,7 +59,7 @@ describe('loadGitMetrics', () => {
         expect(result.commitCount).toBe(0);
         expect(result.branch).toBe('unknown');
         expect(result.lastCommitAt).toBeNull();
-        expect(result.activeDays).toBe(0);
+        expect(result.commits7d).toBe(0);
     });
 
     it('loadGitMetrics_withStubExecSync_parsesCommitCount', () => {
@@ -90,7 +90,7 @@ describe('loadGitMetrics', () => {
 
     it('loadGitMetrics_withStubExecSync_computesActiveDaysInLast7Days', () => {
         // Arrange — stub returns dates where 3 are within the last 7 days, 2 are older.
-        // activeDays uses a 7-day window (matching the "Commits (7d)" label in status.js).
+        // commits7d uses a 7-day window (matching the "Commits (7d)" label in status.js).
         const loader = getLoader();
         if (!loader) throw new Error('git-metrics.js not yet implemented');
 
@@ -115,7 +115,7 @@ describe('loadGitMetrics', () => {
         const result = loadGitMetrics(tmp.root, { execSync: stubExecSync });
 
         // Assert — exactly 3 distinct commit days within 7-day window
-        expect(result.activeDays).toBe(3);
+        expect(result.commits7d).toBe(3);
         expect(result.branch).toBe('feature/test');
     });
 
@@ -138,7 +138,7 @@ describe('loadGitMetrics', () => {
         expect(result.branch).toBe('main');
         expect(result.commitCount).toBe(0);
         expect(result.lastCommitAt).toBeNull();
-        expect(result.activeDays).toBe(0);
+        expect(result.commits7d).toBe(0);
     });
 
     it('loadGitMetrics_returnsCorrectShape', () => {
@@ -155,9 +155,9 @@ describe('loadGitMetrics', () => {
         expect(result).toHaveProperty('commitCount');
         expect(result).toHaveProperty('branch');
         expect(result).toHaveProperty('lastCommitAt');
-        expect(result).toHaveProperty('activeDays');
+        expect(result).toHaveProperty('commits7d');
         expect(typeof result.commitCount).toBe('number');
         expect(typeof result.branch).toBe('string');
-        expect(typeof result.activeDays).toBe('number');
+        expect(typeof result.commits7d).toBe('number');
     });
 });

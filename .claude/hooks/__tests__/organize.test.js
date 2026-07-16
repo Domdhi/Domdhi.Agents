@@ -10,7 +10,7 @@
 //   CLAUDE_PROJECT_DIR must be set before calling processEvent (read at call time via
 //   a local read inside processEvent, not a module-level constant).
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
@@ -205,6 +205,87 @@ describe('organize', () => {
             // After first call there are no more unorganized files
             const result2 = processEvent({});
             expect(result2).toBeNull();
+        });
+    });
+
+    // ─── concurrency-race tolerance (F67) ──────────────────────────────────────
+    // This hook fires on ~every PostToolUse:Bash. Concurrent invocations (parallel
+    // /run-todo) race: a file one pass sees in readdir is renamed away by another
+    // pass before this one calls stat/rename → ENOENT. The hook must never throw.
+    describe('concurrency race tolerance', () => {
+        let tmp;
+        let originalDir;
+
+        beforeEach(() => {
+            tmp = createTmpDir();
+            originalDir = process.env.CLAUDE_PROJECT_DIR;
+        });
+
+        afterEach(() => {
+            if (originalDir === undefined) delete process.env.CLAUDE_PROJECT_DIR;
+            else process.env.CLAUDE_PROJECT_DIR = originalDir;
+            vi.restoreAllMocks();
+            tmp.cleanup();
+        });
+
+        it('does not throw when a plan file is renamed away mid-pass (ENOENT)', () => {
+            process.env.CLAUDE_PROJECT_DIR = tmp.root;
+            tmp.write('docs/.output/plans/race-plan.md', '# Plan: race\n\n## Summary\nRace.');
+
+            const enoent = Object.assign(new Error('ENOENT: gone'), { code: 'ENOENT' });
+            vi.spyOn(fs, 'renameSync').mockImplementation(() => { throw enoent; });
+
+            expect(() => processEvent({})).not.toThrow();
+        });
+
+        it('never throws even on an unexpected fs error (top-level guard)', () => {
+            process.env.CLAUDE_PROJECT_DIR = tmp.root;
+            tmp.write('docs/.output/plans/boom.md', '# Plan: boom\n\n## Summary\nBoom.');
+
+            vi.spyOn(fs, 'renameSync').mockImplementation(() => { throw new Error('EIO disk failure'); });
+
+            expect(() => processEvent({})).not.toThrow();
+        });
+
+        it('two interleaved passes over the same dir do not throw', () => {
+            process.env.CLAUDE_PROJECT_DIR = tmp.root;
+            tmp.write('docs/.output/plans/p1.md', '# Plan: one\n\n## Summary\nOne.');
+            tmp.write('docs/.output/plans/p2.md', '# Plan: two\n\n## Summary\nTwo.');
+
+            // Second call finds the files already moved by the first — must be a clean no-op.
+            expect(() => { processEvent({}); processEvent({}); }).not.toThrow();
+        });
+
+        // F68 (council-260715-2244): the screenshot pass fires on EVERY Bash
+        // call — it must only scan the NEWEST dated folder, never re-sweep the
+        // whole accumulated archive of already-organized days.
+        describe('screenshots newest-date-folder-only scan (F68)', () => {
+            it('organizes loose files in the newest dated folder', () => {
+                process.env.CLAUDE_PROJECT_DIR = tmp.root;
+                const base = 'docs/.output/.state/screenshots';
+                tmp.write(`${base}/2026-07-10/task-a/old.png`, 'x'); // organized history
+                tmp.write(`${base}/2026-07-16/loose-shot.png`, 'x'); // newest, loose
+
+                const result = processEvent({});
+
+                expect(result).not.toBeNull();
+                expect(result.feedback).toMatch(/2026-07-16/);
+                // The loose file moved into a task subfolder inside the newest dir
+                expect(fs.existsSync(path.join(tmp.root, base, '2026-07-16', 'loose-shot.png'))).toBe(false);
+            });
+
+            it('does not touch (or pay for) older dated folders — documented trade-off', () => {
+                process.env.CLAUDE_PROJECT_DIR = tmp.root;
+                const base = 'docs/.output/.state/screenshots';
+                tmp.write(`${base}/2026-07-10/stray-in-old.png`, 'x'); // loose file in an OLD day
+                tmp.write(`${base}/2026-07-16/task-b/done.png`, 'x');  // newest day fully organized
+
+                const result = processEvent({});
+
+                // Newest dir has no loose files and the old dir is out of scope → no-op.
+                expect(result).toBeNull();
+                expect(fs.existsSync(path.join(tmp.root, base, '2026-07-10', 'stray-in-old.png'))).toBe(true);
+            });
         });
     });
 });

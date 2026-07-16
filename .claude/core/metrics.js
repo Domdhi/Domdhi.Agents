@@ -14,6 +14,7 @@ const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
 const { getJsonlPath } = require('./_lib/telemetry-paths');
+const { compartmentDir } = require('./_lib/output-paths');
 
 const PROJECT_ROOT = process.env.CLAUDE_PROJECT_DIR || path.resolve(__dirname, '..', '..');
 
@@ -289,7 +290,9 @@ function computeTodos() {
 // ── Sessions ─────────────────────────────────────────────────────
 
 function computeSessions() {
-  const sessionsDir = path.join(PROJECT_ROOT, 'docs', '.output', '.state', 'sessions');
+  // ADR 0006 "only door": resolve the sessions compartment through output-paths.js
+  // (registered as OUTPUT_PATHS['state/sessions']) rather than re-deriving the literal.
+  const sessionsDir = path.join(PROJECT_ROOT, compartmentDir('state/sessions'));
 
   if (!fs.existsSync(sessionsDir)) return null;
 

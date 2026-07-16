@@ -29,6 +29,20 @@ const { createConcept } = require('./_helpers/concept-fixture');
 
 // Inline helper — no shared fixture exists for hand-created JSON memories.
 // Mirrors the shape written by `node memory-manager.js create <cat> <slug> '{...}'`.
+// CR-3.4 (F47/F48): also supports the top-level fields MemoryManager stamps —
+// `importance` (write-time retention floor) and `invalid_at`/`superseded_by`
+// (ME-3.1 supersession, written by MemoryManager.supersedeMemory) — so tests can
+// construct a memory shape identical to what the canonical read path produces.
+// W3-1 (confidence source of truth): the REAL curated confidence lives in
+// `content.confidence` — that is what `node memory-manager.js create` persists
+// and what the promoter ranks on. `metadata.confidence` is a vestigial UNIFORM
+// default of 1 (createMemory stamps `confidence: 1.0` into metadata regardless of
+// the curated value — verified: all 143 store files have metadata.confidence==1
+// while content.confidence carries the 0.5–0.9 gradient). So this fixture mirrors
+// that reality: `opts.confidence` drives ONLY `content.confidence`; metadata stays
+// a fixed 1. (An earlier CR-3.4 pass wrongly pointed both at opts.confidence,
+// masking a regression where the promoter had been re-routed to read the flat
+// metadata value — the corpus disproves that field being the real source.)
 function writeHandCreatedMemory(tmp, category, slug, opts = {}) {
   const now = new Date().toISOString();
   const memory = {
@@ -38,6 +52,9 @@ function writeHandCreatedMemory(tmp, category, slug, opts = {}) {
     created: opts.created || now,
     updated: opts.updated || now,
     usage_count: opts.usage_count ?? 0,
+    ...(opts.importance !== undefined ? { importance: opts.importance } : {}),
+    ...(opts.invalid_at !== undefined ? { invalid_at: opts.invalid_at } : {}),
+    ...(opts.superseded_by !== undefined ? { superseded_by: opts.superseded_by } : {}),
     content: { description: opts.description || `${slug} description`, confidence: opts.confidence ?? 0.7 },
     metadata: { sessions: [], agents: [], confidence: 1, ...(opts.metadata || {}) },
   };
@@ -741,6 +758,71 @@ describe('memory-promoter', () => {
       expect(result[0].slug).toBe('real-handcreated');
     });
 
+    // ── CR-3.4 (F47): supersession-aware read ────────────────────────────────
+
+    it('loadHandCreatedMemories_supersededMemory_isHidden_F47', async () => {
+      // Arrange — a live memory + a superseded memory (invalid_at/superseded_by
+      // stamped, mirroring the exact shape MemoryManager.supersedeMemory writes).
+      // loadHandCreatedMemories must route through MemoryManager's
+      // supersession-aware read (listMemories, includeSuperseded default false)
+      // so a superseded hand-created memory is hidden from current-state scans —
+      // matching every other current-state consumer (analytics, lint, prune,
+      // search JSON-fallback).
+      writeHandCreatedMemory(tmp, 'patterns', 'live-pattern', { confidence: 0.8 });
+      writeHandCreatedMemory(tmp, 'patterns', 'superseded-pattern', {
+        confidence: 0.9,
+        invalid_at: new Date().toISOString(),
+        superseded_by: 'live-pattern',
+      });
+      const promoter = new MemoryPromoter();
+
+      // Act
+      const result = await promoter.loadHandCreatedMemories();
+
+      // Assert
+      const slugs = result.map(c => c.slug);
+      expect(slugs).toContain('live-pattern');
+      expect(slugs).not.toContain('superseded-pattern');
+    });
+
+    // ── CR-3.4 (F48): importance/3 retention-floor in decay computation ─────
+
+    it('loadHandCreatedMemories_appliesImportanceFloor_matchesCanonicalFormula_F48', async () => {
+      // Arrange — importance=1 (below IMPORTANCE_DEFAULT=3) must shrink the
+      // decayed confidence by a factor of importance/3, exactly matching
+      // MemoryManager.calculateDecayedConfidence's ADDED floor factor on top of
+      // the shared _lib/memory-decay curve.
+      writeHandCreatedMemory(tmp, 'patterns', 'low-importance-pattern', {
+        confidence: 0.9,
+        usage_count: 0,
+        importance: 1,
+      });
+      const promoter = new MemoryPromoter();
+
+      // Act
+      const [concept] = await promoter.loadHandCreatedMemories();
+
+      // Assert — recompute the canonical formula independently (shared decay lib
+      // + importance/3 floor) and confirm the promoter's output matches it, not
+      // just the unfloored curve.
+      const memoryDecay = require('../_lib/memory-decay');
+      const writtenRaw = JSON.parse(
+        tmp.read('docs/.output/.memory/patterns/low-importance-pattern.json')
+      );
+      const unflooredBase = memoryDecay.calculateDecayedConfidence({
+        confidence: 0.9,
+        category: 'patterns',
+        usageCount: 0,
+        updated: writtenRaw.updated,
+        activeDays: (Date.now() - new Date(writtenRaw.updated)) / (1000 * 60 * 60 * 24),
+      });
+      const expectedFloored = Math.min(1.0, unflooredBase * (1 / 3));
+
+      expect(concept.decayedConfidence).toBeCloseTo(expectedFloored, 4);
+      // Sanity — the floor must actually suppress the value below the unfloored curve.
+      expect(concept.decayedConfidence).toBeLessThan(unflooredBase);
+    });
+
   });
 
   // ── scan integration ────────────────────────────────────────────────────────
@@ -1192,6 +1274,79 @@ describe('memory-promoter', () => {
       expect(concept.promotedTo).toBe('architecture/overview.md template');
     });
 
+  });
+
+  // ── mark — path-traversal guard (F46) ────────────────────────────────────────
+  // mark(slug, target) joins `slug` straight into both `.md` and `.json` store
+  // paths across all 5 categories. Verify it refuses the three attack shapes
+  // BEFORE any path is built/read/written, and that no file outside the store
+  // is touched.
+
+  describe('mark — path-traversal guard (F46)', () => {
+    const BAD_SLUGS = ['../../etc/x', 'a/../../b', '/etc/passwd'];
+
+    for (const badSlug of BAD_SLUGS) {
+      it(`mark_rejects_${badSlug}`, async () => {
+        // Plant sentinels at plausible escape targets for both the compiled
+        // markdown-concept path and the hand-created-JSON path — if the guard
+        // failed, mark() would happily read/rewrite one of these.
+        const sentinelMdRel = 'docs/.output/etc/x.md';
+        const sentinelJsonRel = 'docs/.output/b.json';
+        tmp.write(sentinelMdRel, '---\ntitle: Sentinel\n---\n\nbody\n');
+        tmp.write(sentinelJsonRel, JSON.stringify({ id: 'sentinel', metadata: {} }));
+
+        const promoter = new MemoryPromoter();
+        const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+        const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => {
+          throw new Error('process.exit called');
+        });
+
+        try {
+          await expect(promoter.mark(badSlug, 'CLAUDE.md')).rejects.toThrow('process.exit called');
+          const allErrors = errorSpy.mock.calls.map(args => args.join(' ')).join('\n');
+          expect(allErrors).toMatch(/Invalid slug/);
+        } finally {
+          errorSpy.mockRestore();
+          exitSpy.mockRestore();
+        }
+
+        // Sentinels untouched — no escape.
+        expect(tmp.read(sentinelMdRel)).not.toContain('promoted_to');
+        expect(JSON.parse(tmp.read(sentinelJsonRel)).metadata.promoted_to).toBeUndefined();
+      });
+    }
+
+    it('mark_normalSlug_stillWorks_noFalseRejection', async () => {
+      createConcept(tmp, 'patterns', 'safe-normal-slug', {
+        title: 'Safe Normal Slug',
+        confidence: 0.7,
+        sources: ['2026-04-01', '2026-04-10'],
+      });
+      const promoter = new MemoryPromoter();
+
+      await promoter.mark('safe-normal-slug', 'CLAUDE.md');
+
+      const md = tmp.read('docs/.output/.state/memory-concepts/patterns/safe-normal-slug.md');
+      expect(md).toContain('promoted_to: CLAUDE.md');
+    });
+
+    it('mark_leadingUnderscoreSlug_accepted_noFalseRejection_W2_5', async () => {
+      // W2-5: SAFE_SLUG_RE now allows a leading underscore, in lockstep with
+      // memory-manager's SAFE_ID_RE — a legitimately-stored leading-underscore
+      // memory (e.g. the fixed '_health_check_probe' probe id) must be
+      // promotable, not rejected as an invalid slug. '_' is not a traversal char.
+      createConcept(tmp, 'patterns', '_health_check_probe', {
+        title: 'Health Check Probe',
+        confidence: 0.7,
+        sources: ['2026-04-01', '2026-04-10'],
+      });
+      const promoter = new MemoryPromoter();
+
+      await promoter.mark('_health_check_probe', 'CLAUDE.md');
+
+      const md = tmp.read('docs/.output/.state/memory-concepts/patterns/_health_check_probe.md');
+      expect(md).toContain('promoted_to: CLAUDE.md');
+    });
   });
 
 });

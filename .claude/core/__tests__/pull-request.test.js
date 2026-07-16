@@ -193,3 +193,77 @@ describe('pull-request.js create (integration, no network)', () => {
     expect(stdout).toMatch(/requires --title/);
   });
 });
+
+describe('pull-request.js azurePrId', () => {
+  it('returns --id as a string without calling az', () => {
+    expect(pr.azurePrId({ id: 259 }, 'feat/x')).toBe('259');
+  });
+});
+
+// ─── winQuote (F54 — cmd.exe-correct quoting) ────────────────────────────────
+//
+// cmd.exe does NOT treat `\"` as an escaped quote — it treats `\` as a literal
+// backslash and `"` as an unescaped quote-terminator. The old winQuote escaped
+// embedded quotes as `\"`, so a hostile title/branch like `x" & calc & "y`
+// closed the quoted region early and let ` & calc & ` execute as a live cmd.exe
+// command. The fix doubles an embedded `"` (`""`), which cmd.exe DOES honor as
+// a literal quote, keeping the whole argument — metacharacters included —
+// inside one quoted region.
+describe('pull-request.js winQuote (F54)', () => {
+  it('doubles an embedded double-quote instead of backslash-escaping it', () => {
+    const out = pr.winQuote('x" & y');
+    expect(out).not.toContain('\\"');
+    expect(out).toContain('""');
+  });
+
+  it('wraps the whole quoted value in double quotes (metacharacters stay inside)', () => {
+    const out = pr.winQuote('x" & calc & "y');
+    expect(out.startsWith('"')).toBe(true);
+    expect(out.endsWith('"')).toBe(true);
+    // The `&` must appear only WITHIN the quoted body, i.e. never immediately
+    // after a quote that terminates the string. Concretely: stripping the
+    // outer quotes and un-doubling `""`, the interior must round-trip exactly.
+    const inner = out.slice(1, -1);
+    expect(inner.replace(/""/g, '"')).toBe('x" & calc & "y');
+  });
+
+  it('leaves a plain arg with no metacharacters unquoted', () => {
+    expect(pr.winQuote('simple-branch-name')).toBe('simple-branch-name');
+  });
+
+  it('quotes an arg containing only whitespace-safe metacharacters (&, space)', () => {
+    const out = pr.winQuote('feat: add thing & more');
+    expect(out.startsWith('"')).toBe(true);
+    expect(out.endsWith('"')).toBe(true);
+    expect(out).not.toContain('\\"');
+  });
+
+  // ── m3: trailing-backslash hardening ────────────────────────────────────
+  // The downstream argv parser consumes backslashes immediately preceding a
+  // `"` in pairs — an ODD count right before the closing quote we add reads as
+  // an escaped literal `"`, not a terminator, so the quoted region never
+  // closes. Doubling the trailing run keeps the count even.
+  it('doubles a single trailing backslash so the closing quote is not escaped', () => {
+    // Input ends in one backslash; needs whitespace to enter the quoting path.
+    const out = pr.winQuote('a b\\');
+    expect(out).toBe('"a b\\\\"'); // "a b\\" (2 backslashes) + closing quote
+    // The character immediately before the final `"` must be part of an EVEN
+    // run of backslashes (so the parser reads the last `"` as a terminator).
+    const beforeClosingQuote = out.slice(0, -1);
+    const trailingRun = beforeClosingQuote.match(/\\+$/)?.[0] ?? '';
+    expect(trailingRun.length % 2).toBe(0);
+  });
+
+  it('doubles a double trailing backslash (4 backslashes before the closing quote)', () => {
+    const out = pr.winQuote('a b\\\\'); // input ends in TWO backslashes
+    expect(out).toBe('"a b\\\\\\\\"'); // doubled to 4, then closing quote
+    const beforeClosingQuote = out.slice(0, -1);
+    const trailingRun = beforeClosingQuote.match(/\\+$/)?.[0] ?? '';
+    expect(trailingRun.length % 2).toBe(0);
+  });
+
+  it('does not alter an embedded (non-trailing) backslash', () => {
+    const out = pr.winQuote('a\\b c'); // backslash in the middle, space forces quoting
+    expect(out).toBe('"a\\b c"');
+  });
+});

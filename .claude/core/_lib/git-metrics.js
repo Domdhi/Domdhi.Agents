@@ -1,5 +1,5 @@
 /**
- * Git Metrics — commit count, branch, lastCommitAt, activeDays loader.
+ * Git Metrics — commit count, branch, lastCommitAt, commits7d loader.
  *
  * Extracted from status.js (P2.4) to separate git-data loading from rendering.
  * Exposes an optional `{ execSync }` injection parameter for testability — avoids
@@ -8,7 +8,7 @@
  * Usage:
  *   const { loadGitMetrics } = require('./_lib/git-metrics');
  *   const metrics = loadGitMetrics(projectRoot);
- *   // → { commitCount, branch, lastCommitAt, activeDays }
+ *   // → { commitCount, branch, lastCommitAt, commits7d }
  *
  *   // In tests, inject a stub:
  *   const metrics = loadGitMetrics(root, { execSync: stubExecSync });
@@ -17,10 +17,10 @@
  *   - Never reads process.cwd() — always anchored to the explicit projectRoot arg.
  *   - All execSync calls use { windowsHide: true, stdio: ['pipe','pipe','pipe'] }.
  *   - All failures return safe defaults — never throws.
- *   - activeDays counts commit instances (not distinct dates) in the last 7 days,
+ *   - commits7d counts commit instances (not distinct dates) in the last 7 days,
  *     matching the original status.js computeInlineMetrics commitVelocity semantics.
- *     The field name "activeDays" is from the spec signature; semantically it measures
- *     recent commit activity for the "Commits (7d)" display in status.js.
+ *     (F11: renamed from the spec's misleading "activeDays" — the old name read
+ *     as a distinct-active-day count, which this never was.)
  *   - Git log --date/--format options here differ from decision-viz and gen-timeline;
  *     per-consumer semantics are intentional (do not unify).
  */
@@ -40,7 +40,7 @@ const EXEC_OPTS = {
  * @param {object} [options={}]
  * @param {Function} [options.execSync] Optional execSync replacement for tests.
  *                                       Defaults to child_process.execSync.
- * @returns {{ commitCount: number, branch: string, lastCommitAt: string|null, activeDays: number }}
+ * @returns {{ commitCount: number, branch: string, lastCommitAt: string|null, commits7d: number }}
  */
 function loadGitMetrics(projectRoot, options = {}) {
     const exec = options.execSync || childProcess.execSync;
@@ -50,7 +50,7 @@ function loadGitMetrics(projectRoot, options = {}) {
         commitCount: 0,
         branch: 'unknown',
         lastCommitAt: null,
-        activeDays: 0,
+        commits7d: 0,
     };
 
     // Branch name
@@ -83,7 +83,7 @@ function loadGitMetrics(projectRoot, options = {}) {
     // Capped at the most recent 100 commits to bound git log output size (matching
     // the original status.js computeInlineMetrics commitVelocity calculation that
     // used `git log --oneline --date=short --format="%ad" -100`).
-    // The field is named "activeDays" per the AC spec signature but semantically
+    // The field was once named "activeDays" per the AC spec signature but semantically
     // represents recent commit activity for the "Commits (7d)" display label.
     try {
         const raw = exec('git log --date=short --format=%ad -100', opts);
@@ -98,7 +98,7 @@ function loadGitMetrics(projectRoot, options = {}) {
                 velocity++;
             }
         }
-        result.activeDays = velocity;
+        result.commits7d = velocity;
     } catch {
         // git error
     }

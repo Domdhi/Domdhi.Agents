@@ -634,6 +634,48 @@ confirm_patterns:
             expect(Array.isArray(result.block_patterns)).toBe(true);
             expect(Array.isArray(result.confirm_patterns)).toBe(true);
         });
+
+        // ── W2-2: F12 regex validation must reach the LIVE Bash hook ───────────
+        // The hook previously used its own loader that returned raw parsed
+        // patterns verbatim, so a malformed /regex/ in a pattern tier silently
+        // no-op'd at match time (matchesPattern swallows the RegExp throw). The
+        // hook now delegates to the F12-validated _lib loader, so a malformed
+        // regex drops that tier to [] (fail-safe) with a loud warning — never a
+        // silent dead rule at the one hook that guards destructive commands.
+        it('loadRules_malformedRegexInBlockTier_reachesLiveHook_dropsTierWithWarning', () => {
+            // An operator typo'd an unbalanced paren into a block pattern.
+            tmp.write('.claude/guardrail-rules.yaml', `
+block_patterns:
+  - "/curl.*(|bash/"
+`);
+            process.env.CLAUDE_PROJECT_DIR = tmp.root;
+            const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+            try {
+                const result = loadRules();
+                // Fail-safe reached the live hook: the malformed tier is dropped
+                // to [] rather than carried verbatim (the old shadow-loader bug).
+                expect(result).not.toBeNull();
+                expect(result.block_patterns).toEqual([]);
+                // Loud, non-silent operator warning naming the offending tier.
+                expect(errSpy).toHaveBeenCalledWith(expect.stringContaining('block_patterns'));
+            } finally {
+                errSpy.mockRestore();
+            }
+        });
+
+        it('loadRules_validRegexTiers_surviveDelegation_noFalseDrop', () => {
+            tmp.write('.claude/guardrail-rules.yaml', `
+block_patterns:
+  - "/curl.*bash/"
+  - "rm -rf /"
+`);
+            process.env.CLAUDE_PROJECT_DIR = tmp.root;
+
+            const result = loadRules();
+            expect(result.block_patterns).toContain('/curl.*bash/');
+            expect(result.block_patterns).toContain('rm -rf /');
+        });
     });
 });
 

@@ -57,6 +57,7 @@ const { appendJsonl }      = require('../core/_lib/jsonl-writer');
 const { readHookInput }    = require('../core/_lib/hook-input');
 const { getJsonlPath }     = require('../core/_lib/telemetry-paths');
 const { parseFrontmatter } = require('../core/_lib/frontmatter');
+const { resolveProjectRoot } = require('../core/_lib/project-root');
 
 const MAX_LINES  = 2000;
 const TAIL_KEEP  = 1000;
@@ -70,7 +71,11 @@ const AGENT_LIST_FIELDS = ['skills', 'tags', 'aliases', 'sources', 'cssclasses']
 const SKILL_PATH_RE = /[/\\]\.claude[/\\]skills[/\\]([^/\\]+)[/\\](.+\.md)$/;
 
 function getProjectRoot() {
-    return process.env.CLAUDE_PROJECT_DIR || path.resolve(__dirname, '..', '..');
+    // F72-class sibling (CR-3.1 sweep): skill-usage telemetry is a gitignored
+    // `.state/` file shared across linked worktrees — anchor to the git-common-dir
+    // via resolveProjectRoot (still reads CLAUDE_PROJECT_DIR at call time) rather
+    // than the naive __dirname fallback that loses events into a worktree-local path.
+    return resolveProjectRoot(path.resolve(__dirname, '..', '..'));
 }
 
 /**

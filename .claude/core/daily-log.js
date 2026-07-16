@@ -24,10 +24,19 @@ const { execSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const { getDailyDir } = require('./_lib/daily-log-paths');
+const { resolveProjectRoot } = require('./_lib/project-root');
 
 class DailyLog {
     constructor(projectRoot) {
-        this.projectRoot = projectRoot || process.env.CLAUDE_PROJECT_DIR || path.resolve(__dirname, '..', '..');
+        // F12: route the fallback through resolveProjectRoot() (CLAUDE_PROJECT_DIR
+        // > main-worktree git-common-dir > this dir) instead of the raw
+        // __dirname/../.. fallback — daily-log.js was the one memory-domain
+        // module missed by the worktree-root retrofit. Without it, a bare CLI
+        // invocation or a hook-spawned child running inside a linked worktree
+        // (cwd set, CLAUDE_PROJECT_DIR not) writes captures into that worktree's
+        // local gitignored .state/memory-daily/, which is lost when the worktree
+        // is removed instead of landing in the shared main-worktree log.
+        this.projectRoot = projectRoot || resolveProjectRoot(path.resolve(__dirname, '..', '..'));
         this.dailyDir = getDailyDir(this.projectRoot);
     }
 
@@ -43,31 +52,59 @@ class DailyLog {
     }
 
     /**
+     * Recursively collect TODO*.md files under `rootDir`, skipping generated/
+     * vendored subtrees. Mirrors the recursion in status.js/metrics.js so
+     * per-module TODOs (docs/modules/{module}/TODO*.md) are not missed.
+     *
+     * @param {string} rootDir - Directory to walk.
+     * @returns {string[]} Absolute paths to TODO*.md files, sorted for determinism.
+     */
+    _scanTodoFiles(rootDir) {
+        const SKIP_DIRS = new Set(['.archive', '.output', 'node_modules', '.git']);
+        const found = [];
+        const scan = (dir) => {
+            let entries;
+            try {
+                entries = fs.readdirSync(dir, { withFileTypes: true });
+            } catch {
+                return;
+            }
+            for (const entry of entries) {
+                if (SKIP_DIRS.has(entry.name)) continue;
+                const full = path.join(dir, entry.name);
+                if (entry.isFile() && /^TODO.*\.md$/i.test(entry.name)) {
+                    found.push(full);
+                } else if (entry.isDirectory()) {
+                    scan(full);
+                }
+            }
+        };
+        scan(rootDir);
+        return found.sort();
+    }
+
+    /**
      * Find in-progress [>] and blocked [!] items from TODO files.
+     * Recurses all of docs/ (skip-dirs excluded) so module TODOs are included.
      */
     findInProgressTodos() {
-        const todoDir = path.join(this.projectRoot, 'docs', 'work', 'todo');
         const docsDir = path.join(this.projectRoot, 'docs');
         const results = [];
 
-        for (const dir of [todoDir, docsDir]) {
-            if (!fs.existsSync(dir)) continue;
-            let files;
+        for (const filePath of this._scanTodoFiles(docsDir)) {
+            const file = path.basename(filePath);
+            let content;
             try {
-                files = fs.readdirSync(dir).filter(f => f.startsWith('TODO') && f.endsWith('.md'));
+                content = fs.readFileSync(filePath, 'utf8');
             } catch {
                 continue;
             }
-            for (const file of files) {
-                const filePath = path.join(dir, file);
-                const content = fs.readFileSync(filePath, 'utf8');
-                for (const line of content.split('\n')) {
-                    if (line.match(/\[>\]/)) {
-                        results.push(`  - [>] ${line.replace(/^[\s\-*]*\[>\]\s*/, '').trim()} (${file})`);
-                    }
-                    if (line.match(/\[!\]/)) {
-                        results.push(`  - [!] ${line.replace(/^[\s\-*]*\[!\]\s*/, '').trim()} (${file})`);
-                    }
+            for (const line of content.split('\n')) {
+                if (line.match(/\[>\]/)) {
+                    results.push(`  - [>] ${line.replace(/^[\s\-*]*\[>\]\s*/, '').trim()} (${file})`);
+                }
+                if (line.match(/\[!\]/)) {
+                    results.push(`  - [!] ${line.replace(/^[\s\-*]*\[!\]\s*/, '').trim()} (${file})`);
                 }
             }
         }
@@ -77,17 +114,35 @@ class DailyLog {
 
     /**
      * Find key decisions from TODO files' Key Decisions tables.
+     *
+     * Scans the docs/ root (flat — the master TODO_{Project}.md lives there) plus
+     * per-module TODOs under docs/modules/** (recursive). It deliberately does NOT
+     * scan docs/work/todo/ — per-epic checklists carry no master Key Decisions table.
      */
     findKeyDecisions() {
         const docsDir = path.join(this.projectRoot, 'docs');
         if (!fs.existsSync(docsDir)) return '  None';
 
-        const results = [];
-        const files = fs.readdirSync(docsDir).filter(f => f.startsWith('TODO') && f.endsWith('.md'));
+        // docs/ root, flat.
+        const files = [];
+        try {
+            for (const f of fs.readdirSync(docsDir)) {
+                if (/^TODO.*\.md$/i.test(f)) files.push(path.join(docsDir, f));
+            }
+        } catch {
+            // ignore — fall through to module scan
+        }
+        // Per-module TODOs (recursive).
+        files.push(...this._scanTodoFiles(path.join(docsDir, 'modules')));
 
-        for (const file of files) {
-            const filePath = path.join(docsDir, file);
-            const content = fs.readFileSync(filePath, 'utf8');
+        const results = [];
+        for (const filePath of files) {
+            let content;
+            try {
+                content = fs.readFileSync(filePath, 'utf8');
+            } catch {
+                continue;
+            }
             const decisionMatch = content.match(/## Key Decisions\s*\n\n?\|[^\n]*\n\|[^\n]*\n([\s\S]*?)(?=\n##|\n---|\n$)/);
             if (decisionMatch) {
                 const rows = decisionMatch[1].split('\n').filter(r => r.startsWith('|') && !r.includes('---'));

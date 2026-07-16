@@ -99,9 +99,16 @@ function classifyPolarity(text) {
 function buildSkillIndex(skillsRoot) {
     const index = [];
     if (!fs.existsSync(skillsRoot)) return index;
+    // statSync fallback (not Dirent.isDirectory alone) so symlinked skill dirs count too —
+    // Dirent.isDirectory() returns false for symlinks (same class as skill-conformance.js).
     const dirs = fs
         .readdirSync(skillsRoot, { withFileTypes: true })
-        .filter((d) => d.isDirectory())
+        .filter((d) => {
+            if (d.isDirectory()) return true;
+            if (!d.isSymbolicLink()) return false;
+            try { return fs.statSync(path.join(skillsRoot, d.name)).isDirectory(); }
+            catch { return false; }
+        })
         .map((d) => d.name)
         .sort();
     for (const dir of dirs) {

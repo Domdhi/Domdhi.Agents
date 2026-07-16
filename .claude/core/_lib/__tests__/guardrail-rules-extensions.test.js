@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import os from 'node:os';
@@ -98,6 +98,135 @@ describe('guardrail-rules P2.5 extensions', () => {
         const rules = loadRules(yamlPath);
         // Schema fails validation → dangerousPatterns falls back to []
         expect(rules.dangerousPatterns).toEqual([]);
+    });
+
+    // ── F12: block_patterns/nudge_patterns/confirm_patterns regex validation ────
+    // The YAML header documents that all four pattern tiers support the
+    // `/regex/` form, and evaluate()/matchesPattern() treat all four
+    // identically at match time — but loadRules() previously validated ONLY
+    // dangerousPatterns as regex sources. A malformed `/regex/` in block/
+    // nudge/confirm silently became a no-op (a broken block pattern = a hole).
+    // These tests pin the fix: malformed regex → per-tier fail-safe (drop to
+    // []) + a loud stderr warning — never a silent no-op.
+
+    it('loadRules_malformedRegexInBlockPatterns_dropsTierAndWarnsLoudly', () => {
+        const { loadRules } = require('../guardrail-rules');
+        const warnSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+        const yamlPath = writeYaml(tmpRoot, [
+            'block_patterns:',
+            '  - "/(/"',
+            'confirm_patterns:',
+            '  - "git push --force"',
+            '',
+        ].join('\n'));
+
+        const rules = loadRules(yamlPath);
+
+        // Malformed regex drops ONLY the block_patterns tier (per-tier
+        // fail-safe, matching dangerousPatterns) — never a silent no-op that
+        // just lets the bad pattern quietly match nothing while looking valid.
+        expect(rules.block_patterns).toEqual([]);
+        // Other tiers are unaffected — this is a per-tier, not a global, failure.
+        expect(rules.confirm_patterns).toContain('git push --force');
+        // Non-silent: a warning was written to stderr (console.error) naming
+        // the offending tier.
+        expect(warnSpy).toHaveBeenCalled();
+        const warned = warnSpy.mock.calls.some(args => args.join(' ').includes('block_patterns'));
+        expect(warned).toBe(true);
+
+        warnSpy.mockRestore();
+    });
+
+    it('loadRules_malformedRegexInNudgePatterns_dropsTierAndWarnsLoudly', () => {
+        const { loadRules } = require('../guardrail-rules');
+        const warnSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+        const yamlPath = writeYaml(tmpRoot, [
+            'block_patterns:',
+            '  - rm -rf /',
+            'nudge_patterns:',
+            '  - "/[invalid/"',
+            '',
+        ].join('\n'));
+
+        const rules = loadRules(yamlPath);
+
+        expect(rules.nudge_patterns).toEqual([]);
+        expect(rules.block_patterns).toContain('rm -rf /');
+        expect(warnSpy).toHaveBeenCalled();
+        const warned = warnSpy.mock.calls.some(args => args.join(' ').includes('nudge_patterns'));
+        expect(warned).toBe(true);
+
+        warnSpy.mockRestore();
+    });
+
+    it('loadRules_malformedRegexInConfirmPatterns_dropsTierAndWarnsLoudly', () => {
+        const { loadRules } = require('../guardrail-rules');
+        const warnSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+        const yamlPath = writeYaml(tmpRoot, [
+            'confirm_patterns:',
+            '  - "/(unterminated"',
+            'block_patterns:',
+            '  - format c:',
+            '',
+        ].join('\n'));
+
+        const rules = loadRules(yamlPath);
+
+        expect(rules.confirm_patterns).toEqual([]);
+        expect(rules.block_patterns).toContain('format c:');
+        expect(warnSpy).toHaveBeenCalled();
+        const warned = warnSpy.mock.calls.some(args => args.join(' ').includes('confirm_patterns'));
+        expect(warned).toBe(true);
+
+        warnSpy.mockRestore();
+    });
+
+    it('loadRules_validRegexAndPlainStringPatterns_allTiersStillWork', () => {
+        // Regression: plain-string (non-`/…/`) patterns and valid `/regex/`
+        // patterns must keep working across all four tiers after adding
+        // regex-source validation to block/nudge/confirm.
+        const { loadRules } = require('../guardrail-rules');
+        const yamlPath = writeYaml(tmpRoot, [
+            'block_patterns:',
+            '  - format c:',
+            '  - "/git.+--force/"',
+            'nudge_patterns:',
+            '  - git reset --hard',
+            'confirm_patterns:',
+            '  - npm publish',
+            'dangerousPatterns:',
+            '  - "^format c:"',
+            '',
+        ].join('\n'));
+
+        const rules = loadRules(yamlPath);
+
+        expect(rules.block_patterns).toContain('format c:');
+        expect(rules.block_patterns).toContain('/git.+--force/');
+        expect(rules.nudge_patterns).toContain('git reset --hard');
+        expect(rules.confirm_patterns).toContain('npm publish');
+        expect(rules.dangerousPatterns).toContain('^format c:');
+    });
+
+    it('loadRules_malformedRegexInDangerousPatterns_alsoWarnsLoudly', () => {
+        // dangerousPatterns already had per-tier fail-safe (drop to []); the
+        // fix adds the same loud stderr warning there for consistency.
+        const { loadRules } = require('../guardrail-rules');
+        const warnSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+        const yamlPath = writeYaml(tmpRoot, [
+            'dangerousPatterns:',
+            '  - "([malformed"',
+            '',
+        ].join('\n'));
+
+        const rules = loadRules(yamlPath);
+
+        expect(rules.dangerousPatterns).toEqual([]);
+        expect(warnSpy).toHaveBeenCalled();
+        const warned = warnSpy.mock.calls.some(args => args.join(' ').includes('dangerousPatterns'));
+        expect(warned).toBe(true);
+
+        warnSpy.mockRestore();
     });
 
     // ── checkPathAccess (A3) ────────────────────────────────────────────────────

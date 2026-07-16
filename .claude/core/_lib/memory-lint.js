@@ -11,7 +11,7 @@
  * health score starts at 70 and deducts {error:3, warning:2, info:1} per finding.
  */
 
-const { jaccardFromText } = require('./jaccard');
+const { jaccardFromSets, tokenizeText } = require('./jaccard');
 
 // Single source of truth — no local duplicate of the cap value or the near-limit
 // fraction (constants.js is zero-dep, so this stays portable). Callers may still
@@ -130,19 +130,36 @@ function lintMemories(allMemories, { calculateDecayedConfidence, categories, max
         byCategory[m.category].push(m);
     }
 
+    // F14: serialize + tokenize each memory's content ONCE, shared by both
+    // pairwise checks (3: contradictions, 5: duplicates). The old shape
+    // re-stringified textA inside the inner loop and re-tokenized both sides
+    // on every jaccardFromText call — ~4900 redundant stringify+tokenize ops
+    // at a 50-per-category store for work that is O(n) once precomputed.
+    // Also precompute the positive/negative signal flags (text-derived, pair-
+    // independent) for check 3.
+    const lintText = new Map(); // memory object → { text, tokens, hasPositive, hasNegative }
+    for (const m of allMemories) {
+        // ?? {} — the precompute now touches EVERY memory (the old inline shape
+        // only stringified members of 2+-item categories), so a malformed record
+        // must not throw here where it previously slid past.
+        const text = JSON.stringify(m.full?.content ?? {}).toLowerCase();
+        lintText.set(m, {
+            text,
+            tokens: tokenizeText(text),
+            hasPositive: POSITIVE_SIGNALS.some(s => text.includes(s)),
+            hasNegative: NEGATIVE_SIGNALS.some(s => text.includes(s)),
+        });
+    }
+
     // Check 3 — Contradictions (same category, high overlap but conflicting signals)
     for (const [category, members] of Object.entries(byCategory)) {
         for (let i = 0; i < members.length; i++) {
+            const a = lintText.get(members[i]);
             for (let j = i + 1; j < members.length; j++) {
-                const textA = JSON.stringify(members[i].full.content).toLowerCase();
-                const textB = JSON.stringify(members[j].full.content).toLowerCase();
-                const similarity = jaccardFromText(textA, textB);
-                if (similarity > 0.5 && textA !== textB) {
-                    const aHasPositive = POSITIVE_SIGNALS.some(s => textA.includes(s));
-                    const aHasNegative = NEGATIVE_SIGNALS.some(s => textA.includes(s));
-                    const bHasPositive = POSITIVE_SIGNALS.some(s => textB.includes(s));
-                    const bHasNegative = NEGATIVE_SIGNALS.some(s => textB.includes(s));
-                    const conflict = (aHasPositive && bHasNegative) || (aHasNegative && bHasPositive);
+                const b = lintText.get(members[j]);
+                const similarity = jaccardFromSets(a.tokens, b.tokens);
+                if (similarity > 0.5 && a.text !== b.text) {
+                    const conflict = (a.hasPositive && b.hasNegative) || (a.hasNegative && b.hasPositive);
                     if (conflict) {
                         findings.contradictions.findings.push({
                             memory_a: `${category}/${members[i].full.id}`,
@@ -170,13 +187,12 @@ function lintMemories(allMemories, { calculateDecayedConfidence, categories, max
     }
     findings.stale.count = findings.stale.findings.length;
 
-    // Check 5 — Duplicates (same category, Jaccard > 0.8)
+    // Check 5 — Duplicates (same category, Jaccard > 0.8) — reuses the F14
+    // precomputed token sets from lintText; no per-pair stringify/tokenize.
     for (const [category, members] of Object.entries(byCategory)) {
         for (let i = 0; i < members.length; i++) {
             for (let j = i + 1; j < members.length; j++) {
-                const textA = JSON.stringify(members[i].full.content).toLowerCase();
-                const textB = JSON.stringify(members[j].full.content).toLowerCase();
-                const similarity = jaccardFromText(textA, textB);
+                const similarity = jaccardFromSets(lintText.get(members[i]).tokens, lintText.get(members[j]).tokens);
                 if (similarity > 0.8) {
                     findings.duplicates.findings.push({
                         memory_a: `${category}/${members[i].full.id}`,

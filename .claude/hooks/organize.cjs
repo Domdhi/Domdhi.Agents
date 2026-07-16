@@ -51,6 +51,55 @@ function uniquePath(targetPath) {
 
 const isDateDir = (name) => /^\d{4}-\d{2}-\d{2}$/.test(name);
 
+// ── Race-tolerant fs helpers ────────────────────────────────────────
+// This hook fires on ~every PostToolUse:Bash. Concurrent invocations (e.g.
+// parallel /run-todo) race over the same dirs: a file one pass lists in readdir
+// is renamed away by another pass before this one stats/renames it → ENOENT.
+// These wrappers make each fs step idempotent under that race.
+
+function safeReaddirSync(dir) {
+    try {
+        return fs.readdirSync(dir);
+    } catch {
+        // Missing/removed dir → nothing to organize
+        return [];
+    }
+}
+
+/** readdir with Dirents (F68) — one syscall pass instead of readdir + per-entry stat. */
+function safeReaddirEntsSync(dir) {
+    try {
+        return fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+        // Missing/removed dir → nothing to organize
+        return [];
+    }
+}
+
+function safeStatSync(p) {
+    try {
+        return fs.statSync(p);
+    } catch {
+        // File vanished between readdir and stat (concurrent pass moved it)
+        return null;
+    }
+}
+
+/**
+ * Rename src→dest, tolerating the concurrent-move race.
+ * @returns {boolean} true if the file was moved, false if the source was already
+ *   gone (ENOENT) — another pass moved it, so this pass just skips it.
+ */
+function safeRename(src, dest) {
+    try {
+        fs.renameSync(src, dest);
+        return true;
+    } catch (e) {
+        if (e && e.code === 'ENOENT') return false; // already moved by a concurrent pass
+        throw e; // unexpected — let the top-level guard in processEvent catch it
+    }
+}
+
 // ── Plans ───────────────────────────────────────────────────────────
 
 function organizePlans(results) {
@@ -63,22 +112,24 @@ function organizePlans(results) {
     ];
     const targetDir = path.join(projectDir, 'docs', '.output', 'plans');
 
-    // Collect unorganized markdown files from all source directories
+    // Collect unorganized markdown files from all source directories.
+    // Single stat per file (null-guarded) so a file vanishing mid-scan is skipped,
+    // not fatal.
     const files = [];
     for (const plansDir of sourceDirs) {
-        if (!fs.existsSync(plansDir)) continue;
-        const dirFiles = fs.readdirSync(plansDir)
-            .filter(f => f.endsWith('.md') && fs.statSync(path.join(plansDir, f)).isFile())
-            .filter(f => !/^(?:\d{4}-\d{2}-\d{2}|\d{6}-\d{4})/.test(f)) // Not already organized: skip YYYY-MM-DD date folders AND YYMMDD-HHMM run-stamp prefixes (e.g. do/run-todo plans)
-            .map(f => {
-                const stat = fs.statSync(path.join(plansDir, f));
-                return {
-                    name: f,
-                    path: path.join(plansDir, f),
-                    created: stat.birthtime || stat.mtime
-                };
+        for (const f of safeReaddirSync(plansDir)) {
+            if (!f.endsWith('.md')) continue;
+            // Not already organized: skip YYYY-MM-DD date folders AND YYMMDD-HHMM
+            // run-stamp prefixes (e.g. do/run-todo plans).
+            if (/^(?:\d{4}-\d{2}-\d{2}|\d{6}-\d{4})/.test(f)) continue;
+            const stat = safeStatSync(path.join(plansDir, f));
+            if (!stat || !stat.isFile()) continue;
+            files.push({
+                name: f,
+                path: path.join(plansDir, f),
+                created: stat.birthtime || stat.mtime
             });
-        files.push(...dirFiles);
+        }
     }
 
     if (files.length === 0) return;
@@ -131,7 +182,8 @@ function organizePlans(results) {
         const newName = `${nameParts.join('-')}.md`;
         const newPath = uniquePath(path.join(dateFolderPath, newName));
 
-        fs.renameSync(plan.path, newPath);
+        // Skip cleanly if a concurrent pass already moved this file.
+        if (!safeRename(plan.path, newPath)) continue;
         const relativePath = path.relative(projectDir, newPath);
         const finalName = path.basename(newPath);
         results.push(`plan: ${plan.name} -> ${relativePath}`);
@@ -211,46 +263,74 @@ function organizeScreenshots(results) {
         return toSlug(prefix || 'manual-test');
     }
 
-    // Case 1: Loose files in screenshots/ root
-    const rootFiles = fs.readdirSync(verifyDir)
-        .filter(f => fs.statSync(path.join(verifyDir, f)).isFile());
+    // F68: ONE withFileTypes pass over screenshots/ root serves BOTH cases
+    // (loose root files + date-dir discovery) — the old shape did two full
+    // readdirs plus a statSync per entry, on every Bash call, forever.
+    // Dirent types are lstat-shaped (a symlink reports neither file nor dir),
+    // so symlinked entries fall back to safeStatSync to match the old
+    // stat-based behavior; regular entries need no extra syscall.
+    const entryIsFile = (parent, e) =>
+        e.isFile() || (e.isSymbolicLink() && !!(safeStatSync(path.join(parent, e.name))?.isFile()));
+    const entryIsDir = (parent, e) =>
+        e.isDirectory() || (e.isSymbolicLink() && !!(safeStatSync(path.join(parent, e.name))?.isDirectory()));
+    const rootEntries = safeReaddirEntsSync(verifyDir);
+
+    // Case 1: Loose files in screenshots/ root (null-guarded stats tolerate races)
+    const rootFiles = rootEntries
+        .filter(e => entryIsFile(verifyDir, e))
+        .map(e => e.name);
 
     if (rootFiles.length > 0) {
         const slug = getSlug(rootFiles);
+        const firstStat = safeStatSync(path.join(verifyDir, rootFiles[0]));
         const earliest = rootFiles.reduce((min, f) => {
-            const mt = fs.statSync(path.join(verifyDir, f)).mtime;
-            return mt < min ? mt : min;
-        }, fs.statSync(path.join(verifyDir, rootFiles[0])).mtime);
+            const s = safeStatSync(path.join(verifyDir, f));
+            if (!s) return min;
+            return s.mtime < min ? s.mtime : min;
+        }, firstStat ? firstStat.mtime : new Date());
 
         const dateFolderName = dateFolder(earliest);
         const targetPath = uniquePath(path.join(verifyDir, dateFolderName, slug));
         fs.mkdirSync(targetPath, { recursive: true });
 
+        let moved = 0;
         for (const f of rootFiles) {
-            fs.renameSync(path.join(verifyDir, f), path.join(targetPath, f));
+            if (safeRename(path.join(verifyDir, f), path.join(targetPath, f))) moved++;
         }
-        results.push(`screenshots: ${rootFiles.length} root files -> ${path.relative(verifyDir, targetPath)}/`);
+        if (moved > 0) results.push(`screenshots: ${moved} root files -> ${path.relative(verifyDir, targetPath)}/`);
     }
 
-    // Case 2: Loose files inside date folders (no task subfolder)
-    const dateDirs = fs.readdirSync(verifyDir)
-        .filter(f => isDateDir(f) && fs.statSync(path.join(verifyDir, f)).isDirectory());
+    // Case 2: Loose files inside the NEWEST date folder only (F68). This hook
+    // fires on every Bash call; new screenshots only ever land in the current
+    // (lexically-newest, YYYY-MM-DD) folder, and prior days were organized by
+    // the pass that saw them — re-scanning the whole archive re-paid an
+    // unbounded, ever-growing readdir+stat sweep for data that cannot change.
+    // (Trade-off: a file hand-dropped into an OLD dated folder is no longer
+    // auto-organized; run `node .claude/hooks/organize.cjs` won't touch it
+    // either — move it into a task subfolder by hand.)
+    const dateDirs = rootEntries
+        .filter(e => isDateDir(e.name) && entryIsDir(verifyDir, e))
+        .map(e => e.name)
+        .sort();
+    const newestDateDir = dateDirs[dateDirs.length - 1];
 
-    for (const dir of dateDirs) {
-        const datePath = path.join(verifyDir, dir);
-        const looseFiles = fs.readdirSync(datePath)
-            .filter(f => fs.statSync(path.join(datePath, f)).isFile());
+    if (newestDateDir) {
+        const datePath = path.join(verifyDir, newestDateDir);
+        const looseFiles = safeReaddirEntsSync(datePath)
+            .filter(e => entryIsFile(datePath, e))
+            .map(e => e.name);
 
-        if (looseFiles.length === 0) continue;
+        if (looseFiles.length > 0) {
+            const slug = getSlug(looseFiles);
+            const targetPath = uniquePath(path.join(datePath, slug));
+            fs.mkdirSync(targetPath, { recursive: true });
 
-        const slug = getSlug(looseFiles);
-        const targetPath = uniquePath(path.join(datePath, slug));
-        fs.mkdirSync(targetPath, { recursive: true });
-
-        for (const f of looseFiles) {
-            fs.renameSync(path.join(datePath, f), path.join(targetPath, f));
+            let moved = 0;
+            for (const f of looseFiles) {
+                if (safeRename(path.join(datePath, f), path.join(targetPath, f))) moved++;
+            }
+            if (moved > 0) results.push(`screenshots: ${moved} files in ${newestDateDir}/ -> ${newestDateDir}/${path.basename(targetPath)}/`);
         }
-        results.push(`screenshots: ${looseFiles.length} files in ${dir}/ -> ${dir}/${path.basename(targetPath)}/`);
     }
 }
 
@@ -265,8 +345,15 @@ function organizeScreenshots(results) {
  */
 function processEvent(_parsedJson) {
     const results = [];
-    organizePlans(results);
-    organizeScreenshots(results);
+    // Top-level guard: this hook fires constantly and may run concurrently. A race
+    // (or any unexpected fs error) must never throw out of the hook — worst case we
+    // organize nothing this pass and a later pass picks it up.
+    try {
+        organizePlans(results);
+        organizeScreenshots(results);
+    } catch {
+        // Swallow — never block or crash the PostToolUse hook on an organize failure.
+    }
 
     if (results.length === 0) return null;
 
@@ -276,6 +363,12 @@ function processEvent(_parsedJson) {
 // ── Main ────────────────────────────────────────────────────────────
 
 if (require.main === module) {
+    // P1.7 — hook duration instrumentation (F69), same pattern as siblings.
+    const { startHookTiming, emitHookEvent } = require('../core/_lib/hook-telemetry');
+    const _hookToken = startHookTiming('organize');
+    process.on('exit', () => {
+        try { emitHookEvent(_hookToken, 'success'); } catch { /* never fail on telemetry */ }
+    });
     const result = processEvent({});
 
     if (!result) {

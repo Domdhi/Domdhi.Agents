@@ -2,7 +2,8 @@
 
 /**
  * Log Cleanup Script
- * Deletes build/test log folders older than N days (default 30)
+ * Deletes build/test logs older than N days (default 30) — both dated log
+ * folders (YYYY-MM-DD_*) and gate.js's flat gate-{ISO}.log files.
  *
  * Usage:
  *   node cleanup-logs.js           # Delete >30 days old
@@ -38,23 +39,44 @@ async function cleanupLogs(maxAgeDays = DEFAULT_DAYS) {
         }
 
         for (const entry of entries) {
-            // Skip _latest-* symlinks/folders and non-directories
-            if (entry.name.startsWith('_latest-') || !entry.isDirectory()) continue;
-
-            // Parse date from folder name (expected format: YYYY-MM-DD_HHMMSS_*)
-            const match = entry.name.match(/^(\d{4})-(\d{2})-(\d{2})_/);
-            if (!match) continue;
+            // Never touch _latest-* symlinks/folders
+            if (entry.name.startsWith('_latest-')) continue;
 
             // Build local midnight (Y, M-1, D) to match the cutoff's local basis.
             // Parsing the "YYYY-MM-DD" string instead yields UTC midnight, which in
             // negative-UTC zones shifts the destructive fs.rm boundary by up to a day.
-            const folderDate = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
-            if (folderDate < cutoffDate) {
-                const folderPath = path.join(logsDir, entry.name);
-                const size = await getFolderSize(folderPath);
+            if (entry.isDirectory()) {
+                // Dated log folders: YYYY-MM-DD_HHMMSS_*
+                const match = entry.name.match(/^(\d{4})-(\d{2})-(\d{2})_/);
+                if (!match) continue;
+
+                const folderDate = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+                if (folderDate < cutoffDate) {
+                    const folderPath = path.join(logsDir, entry.name);
+                    const size = await getFolderSize(folderPath);
+                    freedBytes += size;
+
+                    await fs.rm(folderPath, { recursive: true, force: true });
+                    deletedCount++;
+                    console.log(`   Deleted: ${entry.name} (${formatBytes(size)})`);
+                }
+                continue;
+            }
+
+            // Flat gate log files. gate.js is the only producer under this dir and
+            // it writes gate-{ISO}.log with `:`/`.` replaced by `-`, e.g.
+            // gate-2026-06-10T02-42-10-940Z.log. The date is embedded in the name;
+            // parse it (same local-midnight basis as the dated folders above).
+            const fileMatch = entry.name.match(/^gate-(\d{4})-(\d{2})-(\d{2})T/);
+            if (!fileMatch) continue;
+
+            const fileDate = new Date(Number(fileMatch[1]), Number(fileMatch[2]) - 1, Number(fileMatch[3]));
+            if (fileDate < cutoffDate) {
+                const filePath = path.join(logsDir, entry.name);
+                const size = await fs.stat(filePath).then(s => s.size).catch(() => 0);
                 freedBytes += size;
 
-                await fs.rm(folderPath, { recursive: true, force: true });
+                await fs.rm(filePath, { force: true });
                 deletedCount++;
                 console.log(`   Deleted: ${entry.name} (${formatBytes(size)})`);
             }
@@ -63,7 +85,7 @@ async function cleanupLogs(maxAgeDays = DEFAULT_DAYS) {
     }
 
     console.log('-'.repeat(50));
-    console.log(`Summary: Deleted ${deletedCount} folders, freed ${formatBytes(freedBytes)}`);
+    console.log(`Summary: Deleted ${deletedCount} entries, freed ${formatBytes(freedBytes)}`);
 }
 
 async function getFolderSize(dir) {

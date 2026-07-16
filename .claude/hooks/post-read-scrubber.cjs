@@ -59,10 +59,18 @@ const {
  *
  * Tolerates payload-shape variation:
  *   - tool_response.stdout   (Bash, current format)
+ *   - tool_response.stderr   (Bash, current format — F8: a command that prints
+ *                             a secret to stderr, e.g. a failing `curl` echoing
+ *                             a token, was never scanned/redacted)
  *   - tool_response.content  (Read, current format)
  *   - tool_response.text     (some MCP tools)
  *   - tool_response (string) (legacy)
  *   - tool_output            (legacy fallback)
+ *
+ * stdout and stderr are concatenated (newline-joined, empty pieces dropped) so
+ * a secret split across both streams — or present in only one — is caught by
+ * one scan pass; the caller applies the same capForScan treatment to the
+ * combined text as it did to stdout alone.
  *
  * @param {object} parsedJson - Hook event payload
  * @returns {string} Extracted text, or '' if none found
@@ -73,13 +81,50 @@ function extractOutput(parsedJson) {
 
     if (typeof resp === 'string') return resp;
     if (resp && typeof resp === 'object') {
-        return resp.stdout || resp.content || resp.text || '';
+        if (resp.stdout || resp.stderr) {
+            return [resp.stdout, resp.stderr].filter(Boolean).join('\n');
+        }
+        return resp.content || resp.text || '';
     }
     if (typeof out === 'string') return out;
     if (out && typeof out === 'object') {
-        return out.content || out.stdout || out.text || '';
+        if (out.content || out.stdout || out.stderr) {
+            return out.content || [out.stdout, out.stderr].filter(Boolean).join('\n') || '';
+        }
+        return out.text || '';
     }
     return '';
+}
+
+/**
+ * F70: cap how much Bash stdout gets the 55-regex sweep. This hook fires on
+ * EVERY Bash call, and build/install/test logs are effectively unbounded —
+ * measured ~6.1ms per 1000 lines, i.e. >1s of synchronous hook latency on a
+ * 200k-line log. Secrets in command output cluster near config/echo/env lines
+ * at the start or the error/summary lines at the end, not the noisy middle,
+ * so scan the head + tail and skip the middle. Redaction (rare, only on a
+ * finding) still runs over the FULL output, so a mid-log secret that also
+ * appears in head/tail context is still fully redacted.
+ *
+ * Read output is deliberately NOT capped: the harness already bounds Read to
+ * ~2000 lines, and Read warnings cite file:line so fidelity matters there.
+ */
+// (Sized in UTF-16 code units via String.length/slice, not true bytes — the
+// cap is a latency heuristic, so ±multi-byte drift is deliberately fine.)
+const BASH_SCAN_HEAD_BYTES = 64 * 1024;
+const BASH_SCAN_TAIL_BYTES = 64 * 1024;
+
+/**
+ * Return the scan-eligible slice of a Bash output: whole string when small,
+ * head + tail (joined with a newline so no synthetic cross-boundary line can
+ * form) when it exceeds the cap.
+ *
+ * @param {string} text
+ * @returns {string}
+ */
+function capForScan(text) {
+    if (text.length <= BASH_SCAN_HEAD_BYTES + BASH_SCAN_TAIL_BYTES) return text;
+    return text.slice(0, BASH_SCAN_HEAD_BYTES) + '\n' + text.slice(-BASH_SCAN_TAIL_BYTES);
 }
 
 /**
@@ -132,7 +177,9 @@ function processEvent(parsedJson) {
     const toolOutput = extractOutput(parsedJson);
     if (!toolOutput) return null;
 
-    const findings = scanContent(toolOutput, fileContext);
+    // F70: Bash stdout is scanned head+tail only past the cap (see capForScan).
+    const scanTarget = toolKind === 'Bash' ? capForScan(toolOutput) : toolOutput;
+    const findings = scanContent(scanTarget, fileContext);
     if (findings.length === 0) return null;
 
     // Build the redacted version. This may be byte-identical to the original
@@ -195,7 +242,13 @@ async function main() {
 }
 
 if (require.main === module) {
+    // P1.7 — hook duration instrumentation (F71), same pattern as siblings.
+    const { startHookTiming, emitHookEvent } = require('../core/_lib/hook-telemetry');
+    const _hookToken = startHookTiming('post-read-scrubber');
+    process.on('exit', () => {
+        try { emitHookEvent(_hookToken, 'success'); } catch { /* never fail on telemetry */ }
+    });
     main();
 }
 
-module.exports = { processEvent, extractOutput, inferToolKind };
+module.exports = { processEvent, extractOutput, inferToolKind, capForScan, BASH_SCAN_HEAD_BYTES, BASH_SCAN_TAIL_BYTES };

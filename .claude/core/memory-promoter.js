@@ -13,16 +13,33 @@
  */
 
 const fs = require('fs').promises;
-const fsSync = require('fs');
 const path = require('path');
 const CONSTANTS = require('./constants');
-const { calculateDecayedConfidence, createActiveDaysResolver } = require('./_lib/memory-decay');
+const { createActiveDaysResolver } = require('./_lib/memory-decay');
 const { parseFrontmatter: parseFm } = require('./_lib/frontmatter');
 const { readConcepts } = require('./_lib/concept-reader');
 const { resolveProjectRoot } = require('./_lib/project-root');
 const { memoryPaths } = require('./_lib/memory-paths');
+// CR-3.4 (F47/F48): loadHandCreatedMemories() must route through
+// MemoryManager's canonical supersession-aware read + decay chokepoint rather
+// than re-implementing them — that duplication is exactly how F47/F48 arose.
+const MemoryManager = require('./memory-manager');
 
 const CATEGORIES = Object.values(CONSTANTS.MEMORY_CATEGORIES);
+
+// F46: charset guard for `slug` (mark()'s first arg), mirroring the memory-id
+// convention used across the store (lowercase alnum + '_'/'-' only). Blocks
+// '..', '/', '\\', and an absolute-path leader from ever reaching the
+// `path.join(this.conceptsDir/this.memoriesDir, cat, slug + ext)` calls below.
+// W2-5: leading '_' is allowed to stay in lockstep with memory-manager's
+// SAFE_ID_RE — a legitimately-stored leading-underscore memory (e.g. the fixed
+// probe id '_health_check_probe') must be promotable, and '_' is not a
+// traversal character.
+const SAFE_SLUG_RE = /^[a-z0-9_][a-z0-9_-]*$/;
+
+function isSafeSlug(value) {
+    return typeof value === 'string' && SAFE_SLUG_RE.test(value);
+}
 
 // Target suggestions by category
 const TARGET_SUGGESTIONS = {
@@ -49,6 +66,13 @@ class MemoryPromoter {
         this.memoriesDir = paths.jsonRoot;
         this.conceptsDir = paths.conceptsDir;
         this._activeDaysResolver = createActiveDaysResolver({ projectRoot });
+        // CR-3.4 (F47/F48): the single MemoryManager instance loadHandCreatedMemories()
+        // routes through — its listMemories() is the canonical supersession-aware
+        // read (ME-3.1) and its calculateDecayedConfidence() is the canonical
+        // importance/3-floored decay formula (ME-2.2). Constructing it here (not
+        // per-call) mirrors the one-resolver-per-instance cache pattern already
+        // used for this._activeDaysResolver.
+        this._memoryManager = new MemoryManager();
     }
 
     /**
@@ -122,6 +146,16 @@ class MemoryPromoter {
      * JSON path: shallow-merges those fields into `metadata`.
      */
     async mark(slug, target) {
+        // F46: slug is joined straight into `.md`/`.json` paths across all 5
+        // categories below (`path.join(this.conceptsDir, cat, slug + '.md')` and
+        // the JSON fallback) — validate BEFORE any path is built or touched.
+        // Matches the existing not-found failure contract (console.error +
+        // process.exit(1)) rather than silently no-op'ing.
+        if (!isSafeSlug(slug)) {
+            console.error(`Invalid slug: "${slug}" — must be lowercase alphanumeric with '-'/'_' only (no path separators).`);
+            process.exit(1);
+        }
+
         const today = new Date().toISOString().slice(0, 10);
 
         // Try compiled markdown path first (preserves prior precedence — same slug
@@ -261,6 +295,25 @@ class MemoryPromoter {
      * and represent intentional human curation — they bypass the sources>=2 filter
      * that exists to suppress single-snapshot noise from the daily-log compiler.
      *
+     * CR-3.4 (F47/F48): routes through `MemoryManager.listMemories()` — the SAME
+     * chokepoint every other current-state consumer (analytics, lint, prune,
+     * search JSON-fallback) reads through — rather than re-reading the category
+     * dir and recomputing decay itself. That gives two things for free, exactly
+     * matching the canonical implementation instead of a shadow copy of it:
+     *   - F47: supersession-aware read. listMemories() hides any memory with a
+     *     non-null `invalid_at` by default (includeSuperseded: false), so a
+     *     superseded hand-created memory never surfaces as a promotion candidate.
+     *   - F48: listMemories() computes decayed_confidence via
+     *     MemoryManager.calculateDecayedConfidence(), which applies the
+     *     importance/3 retention-floor factor on top of the shared decay curve.
+     *     This method never recomputes decay locally, so the two formulas cannot
+     *     silently drift apart (see WAVE-2 lesson: shadow-copied logic is this
+     *     epic's dominant bug).
+     *
+     * Only `metadata.promoted_to` isn't surfaced by listMemories() (it strips
+     * metadata down to confidence/importance) — that one field is read directly
+     * from the same JSON file listMemories() already validated as live.
+     *
      * Mapped to the same concept shape as loadConcepts() with `handCurated: true`
      * so downstream code (isEligible, scan ranking) can treat both uniformly.
      */
@@ -268,54 +321,74 @@ class MemoryPromoter {
         const concepts = [];
 
         for (const category of CATEGORIES) {
-            const catDir = path.join(this.memoriesDir, category);
-            let files;
-            try {
-                files = await fs.readdir(catDir);
-            } catch {
-                continue; // category dir may not exist
-            }
+            const liveMemories = await this._memoryManager.listMemories(category);
 
-            for (const file of files) {
-                if (!file.endsWith('.json')) continue;
+            for (const mem of liveMemories) {
+                const slug = mem.id;
+                if (!slug) continue;
+
+                // listMemories() already applied the F47 supersession filter, so
+                // `liveMemories` excludes anything with invalid_at set.
+                //
+                // W3-1 (confidence source): listMemories() PROJECTS confidence from
+                // `metadata.confidence`, which is a vestigial uniform 1.0 for every
+                // hand-created memory — the real curated value (the documented
+                // 0.5–0.9 gradient the ranking depends on) lives in
+                // `content.confidence`. Reading mem.confidence/mem.decayed_confidence
+                // here would flatten every hand-created memory to ~1.0, collapsing
+                // the eligibility gate and the ranking gradient. So recover the
+                // curated value from the JSON (we already read the file for
+                // promoted_to) and recompute decay via the CANONICAL
+                // calculateDecayedConfidence — reused verbatim (keeps the F48
+                // importance/3 floor, no formula replication) — with the correct
+                // base injected into the metadata field it reads.
+                // (The systemic bug — the canonical read path ignoring
+                // content.confidence store-wide — is tracked separately as a
+                // follow-up in the Wave-3 review; fixing it there would let this
+                // trust the projection directly.)
+                //
+                // W3-3 (id/filename drift): resolve the file via the SAME id→filename
+                // mapping the reader uses (idToFilename swaps '_'→'-'), so an
+                // underscore-id memory's promoted_to guard doesn't silently ENOENT
+                // and re-suggest an already-promoted memory every scan.
+                let promotedTo = null;
+                let confidence = mem.confidence;
+                let decayedConfidence = mem.decayed_confidence;
                 try {
-                    const filePath = path.join(catDir, file);
+                    const filePath = path.join(this.memoriesDir, category, `${MemoryManager.idToFilename(slug)}.json`);
                     const raw = await fs.readFile(filePath, 'utf-8');
-                    const memory = JSON.parse(raw);
-
-                    const slug = file.replace('.json', '');
-                    const confidence = parseFloat(memory.content?.confidence ?? memory.metadata?.confidence) || 0.6;
-                    const updated = memory.updated || new Date().toISOString();
-                    const usageCount = parseInt(memory.usage_count) || 0;
-
-                    const decayed = calculateDecayedConfidence({
-                        confidence,
-                        category,
-                        usageCount,
-                        updated,
-                        activeDays: this._activeDaysResolver.getActiveDaysSince(updated),
-                    });
-
-                    const title = slug
-                        .split('-')
-                        .map(w => w.charAt(0).toUpperCase() + w.slice(1))
-                        .join(' ');
-
-                    concepts.push({
-                        slug,
-                        title,
-                        category,
-                        confidence,
-                        decayedConfidence: decayed,
-                        sources: [],
-                        usageCount,
-                        promotedTo: memory.metadata?.promoted_to || null,
-                        updated,
-                        handCurated: true
-                    });
+                    const parsed = JSON.parse(raw);
+                    promotedTo = parsed.metadata?.promoted_to || null;
+                    const curated = parsed.content?.confidence;
+                    if (typeof curated === 'number') {
+                        confidence = curated;
+                        decayedConfidence = this._memoryManager.calculateDecayedConfidence({
+                            ...parsed,
+                            metadata: { ...parsed.metadata, confidence: curated },
+                        });
+                    }
                 } catch {
-                    // skip unreadable / malformed JSON files
+                    // best-effort — listMemories() already proved this memory readable;
+                    // a race/removal here just leaves the projected values in place.
                 }
+
+                const title = slug
+                    .split('-')
+                    .map(w => w.charAt(0).toUpperCase() + w.slice(1))
+                    .join(' ');
+
+                concepts.push({
+                    slug,
+                    title,
+                    category,
+                    confidence,
+                    decayedConfidence,
+                    sources: [],
+                    usageCount: mem.usage_count,
+                    promotedTo,
+                    updated: mem.updated,
+                    handCurated: true
+                });
             }
         }
 

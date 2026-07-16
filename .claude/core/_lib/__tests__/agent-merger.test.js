@@ -84,6 +84,23 @@ Just some content without a frontmatter block.
 some-skill
 `;
 
+// Shadow-shaped: intentionally omits ## Skills (shadow.md's convention — its prose
+// persona is its own convention, not the ## Skills preload block) but still carries
+// an adopter-added ## Project Context (F4).
+const FIXTURE_SHADOW_WITH_PROJECT_CTX = `---
+name: shadow
+model: sonnet
+---
+
+# Shadow — Voice-Matched Ghostwriter
+
+I write in your voice.
+
+## Project Context
+
+This project's blog targets a technical, skeptical audience.
+`;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // parseAgentSections
 // ─────────────────────────────────────────────────────────────────────────────
@@ -138,6 +155,17 @@ describe('parseAgentSections', () => {
         expect(result.skillsZone).toContain('some-skill');
     });
 
+    it('detects ## Project Context even when ## Skills is absent (shadow-shaped agent, F4)', () => {
+        const result = parseAgentSections(FIXTURE_SHADOW_WITH_PROJECT_CTX);
+        expect(result.skillsZone).toBe('');
+        expect(result.projectCtx).toContain('## Project Context');
+        expect(result.projectCtx).toContain('technical, skeptical audience');
+        // Must NOT be folded into soulZone.
+        expect(result.soulZone).not.toContain('## Project Context');
+        expect(result.soulZone).not.toContain('technical, skeptical audience');
+        expect(result.soulZone).toContain('I write in your voice');
+    });
+
     it('normalizes CRLF line endings', () => {
         const crlf = FIXTURE_PERSONALIZED.replace(/\n/g, '\r\n');
         const result = parseAgentSections(crlf);
@@ -150,6 +178,97 @@ describe('parseAgentSections', () => {
         const result = parseAgentSections(FIXTURE_GENERIC);
         // soulZone starts with the two newlines so reassembly gives `---\n\n# Heading`
         expect(result.soulZone.startsWith('\n\n# Code Reviewer')).toBe(true);
+    });
+
+    // Regression (CR-2.4 F0): a `## Skills` / `## Project Context` heading that
+    // appears INSIDE a fenced code block in the soul zone (a doc example) must NOT
+    // be treated as a real section boundary. skill-merger.js already solved this
+    // identical hazard with scanFenceState() — parseAgentSections must be equally
+    // fence-aware, or a soul-zone code fence showing "## Skills" as example text
+    // truncates the merge (soulZone ends early; the real ## Skills body is lost).
+    const FIXTURE_FENCED_HEADING_IN_SOUL = `---
+name: general-purpose
+nickname: Forge
+model: sonnet
+---
+
+# Forge — General Purpose Developer
+
+I read before I write. Here's an example of a section heading in another agent:
+
+\`\`\`markdown
+## Skills
+
+This is just example text inside a fence, not a real section boundary.
+\`\`\`
+
+That was just an example, not a real heading.
+
+## Skills
+
+- systematic-debugging
+- verification-before-completion
+
+## Project Context
+
+This project uses Node.js.
+`;
+
+    it('does not treat a ## Skills heading inside a fenced code block as a section boundary', () => {
+        const result = parseAgentSections(FIXTURE_FENCED_HEADING_IN_SOUL);
+        // The fenced example text must stay part of the soul zone...
+        expect(result.soulZone).toContain('This is just example text inside a fence');
+        expect(result.soulZone).toContain('That was just an example, not a real heading.');
+        // ...and the REAL ## Skills section (outside the fence) must still be found.
+        expect(result.skillsZone).toContain('systematic-debugging');
+        expect(result.skillsZone).toContain('verification-before-completion');
+        expect(result.skillsZone).not.toContain('example text inside a fence');
+    });
+
+    it('still finds the real ## Project Context section after a fenced heading in the soul zone', () => {
+        const result = parseAgentSections(FIXTURE_FENCED_HEADING_IN_SOUL);
+        expect(result.projectCtx).toContain('## Project Context');
+        expect(result.projectCtx).toContain('This project uses Node.js.');
+    });
+
+    it('does not truncate the merge when src has a fenced ## Skills example in the soul zone', () => {
+        // End-to-end: mergeAgentFile must still pick up the real skillsZone from src
+        // even when the soul zone contains a fenced-code-block example heading.
+        // (Project Context is preserve-from-dest-only by design — see the merge
+        // strategy doc at the top of agent-merger.js — so it is asserted separately
+        // below via a dest that already carries one, not pulled from src.)
+        const destContent = `---
+name: general-purpose
+model: sonnet
+---
+
+# General Purpose Developer
+
+Old soul.
+
+## Skills
+
+old-skill-list
+
+## Project Context
+
+This project uses Python.
+`;
+        const tmp = createTmpDir({ prefix: 'agent-merger-fence-test-' });
+        try {
+            const srcPath = tmp.write('src/agents/general-purpose.md', FIXTURE_FENCED_HEADING_IN_SOUL);
+            const destPath = tmp.write('dest/agents/general-purpose.md', destContent);
+            mergeAgentFile(srcPath, destPath);
+            const merged = fs.readFileSync(destPath, 'utf8');
+            // The real ## Skills body (from src, past the fenced example) survives.
+            expect(merged).toContain('systematic-debugging');
+            expect(merged).toContain('verification-before-completion');
+            expect(merged).not.toContain('old-skill-list');
+            // dest's own Project Context is preserved unaffected by the fence fix.
+            expect(merged).toContain('This project uses Python.');
+        } finally {
+            tmp.cleanup();
+        }
     });
 });
 
@@ -265,6 +384,32 @@ This is my project context.
         // nickname preserved
         expect(merged).toContain('nickname: Forge');
         expect(result.changed).toBe(true);
+    });
+
+    it('preserves an adopter-added Project Context on a shadow-shaped agent merged with a non-personalized source (F4)', () => {
+        // Template source: shadow-shaped (no ## Skills), NOT personalized, no Project
+        // Context of its own — an ordinary template sync.
+        const srcContent = `---
+name: shadow
+model: sonnet
+---
+
+# Shadow — Voice-Matched Ghostwriter (template refresh)
+
+Updated persona prose from the template.
+`;
+        const srcPath = tmp.write('src/agents/shadow.md', srcContent);
+        const destPath = tmp.write('dest/agents/shadow.md', FIXTURE_SHADOW_WITH_PROJECT_CTX);
+
+        const result = mergeAgentFile(srcPath, destPath);
+
+        const merged = fs.readFileSync(destPath, 'utf8');
+        // Template refreshes the soul zone (dest was not personalized).
+        expect(merged).toContain('Updated persona prose from the template');
+        // The adopter's Project Context survives — not folded into soulZone and lost.
+        expect(merged).toContain('## Project Context');
+        expect(merged).toContain('technical, skeptical audience');
+        expect(result.detail).toContain('preserved Project Context');
     });
 
     it('overwrites soulZone when dest is not personalized', () => {

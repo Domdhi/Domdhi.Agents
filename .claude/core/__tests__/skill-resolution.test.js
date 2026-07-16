@@ -18,6 +18,7 @@ import { describe, it, expect } from 'vitest';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
 const require = createRequire(import.meta.url);
@@ -105,6 +106,31 @@ describe('evaluateAgentSkillRefs', () => {
 // ---------------------------------------------------------------------------
 // 3. Live tree — the resolution invariant
 // ---------------------------------------------------------------------------
+
+describe('buildSkillIndex — symlinked skill dirs', () => {
+    it('counts a symlinked skill dir (bespoke-skill shape) and guards broken links', () => {
+        // Adopter bespoke skills are frequently symlinks into ../.agents/skills/ —
+        // Dirent.isDirectory() is false for symlinks (same class as skill-conformance.js).
+        const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'skill-res-'));
+        try {
+            const skillsRoot = path.join(tmp, 'skills');
+            fs.mkdirSync(path.join(skillsRoot, 'real-skill'), { recursive: true });
+            fs.writeFileSync(path.join(skillsRoot, 'real-skill', 'SKILL.md'), '---\nname: real-skill\n---\n');
+            const linkTarget = path.join(tmp, 'agents-skills', 'linked-skill');
+            fs.mkdirSync(linkTarget, { recursive: true });
+            fs.writeFileSync(path.join(linkTarget, 'SKILL.md'), '---\nname: linked-skill\n---\n');
+            fs.symlinkSync(linkTarget, path.join(skillsRoot, 'linked-skill'), 'dir');
+            fs.symlinkSync(path.join(tmp, 'nonexistent'), path.join(skillsRoot, 'broken-link'), 'dir');
+
+            const idx = buildSkillIndex(skillsRoot);
+            expect(idx['real-skill']).toEqual({ exists: true, disabled: false });
+            expect(idx['linked-skill']).toEqual({ exists: true, disabled: false }); // the fix
+            expect(idx['broken-link']).toBeUndefined(); // broken symlink guarded out
+        } finally {
+            fs.rmSync(tmp, { recursive: true, force: true });
+        }
+    });
+});
 
 describe('live trees', () => {
     it('builds a non-empty skill index from the real skills tree', () => {

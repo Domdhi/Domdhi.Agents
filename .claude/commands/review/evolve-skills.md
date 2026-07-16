@@ -67,7 +67,7 @@ For each pursued candidate, read the evidence and the relevant skill, then diagn
 
 ### Step 4 — Draft / edit (follow `skill-creator`)
 
-- **IMPROVE** → snapshot the skill (`cp -r .claude/skills/<skill> <workspace>/skill-snapshot/`), then make the surgical edit. The snapshot is the `old_skill` baseline. **In the workshop**, edit the skill body directly (it's the template source — the fix propagates to the fleet). **In an adopter**, a fix to a *template* skill that you're not contributing upstream MUST go below a `<!-- @@project-additions -->` marker (create if absent) — an edit above the marker is clobbered on the next sync. See `skill-authoring`.
+- **IMPROVE** → snapshot the skill (`cp -r .claude/skills/<skill> <workspace>/skill-snapshot/`), then make the surgical edit. The snapshot is the `old_skill` baseline. **In the workshop**, edit the skill body directly (it's the template source — the fix propagates to the fleet). **In an adopter**, a fix to a *template* skill that you're not contributing upstream MUST use a project-additions sentinel (create if absent) — a new section at the end → `<!-- @@project-additions -->`; a bullet inserted into an existing section → an anchored `<!-- @@project-additions:start -->`/`:end` fence. A plain edit to template prose is clobbered on the next sync. See `skill-authoring`.
 - **CREATE** → scaffold `.claude/skills/<name>/SKILL.md` (name==dir; pushy what+when description; explain-the-why body; progressive disclosure). The baseline is `without_skill`.
 
 Write the workspace + test cases per `skill-creator` Step "Running and evaluating test cases":

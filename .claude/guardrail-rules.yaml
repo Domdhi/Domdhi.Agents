@@ -279,12 +279,16 @@ readOnlyPaths:
   - package-lock.json                  # lockfile — only npm manages this (Bash, not Edit/Write)
   - .eslintrc*                         # ESLint config (A6 — ECC)
   - .prettierrc*                       # Prettier config (A6 — ECC)
-  - tsconfig*.json                     # TypeScript config (A6 — ECC) — kept; project does not use TS so zero friction
   - .editorconfig                      # EditorConfig (A6 — ECC)
 # Removed 2026-04-25:
 #   .claude/settings.json         — /update-config skill must be able to edit this
 #   docs/architecture/overview.md — /create:project-architecture + /review:update-docs write here
 #   vitest.config*                — test tuning during refactor work is routine; explicit handoff flag
+# Removed 2026-07-16 (harvested from SportsFiesta):
+#   tsconfig*.json                — the old "project does not use TS so zero friction" rationale
+#                                   doesn't hold at template level: TS-heavy adopters legitimately
+#                                   create/edit per-package tsconfigs as routine work (same rationale
+#                                   as the vitest.config* removal).
 
 # Tier 3 — no-delete: reads/writes allowed, deletes blocked.
 # (Empty by default — populate with paths your workflow must not remove.)

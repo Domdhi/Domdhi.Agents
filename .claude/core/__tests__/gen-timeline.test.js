@@ -11,6 +11,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createRequire } from 'node:module';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -22,7 +23,122 @@ const { createGitRepo, gitAvailable } = require('./_helpers/git-fixture');
 const GEN_TIMELINE_PATH = require.resolve('../gen-timeline');
 
 // Top-level require for pure functions — no env/argv dependency
-const { getMonday, formatDate, formatWeekHeader, groupByTheme, mergeTimeline } = require('../gen-timeline');
+const { getMonday, formatDate, formatWeekHeader, groupByTheme, mergeTimeline, assertSafeRef } = require('../gen-timeline');
+
+// ─── assertSafeRef (F33) ─────────────────────────────────────────────────────
+// Git ref names legally ALLOW shell metacharacters, so the primary defense is
+// argv-mode execFileSync (tested via main() below). assertSafeRef is
+// defense-in-depth: it rejects a ref containing a shell metacharacter or
+// whitespace outright, with a clear error, rather than silently accepting it.
+
+describe('assertSafeRef (F33 — defense-in-depth ref validation)', () => {
+    let exitSpy;
+    let errorSpy;
+
+    beforeEach(() => {
+        exitSpy = vi.spyOn(process, 'exit').mockImplementation((code) => {
+            throw new Error(`process.exit(${code})`);
+        });
+        errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    });
+
+    afterEach(() => {
+        exitSpy.mockRestore();
+        errorSpy.mockRestore();
+    });
+
+    it('allows a plain ref (HEAD)', () => {
+        expect(() => assertSafeRef('HEAD')).not.toThrow();
+    });
+
+    it('allows a normal branch name', () => {
+        expect(() => assertSafeRef('feature/my-branch')).not.toThrow();
+        expect(() => assertSafeRef('release-4.2')).not.toThrow();
+    });
+
+    it('allows a full commit hash', () => {
+        expect(() => assertSafeRef('a1b2c3d4e5f60718293a4b5c6d7e8f9012345678')).not.toThrow();
+    });
+
+    it('rejects a ref containing shell metacharacters ($ ( ) ` ; | &)', () => {
+        for (const hostile of ['x$(touch PROOF)', 'x`touch PROOF`', 'x;touch PROOF', 'x|touch PROOF', 'x&touch PROOF', 'x(PROOF)']) {
+            expect(() => assertSafeRef(hostile)).toThrow(/process\.exit/);
+        }
+    });
+
+    it('rejects a ref containing whitespace', () => {
+        expect(() => assertSafeRef('x PROOF')).toThrow(/process\.exit/);
+    });
+
+    // ── M5: leading-dash flag injection ──────────────────────────────────────
+    // Argv-mode execFileSync kills shell RCE, but git itself still parses a
+    // leading-dash argv element as a FLAG, not a revision. `git log --output=<f>`
+    // writes the log to an arbitrary file — confirmed independently. A ref may
+    // not start with `-` per `git check-ref-format` anyway, so this costs nothing.
+    it('rejects a ref beginning with a dash (git-flag injection, M5)', () => {
+        for (const hostile of ['--output=PWNED', '-x', '--upload-pack=touch PROOF']) {
+            expect(() => assertSafeRef(hostile)).toThrow(/process\.exit/);
+        }
+    });
+});
+
+// ─── --end-of-options defense (M5, layered) ──────────────────────────────────
+// assertSafeRef rejects a leading-dash ref BEFORE it ever reaches git. This
+// suite tests the SECOND, independent layer: the exact `git log … --end-of-
+// options <revArg>` invocation shape gen-timeline.js uses, proving that even a
+// flag-shaped value reaching git (bypassing assertSafeRef, e.g. via any future
+// code path that builds revArg without going through it) still cannot be
+// reinterpreted as a flag — `--end-of-options` forces everything after it to be
+// treated as a revision/pathspec, so git errors out instead of writing a file.
+
+describe('git --end-of-options defense (M5 — flag-injection even if assertSafeRef were bypassed)', () => {
+    it.skipIf(!gitAvailable())('a "--output=<file>" revArg cannot write an arbitrary file when --end-of-options guards it', () => {
+        const tmp = createTmpDir({ prefix: 'gen-timeline-eoo-' });
+        const repo = createGitRepo({ root: tmp.root });
+        try {
+            repo.addCommitOnDate('feat: seed', '2026-05-01T10:00:00');
+            const pwnedFile = path.join(tmp.root, 'PWNED');
+            const hostileRevArg = `--output=${pwnedFile}`;
+
+            // Exactly gen-timeline.js's execFileSync call shape.
+            expect(() => {
+                execFileSync('git', ['log', '--format=%H|%ai|%s', '--reverse', '--numstat', '--end-of-options', hostileRevArg], {
+                    cwd: repo.repoPath,
+                    maxBuffer: 50 * 1024 * 1024,
+                    windowsHide: true,
+                });
+            }).toThrow(); // git refuses to resolve "--output=..." as a revision — errors out
+
+            expect(fs.existsSync(pwnedFile)).toBe(false);
+        } finally {
+            tmp.cleanup();
+        }
+    });
+
+    it.skipIf(!gitAvailable())('regression guard: WITHOUT --end-of-options, the same revArg IS accepted as a flag (proves the guard is load-bearing)', () => {
+        // Documents the vulnerability this guard closes — if this test ever
+        // starts failing (git stops honoring --output as a flag here), the
+        // --end-of-options test above is the one that actually matters; this one
+        // just proves it isn't a no-op.
+        const tmp = createTmpDir({ prefix: 'gen-timeline-eoo-vuln-' });
+        const repo = createGitRepo({ root: tmp.root });
+        try {
+            repo.addCommitOnDate('feat: seed', '2026-05-01T10:00:00');
+            const pwnedFile = path.join(tmp.root, 'PWNED_UNGUARDED');
+            const hostileRevArg = `--output=${pwnedFile}`;
+
+            execFileSync('git', ['log', '--format=%H', hostileRevArg], {
+                cwd: repo.repoPath,
+                maxBuffer: 50 * 1024 * 1024,
+                windowsHide: true,
+            });
+
+            expect(fs.existsSync(pwnedFile)).toBe(true);
+        } finally {
+            tmp.cleanup();
+        }
+    });
+});
 
 // ─── mergeTimeline (M2) ──────────────────────────────────────────────────────
 // Update mode fetches only NEW commits then splices them onto the existing
@@ -413,6 +529,20 @@ describe('main()', () => {
         expect(content).toMatch(/<!-- last:[a-f0-9]{40} -->/);
     });
 
+    it.skipIf(!gitAvailable())('full mode: a commit subject containing a literal pipe is not truncated (F34)', () => {
+        // The parser splits `%H|%ai|%s` lines on '|' — an embedded pipe in the
+        // subject used to silently drop everything after it (parts[2] only).
+        repo.addCommitOnDate('fix: handle a|b case in the|parser', '2026-05-01T10:00:00');
+
+        process.argv = ['node', 'gen-timeline.js', 'full'];
+        const mainFn = requireFreshMain();
+        mainFn();
+
+        const content = fs.readFileSync(path.join(tmp.root, 'docs', 'work/timeline.md'), 'utf8');
+        expect(content).toContain('fix: handle a|b case in the|parser');
+        expect(content).not.toMatch(/fix: handle a\s*$/m); // the old truncated form
+    });
+
     it.skipIf(!gitAvailable())('full mode: day header shows correct commit count', () => {
         repo.addCommitOnDate('feat: alpha', '2026-05-01T10:00:00');
         repo.addCommitOnDate('feat: beta', '2026-05-01T11:00:00');
@@ -540,6 +670,60 @@ describe('main()', () => {
         expect(hashMatch).not.toBeNull();
         // Hash is 40 hex chars
         expect(hashMatch[1]).toMatch(/^[a-f0-9]{40}$/);
+    });
+
+    it.skipIf(!gitAvailable())('F33: a hostile --base ref is rejected and never reaches a shell (no PROOF file created)', () => {
+        // Root cause this guards: `--base <ref>` used to be string-interpolated
+        // into an execSync shell command. Git ref names legally allow $ ( ) ` ; | &,
+        // so `x$(touch PROOF)` used to execute `touch PROOF` as a live subcommand.
+        // Now: assertSafeRef rejects it outright (defense-in-depth), and even if it
+        // didn't, execFileSync delivers it as one inert argv element (primary fix).
+        repo.addCommitOnDate('feat: seed', '2026-05-01T10:00:00');
+        const proofFile = path.join(tmp.root, 'PROOF');
+        const hostileRef = `HEAD$(touch ${proofFile})`;
+
+        process.argv = ['node', 'gen-timeline.js', 'full', '--base', hostileRef];
+        const mainFn = requireFreshMain();
+
+        expect(() => mainFn()).toThrow(/process\.exit/);
+        expect(fs.existsSync(proofFile)).toBe(false);
+    });
+
+    it.skipIf(!gitAvailable())('M5: a flag-injection --base value ("--output=PWNED") is rejected — no PWNED file created', () => {
+        // Confirmed independently: `git log --output=<file>` writes git-log content
+        // to an arbitrary file. Without the leading-dash rejection, this argv-mode
+        // revArg would be interpreted by git as a FLAG, not a revision.
+        repo.addCommitOnDate('feat: seed', '2026-05-01T10:00:00');
+        const pwnedFile = path.join(tmp.root, 'PWNED');
+        const hostileRef = `--output=${pwnedFile}`;
+
+        process.argv = ['node', 'gen-timeline.js', 'full', '--base', hostileRef];
+        const mainFn = requireFreshMain();
+
+        expect(() => mainFn()).toThrow(/process\.exit/);
+        expect(fs.existsSync(pwnedFile)).toBe(false);
+    });
+
+    it.skipIf(!gitAvailable())('M5: a bare leading-dash --base value ("-x") is rejected', () => {
+        repo.addCommitOnDate('feat: seed', '2026-05-01T10:00:00');
+
+        process.argv = ['node', 'gen-timeline.js', 'full', '--base', '-x'];
+        const mainFn = requireFreshMain();
+
+        expect(() => mainFn()).toThrow(/process\.exit/);
+    });
+
+    it.skipIf(!gitAvailable())('F33: --base still works normally with a plain ref (HEAD)', () => {
+        // Regression guard — the F33 hardening must not break the ordinary path.
+        repo.addCommitOnDate('feat: plain base works', '2026-05-01T10:00:00');
+
+        process.argv = ['node', 'gen-timeline.js', 'full', '--base', 'HEAD'];
+        const mainFn = requireFreshMain();
+        mainFn();
+
+        const timelinePath = path.join(tmp.root, 'docs', 'work/timeline.md');
+        const content = fs.readFileSync(timelinePath, 'utf8');
+        expect(content).toContain('feat: plain base works');
     });
 
     it.skipIf(!gitAvailable())('outputs valid JSON feedback on success', () => {

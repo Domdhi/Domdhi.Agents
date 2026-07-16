@@ -24,6 +24,44 @@
 
 const fs = require('fs');
 const path = require('path');
+const { safeWrite } = require('./fs-safe');
+
+// ── Fence Scanner ─────────────────────────────────────────────────────────────
+
+/**
+ * Split `text` into lines and a parallel array marking which lines fall INSIDE a
+ * fenced code block (``` or ~~~, either length-3+ fence, matched loosely — good
+ * enough for this repo's Markdown, not a full CommonMark parser).
+ *
+ * Ported verbatim from skill-merger.js's scanFenceState — that module already
+ * solved the identical "sentinel-inside-a-doc-example-fence" hazard for
+ * <!-- @@project-additions --> markers; agent-merger's `## Skills` /
+ * `## Project Context` heading matching needs the same fence-awareness (F0).
+ * skill-merger.js does not export scanFenceState, so it is ported here rather
+ * than imported.
+ *
+ * @param {string} text
+ * @returns {{ lines: string[], inFence: boolean[] }}
+ */
+function scanFenceState(text) {
+    const lines = text.replace(/\r\n/g, '\n').split('\n');
+    const inFence = new Array(lines.length).fill(false);
+    let fenceToken = null; // '```' | '~~~' | null
+    for (let i = 0; i < lines.length; i++) {
+        const trimmed = lines[i].trim();
+        const opensOrCloses = /^(`{3,}|~{3,})/.exec(trimmed);
+        if (fenceToken) {
+            inFence[i] = true;
+            if (opensOrCloses && trimmed.startsWith(fenceToken)) fenceToken = null;
+            continue;
+        }
+        if (opensOrCloses) {
+            fenceToken = opensOrCloses[1][0].repeat(3); // normalize to the 3-char token
+            inFence[i] = true; // the opening fence line itself counts as "in the fence"
+        }
+    }
+    return { lines, inFence };
+}
 
 // ── Section Parser ─────────────────────────────────────────────────────────────
 
@@ -35,7 +73,7 @@ const path = require('path');
  */
 function parseAgentSections(content) {
     // Normalize CRLF to LF so line comparisons work on Windows-edited files
-    const lines = content.replace(/\r\n/g, '\n').split('\n');
+    const { lines, inFence } = scanFenceState(content);
 
     let frontmatterEnd = -1;  // index of closing ---
     let skillsStart = -1;     // index of ## Skills line
@@ -51,15 +89,24 @@ function parseAgentSections(content) {
         }
     }
 
-    // Search for section headings after frontmatter
+    // Search for section headings after frontmatter. A heading match INSIDE a
+    // fenced code block (a doc example showing "## Skills" as literal text) is
+    // not a real section boundary — skip it (F0). `## Project Context` is
+    // detected INDEPENDENTLY of `## Skills` — an agent shaped without a Skills
+    // section (shadow.md intentionally omits it) can still carry an adopter-added
+    // Project Context, and gating its detection on skillsStart being set first
+    // used to fold that section into soulZone, where it gets clobbered by src on
+    // merge (F4).
     const searchStart = frontmatterEnd >= 0 ? frontmatterEnd + 1 : 0;
     for (let i = searchStart; i < lines.length; i++) {
+        if (inFence[i]) continue;
         if (skillsStart === -1 && lines[i].match(/^## Skills\s*$/)) {
             skillsStart = i;
-        } else if (skillsStart !== -1 && projectCtxStart === -1 && lines[i].match(/^## Project Context\s*$/)) {
-            projectCtxStart = i;
-            break;
         }
+        if (projectCtxStart === -1 && lines[i].match(/^## Project Context\s*$/)) {
+            projectCtxStart = i;
+        }
+        if (skillsStart !== -1 && projectCtxStart !== -1) break;
     }
 
     // Extract frontmatter (lines between the two --- markers, no delimiters)
@@ -67,9 +114,10 @@ function parseAgentSections(content) {
         ? lines.slice(1, frontmatterEnd).join('\n')
         : '';
 
-    // Soul zone: from line after closing --- to line before ## Skills (or end)
+    // Soul zone: from line after closing --- to line before ## Skills, or (when
+    // ## Skills is absent — the shadow-shaped case) before ## Project Context, or end.
     const soulStart = frontmatterEnd >= 0 ? frontmatterEnd + 1 : 0;
-    const soulEnd = skillsStart >= 0 ? skillsStart : lines.length;
+    const soulEnd = skillsStart >= 0 ? skillsStart : (projectCtxStart >= 0 ? projectCtxStart : lines.length);
     let soulLines = lines.slice(soulStart, soulEnd);
     // Remove leading blank lines
     while (soulLines.length > 0 && soulLines[0].trim() === '') {
@@ -316,6 +364,8 @@ function mergeFrontmatter(srcFm, dstFm, opts) {
  * @param {string} srcPath
  * @param {string} dstPath
  * @param {object} [opts]
+ * @param {string} [opts.containRoot] — destination project root; enables safeWrite's
+ *                 symlinked-ancestor guard (fleet:sync trust boundary)
  * @returns {{ changed: boolean, diff?: string }}
  */
 function mergeAgentFile(srcPath, dstPath, opts) {
@@ -327,7 +377,7 @@ function mergeAgentFile(srcPath, dstPath, opts) {
         // risk as the merge path).
         const srcContent = stripExcludedSkills(fs.readFileSync(srcPath, 'utf8'), opts.excludedSkills);
         fs.mkdirSync(path.dirname(dstPath), { recursive: true });
-        fs.writeFileSync(dstPath, srcContent, 'utf8');
+        safeWrite(dstPath, srcContent, 'utf8', opts.containRoot);
         return { changed: true, detail: 'copied (fresh install)' };
     }
 
@@ -396,7 +446,7 @@ function mergeAgentFile(srcPath, dstPath, opts) {
     const changed = result !== destContent;
     if (changed) {
         fs.mkdirSync(path.dirname(dstPath), { recursive: true });
-        fs.writeFileSync(dstPath, result, 'utf8');
+        safeWrite(dstPath, result, 'utf8', opts.containRoot);
     }
 
     const details = [];

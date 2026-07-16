@@ -2,10 +2,13 @@
 //   - isProcessed(heading): 1-arg, checks heading.includes('[extracted]') — no processed-dates JSON file
 //   - markProcessed(filePath, originalHeading): reads file, replaces heading with "${heading} [extracted]", writes back
 //   - invokeModel() returns [] on failure (not null) — graceful-skip returns []
-//   - Mock strategy: source uses `const { execSync } = require('child_process')` (destructured).
-//     vi.spyOn + vi.mock (ESM) cannot intercept a destructured CJS ref after load.
-//     Solution: replace child_process.execSync with a controllable wrapper BEFORE requiring
-//     memory-extractor.js, so the destructure captures our wrapper. Each test sets a delegate fn.
+//   - Mock strategy: source uses `const { execSync, execFileSync } = require('child_process')`
+//     (destructured — execSync backs checkClaudeCli, execFileSync backs invokeModel via
+//     _lib/model-runner.js's argv-delivery fix). vi.spyOn + vi.mock (ESM) cannot intercept a
+//     destructured CJS ref after load. Solution: replace both child_process.execSync AND
+//     child_process.execFileSync with controllable wrappers BEFORE requiring memory-extractor.js,
+//     so the destructure captures our wrappers. Both wrappers share one delegate — each test sets
+//     it once via setExecSyncImpl() and it controls whichever call site fires.
 //   - Output path: extractedDir/{date}/{timestamp}.json with payload {extractedAt, sourceDate, count, learnings}
 //   - module.exports = MemoryExtractor (default class export)
 //   - parseDailyFile(content, date): 2-arg, splits on ^## \d{2}:\d{2} — regex, returns [{date, time, heading, rawText}]
@@ -18,24 +21,28 @@ import path from 'node:path';
 const require = createRequire(import.meta.url);
 
 // ---------------------------------------------------------------------------
-// CJS-level mock setup for execSync
+// CJS-level mock setup for execSync/execFileSync
 // Must happen BEFORE requiring memory-extractor so the module's destructured
-// `const { execSync } = require('child_process')` captures our wrapper.
+// `const { execSync, execFileSync } = require('child_process')` captures our wrappers.
 // ---------------------------------------------------------------------------
 const childProcess = require('child_process');
 const _originalExecSync = childProcess.execSync;
-let _execSyncImpl = _originalExecSync; // delegate — tests override this
+const _originalExecFileSync = childProcess.execFileSync;
+let _execSyncImpl = _originalExecSync; // delegate — tests override this; shared by both wrappers
 
-// Install wrapper — source's destructure at module load captures this function object.
-// Our wrapper calls _execSyncImpl, which each test controls.
+// Install wrappers — source's destructure at module load captures these function objects.
+// Both wrappers call the same _execSyncImpl delegate, which each test controls.
 childProcess.execSync = function mockedExecSync(cmd, opts) {
   return _execSyncImpl(cmd, opts);
 };
+childProcess.execFileSync = function mockedExecFileSync(file, args, opts) {
+  return _execSyncImpl(file, opts);
+};
 
-// NOW load memory-extractor — its `const { execSync }` captures `mockedExecSync` above.
+// NOW load memory-extractor — its destructured `execSync`/`execFileSync` capture the wrappers above.
 const MemoryExtractor = require('../memory-extractor');
 
-// Restore child_process.execSync to the wrapper (it already is, but make intent clear)
+// Restore child_process.execSync/execFileSync to the wrappers (they already are, but make intent clear)
 // Individual tests set _execSyncImpl to control behavior; afterEach restores to a safe default.
 
 const { createTmpDir } = require('./_helpers/tmp-dir');
@@ -74,9 +81,10 @@ afterEach(() => {
 });
 
 afterAll(() => {
-  // Restore the original execSync on child_process so other test files
-  // that run after this one in the same process are not affected.
+  // Restore the original execSync/execFileSync on child_process so other test
+  // files that run after this one in the same process are not affected.
   childProcess.execSync = _originalExecSync;
+  childProcess.execFileSync = _originalExecFileSync;
 });
 
 // ---------------------------------------------------------------------------

@@ -37,49 +37,11 @@
 
 const fs = require('fs');
 const path = require('path');
-
-const ADR_FILE_RE = /^(\d{3,4})-.+\.md$/;        // canonical: NNNN-title.md
-const ADR_HEADING_RE = /^#\s*ADR\b/im;           // an "# ADR: …" first heading (content signal)
-
-/**
- * Is a file outside decisions/ genuinely an ADR (vs. a NNNN/HHMM-prefixed
- * research note)? Explicit `ADR-NNN*.md` filenames count outright; a bare
- * `NNNN-title.md` only counts if its body actually carries an `# ADR` heading —
- * otherwise timestamped scratch files (`1030-research.md`) false-positive.
- */
-function looksLikeAdr(name, fullPath, readFile) {
-  if (/^ADR-\d+.*\.md$/i.test(name)) return true;
-  if (/^\d{3,4}-.+\.md$/.test(name)) {
-    try {
-      // Only the FIRST heading counts — a real ADR leads with "# ADR: …".
-      // A research note that merely quotes the ADR template deeper down does not.
-      const firstHeading = (readFile(fullPath).match(/^#\s+.+$/m) || [''])[0];
-      return ADR_HEADING_RE.test(firstHeading);
-    } catch { return false; }
-  }
-  return false;
-}
-
-/** Extract the Status value from either the table row or the legacy bullet form. */
-function readStatus(text) {
-  const table = text.match(/^\|\s*\*\*Status\*\*\s*\|\s*(.+?)\s*\|/mi);
-  if (table) return { value: table[1], form: 'table' };
-  const bullet = text.match(/^-\s*\*\*Status:?\*\*\s*(.+)$/mi);
-  if (bullet) return { value: bullet[1], form: 'bullet' };
-  return { value: null, form: null };
-}
-
-/** Numbers referenced by a `| **Supersedes** | … |` row (NNNN or ADR-NNN forms). */
-function supersedesRefs(text) {
-  const row = text.match(/^\|\s*\*\*Supersedes\*\*\s*\|\s*(.+?)\s*\|/mi);
-  if (!row) return [];
-  const nums = new Set();
-  // `ADR-N` (1–4 digits, prefix disambiguates) or a bare zero-padded `NNNN`.
-  for (const m of row[1].matchAll(/ADR[- ]?(\d{1,4})|\b(\d{3,4})\b/gi)) nums.add(parseInt(m[1] ?? m[2], 10));
-  return [...nums];
-}
-
-const saysSuperseded = (status) => /supersed/i.test(status || '');
+// ADR parsing primitives live in _lib (F6) so _lib consumers (decision-graph.js)
+// never import upward from this CLI. Re-exported below for existing consumers.
+const {
+  ADR_FILE_RE, looksLikeAdr, readStatus, supersedesRefs, saysSuperseded,
+} = require('./_lib/adr-parser');
 
 /**
  * Pure linter. `adrs` = [{ num, name, text }] for files in the canonical dir;

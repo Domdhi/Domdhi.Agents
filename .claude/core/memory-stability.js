@@ -58,6 +58,10 @@
 const fs = require('fs');
 const path = require('path');
 
+// F49: a deliberate, documented core/→hooks/ import — the benchmark MUST drive
+// the hook's real ranker (a _lib copy would drift and benchmark the wrong
+// thing). The hook's module.exports carries the matching contract note; this
+// is the single sanctioned exception to the hooks-consume-core direction.
 const { rankConcepts, parseMemory } = require('../hooks/session-start-prime.cjs');
 const MemoryManager = require('./memory-manager');
 const CONSTANTS = require('./constants');
@@ -345,4 +349,6 @@ function main() {
     }
 }
 
-main();
+// F50: guard like every sibling CLI in this zone — requiring this module as a
+// library must never hit the real memory store or print a report.
+if (require.main === module) main();

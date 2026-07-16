@@ -15,6 +15,8 @@ const path = require('path');
 const { parseFrontmatter } = require('./frontmatter');
 
 const DEFAULT_CONFIDENCE = 0.6;
+// F3: retention cap for a concept's '## Evidence' blocks (newest kept).
+const MAX_EVIDENCE_BLOCKS = 20;
 
 /**
  * Write or update a concept article for a group of entries.
@@ -95,9 +97,30 @@ async function writeConceptArticle(group, deps) {
             return !existingEvidenceHeadings.has(headingMatch[1]);
         });
 
+        // F3: bound the Evidence section — every merge used to keep 100% of
+        // prior history plus the new blocks, so file size and the read-rewrite
+        // cost of every future update grew monotonically for the project's
+        // life (the unbounded-accumulation class jsonl-writer tail-rotates
+        // for). Keep the newest MAX_EVIDENCE_BLOCKS; a regenerated one-line
+        // note carries the cumulative rotated-out count (and is filtered back
+        // out of prior blocks so it never compounds).
+        const ROTATION_NOTE_RE = /^_(\d+) older evidence block\(s\) rotated out/;
+        let priorRotated = 0;
+        const priorBlocks = priorEvidence
+            ? priorEvidence.split(/\n\n---\n\n/).filter((b) => {
+                const t = b.trim();
+                if (!t) return false;
+                const m = t.match(ROTATION_NOTE_RE);
+                if (m) { priorRotated = parseInt(m[1], 10) || 0; return false; }
+                return true;
+            })
+            : [];
+        const combinedBlocks = [...priorBlocks, ...newEvidenceBlocks];
+        const rotatedOut = priorRotated + Math.max(0, combinedBlocks.length - MAX_EVIDENCE_BLOCKS);
+        const keptBlocks = combinedBlocks.slice(-MAX_EVIDENCE_BLOCKS);
         const allEvidence = [
-            ...(priorEvidence ? [priorEvidence] : []),
-            ...newEvidenceBlocks,
+            ...(rotatedOut > 0 ? [`_${rotatedOut} older evidence block(s) rotated out (newest ${MAX_EVIDENCE_BLOCKS} kept)._`] : []),
+            ...keptBlocks,
         ].join('\n\n---\n\n');
 
         // Tag + alias derivation from keyword frequency

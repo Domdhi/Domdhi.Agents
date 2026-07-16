@@ -13,14 +13,59 @@
  * Consumes _lib/frontmatter.js + _lib/memory-decay.js — the refactor this
  * extraction unlocks is the primary reason those came first.
  *
- * Not used by memory-compiler's generateIndex/generateCrossReferences, which do
- * merge-with-existing logic rather than a clean load.
+ * F4: also exports the raw tree walk (`scanConceptFiles`) so memory-compiler's
+ * compile pipeline reads the concepts tree ONCE per run and threads the parsed
+ * list through generateIndex / generateCrossReferences / injectRelatedConcepts,
+ * instead of each doing its own readdir+readFile+parseFrontmatter pass (3×
+ * I/O + parse cost, growing with the store). readConcepts() builds on the same
+ * walk, so there is exactly one implementation of "walk the concepts tree".
  */
 
 const fs = require('fs').promises;
 const path = require('path');
 const { parseFrontmatter } = require('./frontmatter');
 const { calculateDecayedConfidence } = require('./memory-decay');
+
+/**
+ * Raw concepts-tree walk (F4): read every concept `.md` under
+ * `conceptsDir/{category}/`, parse its frontmatter, and return the flat list of
+ * `{ slug, filename, category, content, fm }` records. This is THE single
+ * implementation of the walk — readConcepts() and memory-compiler's per-run
+ * shared scan both consume it. Unreadable files and absent category dirs are
+ * skipped silently (same tolerance every prior inline copy had).
+ *
+ * @param {object} args
+ * @param {string}   args.conceptsDir  Absolute path to concepts root
+ * @param {string[]} args.categories   Category subdir names to scan
+ * @returns {Promise<Array<{ slug: string, filename: string, category: string, content: string, fm: object }>>}
+ */
+async function scanConceptFiles({ conceptsDir, categories }) {
+    const entries = [];
+
+    for (const category of categories) {
+        const catDir = path.join(conceptsDir, category);
+        let files;
+        try {
+            files = await fs.readdir(catDir);
+        } catch {
+            continue; // category dir may not exist
+        }
+
+        for (const file of files) {
+            if (!file.endsWith('.md')) continue;
+            try {
+                const content = await fs.readFile(path.join(catDir, file), 'utf-8');
+                const fm = parseFrontmatter(content);
+                if (!fm) continue;
+                entries.push({ slug: file.replace('.md', ''), filename: file, category, content, fm });
+            } catch {
+                // skip unreadable files
+            }
+        }
+    }
+
+    return entries;
+}
 
 /**
  * Read every concept `.md` file under `conceptsDir/{category}/`, parse each
@@ -40,56 +85,35 @@ const { calculateDecayedConfidence } = require('./memory-decay');
 async function readConcepts({ conceptsDir, categories, activeDaysResolver }) {
     const concepts = [];
 
-    for (const category of categories) {
-        const catDir = path.join(conceptsDir, category);
-        let files;
-        try {
-            files = await fs.readdir(catDir);
-        } catch {
-            continue; // category dir may not exist
-        }
+    for (const { slug, category, content, fm } of await scanConceptFiles({ conceptsDir, categories })) {
+        const confidence = parseFloat(fm.confidence) || 0.6;
+        const updated = fm.updated || new Date().toISOString();
+        const sources = fm.sources || [];
+        const usageCount = parseInt(fm.usage_count) || 0;
 
-        for (const file of files) {
-            if (!file.endsWith('.md')) continue;
-            try {
-                const filePath = path.join(catDir, file);
-                const content = await fs.readFile(filePath, 'utf-8');
-                const fm = parseFrontmatter(content);
-                if (!fm) continue;
+        const decayed = calculateDecayedConfidence({
+            confidence,
+            category,
+            usageCount,
+            updated,
+            activeDays: activeDaysResolver.getActiveDaysSince(updated),
+        });
 
-                const slug = file.replace('.md', '');
-                const confidence = parseFloat(fm.confidence) || 0.6;
-                const updated = fm.updated || new Date().toISOString();
-                const sources = fm.sources || [];
-                const usageCount = parseInt(fm.usage_count) || 0;
-
-                const decayed = calculateDecayedConfidence({
-                    confidence,
-                    category,
-                    usageCount,
-                    updated,
-                    activeDays: activeDaysResolver.getActiveDaysSince(updated),
-                });
-
-                concepts.push({
-                    slug,
-                    title: fm.title || slug,
-                    category,
-                    content,
-                    confidence,
-                    decayedConfidence: decayed,
-                    sources,
-                    usageCount,
-                    promotedTo: fm.promoted_to || null,
-                    updated,
-                });
-            } catch {
-                // skip unreadable files
-            }
-        }
+        concepts.push({
+            slug,
+            title: fm.title || slug,
+            category,
+            content,
+            confidence,
+            decayedConfidence: decayed,
+            sources,
+            usageCount,
+            promotedTo: fm.promoted_to || null,
+            updated,
+        });
     }
 
     return concepts;
 }
 
-module.exports = { readConcepts };
+module.exports = { readConcepts, scanConceptFiles };

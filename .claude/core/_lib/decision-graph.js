@@ -3,7 +3,9 @@
  *
  * Extracted from decision-viz.js:112-334 (parseConcepts, parseCrossRefs,
  * parseGitLog, parseADRs, parseDailyLogs, parseMemoryRecords, collectData,
- * plus the helper functions parseFrontmatter, safeReadDir, safeReadFile, warn).
+ * plus the helper functions safeReadDir, safeReadFile, warn). Frontmatter
+ * parsing is the canonical _lib/frontmatter.js (F7 — the old local copy had
+ * already drifted from it).
  *
  * Concern separated: all file I/O and subprocess calls for decision data are
  * here; rendering is in decision-html.js. The orchestrator (decision-viz.js)
@@ -23,7 +25,11 @@
 const fs = require('fs');
 const path = require('path');
 const childProcess = require('child_process');
-const { readStatus, ADR_FILE_RE } = require('../adr-lint');
+// _lib siblings only — the old `require('../adr-lint')` inverted the layering
+// (a _lib helper importing a top-level core/ CLI, F6). adr-lint.js consumes
+// the same _lib/adr-parser primitives, so the two parsers still can't diverge.
+const { readStatus, ADR_FILE_RE } = require('./adr-parser');
+const { parseFrontmatter } = require('./frontmatter');
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
@@ -59,51 +65,6 @@ function safeReadFile(filePath) {
     warn(`Cannot read file: ${filePath}`);
     return null;
   }
-}
-
-/**
- * Parse YAML frontmatter from a markdown string. Supports list fields
- * (sources, tags, aliases, cssclasses) and scalar key: value fields.
- *
- * @param {string} content
- * @returns {object|null}
- */
-function parseFrontmatter(content) {
-  const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
-  if (!match) return null;
-
-  const raw = match[1];
-  const result = {};
-  const listFields = new Set(['sources', 'tags', 'aliases', 'cssclasses']);
-  let currentList = null;
-  const lists = {};
-
-  for (const line of raw.split('\n')) {
-    const listStart = line.match(/^(\w[\w-]*):\s*$/);
-    if (listStart && listFields.has(listStart[1])) {
-      currentList = listStart[1];
-      lists[currentList] = [];
-      continue;
-    }
-
-    if (currentList && line.trimStart().startsWith('- ')) {
-      lists[currentList].push(line.replace(/^\s*-\s*/, '').trim());
-      continue;
-    }
-
-    if (currentList && !line.trimStart().startsWith('- ')) {
-      currentList = null;
-    }
-
-    const kv = line.match(/^([\w-]+):\s*(.+)$/);
-    if (kv) result[kv[1]] = kv[2].trim();
-  }
-
-  for (const [key, values] of Object.entries(lists)) {
-    if (values.length > 0) result[key] = values;
-  }
-
-  return result;
 }
 
 // ── Parser 1: Concept articles ────────────────────────────────────────────────
@@ -419,7 +380,6 @@ function loadDecisionData({ projectRoot, cutoffDate, categories, execSync }) {
 module.exports = {
   loadDecisionData,
   // Exported for unit testing of individual parsers:
-  parseFrontmatter,
   parseConcepts,
   parseCrossRefs,
   parseGitLog,

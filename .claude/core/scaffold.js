@@ -36,6 +36,7 @@
 const fs = require('fs');
 const path = require('path');
 const CONSTANTS = require('./constants');
+const { safeWrite, safeCopy } = require('./_lib/fs-safe');
 
 const DEFAULT_PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR ||
     path.resolve(__dirname, '..', '..');
@@ -233,20 +234,24 @@ const MANAGED_END = '# === End Domdhi.Agents managed block ===';
  * With `{ dryRun: true }` the action is computed and returned WITHOUT touching
  * the filesystem — used by template-updater's --dry-run to preview the merge.
  *
+ * With `{ containRoot }` the write refuses a symlinked ancestor directory between
+ * the target file and that root (fleet:sync / scaffold trust boundary).
+ *
  * @param {string} targetPath
  * @param {string} templateContent — raw contents of the template source file
- * @param {{ dryRun?: boolean }} [opts]
+ * @param {{ dryRun?: boolean, containRoot?: string }} [opts]
  * @returns {'created' | 'appended' | 'replaced' | 'unchanged'}
  */
 function applyManagedBlock(targetPath, templateContent, opts) {
     const dryRun = !!(opts && opts.dryRun);
+    const containRoot = opts && opts.containRoot;
     const trimmed = templateContent.replace(/\s+$/u, '');
     const block = `${MANAGED_START}\n${trimmed}\n${MANAGED_END}`;
 
     if (!fs.existsSync(targetPath)) {
         if (!dryRun) {
             fs.mkdirSync(path.dirname(targetPath), { recursive: true });
-            fs.writeFileSync(targetPath, block + '\n');
+            safeWrite(targetPath, block + '\n', undefined, containRoot);
         }
         return 'created';
     }
@@ -258,7 +263,7 @@ function applyManagedBlock(targetPath, templateContent, opts) {
     if (startIdx === -1) {
         const sep = existing.length === 0 || existing.endsWith('\n') ? '' : '\n';
         const gap = existing.length === 0 ? '' : (existing.endsWith('\n\n') ? '' : '\n');
-        if (!dryRun) fs.writeFileSync(targetPath, existing + sep + gap + block + '\n');
+        if (!dryRun) safeWrite(targetPath, existing + sep + gap + block + '\n', undefined, containRoot);
         return 'appended';
     }
 
@@ -273,7 +278,7 @@ function applyManagedBlock(targetPath, templateContent, opts) {
     const newContent = before + block + after;
 
     if (newContent === existing) return 'unchanged';
-    if (!dryRun) fs.writeFileSync(targetPath, newContent);
+    if (!dryRun) safeWrite(targetPath, newContent, undefined, containRoot);
     return 'replaced';
 }
 
@@ -292,11 +297,18 @@ function applyManagedBlock(targetPath, templateContent, opts) {
  * @param {string} [projectDir] - Project root used to compute relative paths in results
  * @param {Object<string, string>} [substitutions] - --set key=value map; when non-empty,
  *   triggers content-aware copy with placeholder substitution
+ * @param {string} [containRoot] - symlinked-ancestor guard root for writes. Anchored to
+ *   the TOP-LEVEL destDir of the scaffold (NOT reportRoot, which is only a
+ *   relative-path base for reporting and need not be an ancestor of destDir), and
+ *   threaded UNCHANGED through recursion so every write in the tree is bounded by
+ *   the scaffold destination it belongs to.
  */
-function scaffoldDir(srcDir, destDir, excludes, results, force, projectDir, substitutions) {
+function scaffoldDir(srcDir, destDir, excludes, results, force, projectDir, substitutions, containRoot) {
     const reportRoot = projectDir || DEFAULT_PROJECT_DIR;
     const subs = substitutions || {};
     const hasSubs = Object.keys(subs).length > 0;
+    // First call anchors containment to this destDir; recursion inherits it verbatim.
+    const root = containRoot || destDir;
 
     if (!fs.existsSync(destDir)) {
         fs.mkdirSync(destDir, { recursive: true });
@@ -312,18 +324,18 @@ function scaffoldDir(srcDir, destDir, excludes, results, force, projectDir, subs
         const destPath = path.join(destDir, entry.name);
 
         if (entry.isDirectory()) {
-            // Recursive call: no top-level excludes, pass results + force + subs through
-            scaffoldDir(srcPath, destPath, [], results, force, reportRoot, subs);
+            // Recursive call: no top-level excludes, pass results + force + subs + root through
+            scaffoldDir(srcPath, destPath, [], results, force, reportRoot, subs, root);
         } else {
             if (fs.existsSync(destPath) && !force) {
                 results.skipped.push(path.relative(reportRoot, destPath));
             } else if (hasSubs) {
                 // Content-aware copy: read template, apply substitutions, write.
                 const content = fs.readFileSync(srcPath, 'utf8');
-                fs.writeFileSync(destPath, applySubstitutions(content, subs));
+                safeWrite(destPath, applySubstitutions(content, subs), undefined, root);
                 results.created.push(path.relative(reportRoot, destPath));
             } else {
-                fs.copyFileSync(srcPath, destPath);
+                safeCopy(srcPath, destPath, root);
                 results.created.push(path.relative(reportRoot, destPath));
             }
         }
@@ -389,9 +401,9 @@ function runScaffold(projectDir, opts) {
         fs.mkdirSync(path.dirname(dest), { recursive: true });
         if (hasSubs) {
             const content = fs.readFileSync(srcAbs, 'utf8');
-            fs.writeFileSync(dest, applySubstitutions(content, substitutions));
+            safeWrite(dest, applySubstitutions(content, substitutions), undefined, target);
         } else {
-            fs.copyFileSync(srcAbs, dest);
+            safeCopy(srcAbs, dest, target);
         }
         results.created.push(relDest);
     }
@@ -458,13 +470,13 @@ function runScaffold(projectDir, opts) {
 
             if (rule.merge) {
                 const content = fs.readFileSync(srcPath, 'utf8');
-                const action = applyManagedBlock(destPath, content);
+                const action = applyManagedBlock(destPath, content, { containRoot: target });
                 if (action === 'unchanged') results.skipped.push(relDest);
                 else results.created.push(`${relDest} (${action})`);
             } else if (fs.existsSync(destPath) && !force) {
                 results.skipped.push(relDest);
             } else {
-                fs.copyFileSync(srcPath, destPath);
+                safeCopy(srcPath, destPath, target);
                 results.created.push(relDest);
             }
         }

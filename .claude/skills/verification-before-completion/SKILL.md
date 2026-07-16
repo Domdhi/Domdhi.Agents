@@ -189,6 +189,20 @@ This skill is the canonical home of the project's operating standard (the missio
 ```
 A guard that only WARNS is not a guard, and a pipeline that prints an error but exits 0 is a false-green. Fixing one instance does not inoculate the class — after closing a fail-open, grep its sibling call sites for the same shape. (Evidence: 2026-07-09 sweep found the secret-scanner exit-1 fix reappearing as an uncaught-exception fail-open, plus a false-green `fleet release` and a crash-after-success `metrics report` — same class, three mechanisms. See memory `fail-open-recurs-as-a-class-not-an-instance`.)
 
+**Fix-site enumeration (any guard/validation/data-model fix):**
+```
+✅ Fix the named site → enumerate EVERY entry point on the runtime surface (siblings in the same file, shadow/duplicate implementations in hooks/CLIs, twin writers/readers of the same shared file) → confirm the fix reaches each → "done"
+❌ Fix the sites the finding (or the tests) named; ship green
+```
+The fix must reach the runtime surface, not just the named function. (Evidence: the 2026-07-16 remediation epic hit this class in ALL THREE waves — inbox siblings of guarded CRUD verbs, a hook's shadow `loadRules()` that never called the fixed `_lib`, a telemetry file's twin in-session writer left on the old path — and green unit tests caught none of them; only adversarial review with independent repros did. See memories `shadow-loader-defeats-lib-security-fix`, `worktree-root-retrofit-must-sweep-all-callsites`.)
+
+**Merge/parser fixes (mergers, syncers, format parsers):**
+```
+✅ Unit tests pass → dogfood against one real, messy input (an actual adopter checkout, a real log, real divergent content) → observe output → "done"
+❌ "All fixture tests pass" on synthetic fixtures alone
+```
+For code whose job is reconciling real-world messy content, passing unit tests is necessary but not sufficient — synthetic fixtures encode the author's assumptions, and the gap lives outside them. (Evidence: skill-merger's anchored-fence rewrite `a0cb9c6` passed its full test suite, then produced Form-1 duplication bugs on its first real application to Mfa.Hub — `8715e9d`.)
+
 ## Why This Matters
 
 False completion claims produce compounding failures:

@@ -1,6 +1,6 @@
 ---
 name: skill-creator
-description: "Create new skills, improve existing ones, and measure skill performance with a differential eval harness. Use WHEN authoring a SKILL.md, editing/optimizing an existing skill, running evals or benchmarks on a skill, or tuning a skill's description for better triggering. Triggers: create skill, new skill, improve skill, edit skill, skill eval, benchmark skill, skill description, undertrigger, evals.json, with_skill vs without_skill."
+description: "Use WHEN authoring a SKILL.md, editing/optimizing an existing skill, running evals or benchmarks on a skill, or tuning a skill's description for better triggering. Create new skills, improve existing ones, and measure skill performance with a differential eval harness. Triggers: create skill, new skill, improve skill, edit skill, skill eval, benchmark skill, skill description, undertrigger, evals.json, with_skill vs without_skill."
 metadata:
   version: 1.0.0
   author: Domdhi.Agents

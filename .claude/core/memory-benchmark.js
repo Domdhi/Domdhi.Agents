@@ -292,12 +292,15 @@ Rules:
             totalInput += input;
             totalOutput += output;
 
-            // Retrieval phase (AC#4): run searchMemories with extracted keywords
+            // Retrieval phase (AC#4): run searchMemories with extracted keywords.
+            // F11: recordRecall:false — this is a benchmark measuring retrieval
+            // quality, not a genuine recall; it must not inflate usage_count or
+            // pollute memory-injection.jsonl hit-rate/prune analytics.
             const query = this.keywordQuery(entry);
             let results = [];
             if (query) {
                 try {
-                    results = await memoryManager.searchMemories(query) || [];
+                    results = await memoryManager.searchMemories(query, { recordRecall: false }) || [];
                 } catch (e) {
                     process.stderr.write(`[memory-benchmark] searchMemories failed for "${query}": ${e.message}\n`);
                     results = [];

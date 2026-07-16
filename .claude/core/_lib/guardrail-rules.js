@@ -37,7 +37,9 @@ const { parseYaml } = require('./yaml-parser');
 
 // ── Schema validators — D1 (hand-rolled, no runtime deps) ────────────────────
 
-const STRING_TIER_KEYS = ['block_patterns', 'nudge_patterns', 'confirm_patterns', 'zeroAccessPaths', 'readOnlyPaths', 'noDeletePaths'];
+// Path-glob tiers — plain strings only (no regex-source requirement; these
+// are file-path globs, not bash-command patterns).
+const STRING_TIER_KEYS = ['zeroAccessPaths', 'readOnlyPaths', 'noDeletePaths'];
 
 /**
  * Escalation marker an agent appends to a command to opt a `nudge` match into
@@ -54,7 +56,12 @@ const ESCALATION_MARKER = /#\s*guardrail:confirm\b/i;
 function hasEscalationMarker(command) {
     return typeof command === 'string' && ESCALATION_MARKER.test(command);
 }
-const REGEX_TIER_KEYS = ['dangerousPatterns'];
+// Command-pattern tiers — F12: all four support the `/regex/` form (per the
+// YAML file header) and evaluate()/matchesPattern() treat them identically
+// at match time, so all four must be regex-source validated identically.
+// A plain (non-`/…/`) string still validates fine — isValidRegexSource()
+// compiles it as a literal regex source, which succeeds for ordinary text.
+const REGEX_TIER_KEYS = ['dangerousPatterns', 'block_patterns', 'nudge_patterns', 'confirm_patterns'];
 const ALL_TIER_KEYS = [...STRING_TIER_KEYS, ...REGEX_TIER_KEYS];
 
 /**
@@ -81,6 +88,21 @@ function validateTier(value, { requireRegex = false } = {}) {
         if (requireRegex && !isValidRegexSource(item)) return null;
     }
     return value;
+}
+
+/**
+ * Locate the first item in a tier array that fails string/regex validation,
+ * for a specific, actionable warning message. Returns undefined if the value
+ * isn't an array or every item is valid (caller only calls this once
+ * validateTier() has already signalled failure).
+ */
+function findFirstInvalidTierItem(value, { requireRegex = false } = {}) {
+    if (!Array.isArray(value)) return undefined;
+    for (const item of value) {
+        if (typeof item !== 'string') return item;
+        if (requireRegex && !isValidRegexSource(item)) return item;
+    }
+    return undefined;
 }
 
 /**
@@ -113,11 +135,23 @@ function emptyRules() {
  *   - Malformed YAML     → return emptyRules()
  *   - Top-level non-obj  → return emptyRules()
  *   - block/confirm      → must be array (or empty `{}`/missing). Else emptyRules().
- *   - Four-tier keys     → must be array of strings (or empty `{}`/missing).
+ *   - Path-glob keys     → must be array of strings (or empty `{}`/missing).
+ *                          (zeroAccessPaths/readOnlyPaths/noDeletePaths)
  *                          Invalid item type → emptyRules() (block-safe).
- *   - dangerousPatterns  → must additionally be valid RegExp sources. ANY bad
- *                          regex drops the entire tier list to [] (per-tier
- *                          fail-safe per D1).
+ *   - Command-pattern keys (F12) — dangerousPatterns, block_patterns,
+ *                          nudge_patterns, confirm_patterns → must additionally
+ *                          be valid RegExp sources (a plain non-`/…/` string
+ *                          validates as a literal regex source, so ordinary
+ *                          substring patterns are unaffected). ANY bad regex
+ *                          drops ONLY that tier's list to [] (per-tier
+ *                          fail-safe per D1) AND writes a loud stderr warning
+ *                          naming the tier and the offending pattern — never a
+ *                          silent no-op. The YAML file header documents that
+ *                          all four pattern tiers support `/regex/`, and
+ *                          evaluate()/matchesPattern() treat them identically
+ *                          at match time, so a malformed regex in block/nudge/
+ *                          confirm gets the same fail-safe + warning
+ *                          dangerousPatterns always had.
  *
  * The block-all posture: when something looks wrong, default to "nothing is
  * specially guarded" rather than "nothing is checked at all" — the existing
@@ -176,10 +210,26 @@ function loadRules(yamlPath) {
         validated[key] = v;
     }
 
-    // dangerousPatterns: per-tier fail-safe — any invalid regex drops the
-    // whole list to []. Other tiers are unaffected. (D1 per-tier fail-safe.)
-    const dangerous = validateTier(parsed.dangerousPatterns, { requireRegex: true });
-    validated.dangerousPatterns = dangerous === null ? [] : dangerous;
+    // Command-pattern tiers (F12): dangerousPatterns, block_patterns,
+    // nudge_patterns, confirm_patterns — per-tier fail-safe. ANY invalid
+    // regex source in a tier drops ONLY that tier's list to [] (other tiers
+    // are unaffected) AND writes a loud, non-silent stderr warning naming the
+    // tier and the offending pattern — a malformed pattern must never become
+    // a silent no-op that looks like a working rule.
+    for (const key of REGEX_TIER_KEYS) {
+        const v = validateTier(parsed[key], { requireRegex: true });
+        if (v === null) {
+            const badItem = findFirstInvalidTierItem(parsed[key], { requireRegex: true });
+            console.error(
+                `[guardrail-rules] WARNING: "${key}" in guardrail-rules.yaml contains an invalid pattern` +
+                (badItem !== undefined ? ` (${JSON.stringify(badItem)})` : '') +
+                ` — this tier has been dropped to empty (fail-safe). Fix or remove the offending entry.`
+            );
+            validated[key] = [];
+        } else {
+            validated[key] = v;
+        }
+    }
 
     return {
         block_patterns:    validated.block_patterns,

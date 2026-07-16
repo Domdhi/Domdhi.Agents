@@ -18,42 +18,16 @@
 
 const fs = require('fs');
 const path = require('path');
+// F2: the tree walk is _lib/file-walker.js's generic generator (skipHidden
+// prunes dot-dirs — the pattern rule the old private copy hardcoded); this
+// module keeps only the extension filter + line counting.
+const { walkDir } = require('./file-walker');
 
 /** Extensions counted as source code lines. */
 const SOURCE_EXTENSIONS = new Set(['.js', '.ts', '.cjs', '.mjs']);
 
 /** Top-level directory names to skip entirely. */
 const SKIP_DIRS = new Set(['node_modules', '.git', '.archive', '.claude-v1']);
-
-/**
- * Walk a directory tree and invoke callback for each matching source file.
- *
- * @param {string} dir          Absolute directory path to scan
- * @param {(absPath: string) => void} callback  Called for each source file found
- * @param {boolean} [isTopLevel=false]  When true, record the dir name as the top-level key
- * @param {string}  [topLevelDir='']   Top-level dir name (for byDir bucketing)
- */
-function walkDir(dir, callback, topLevelDir) {
-    let entries;
-    try {
-        entries = fs.readdirSync(dir, { withFileTypes: true });
-    } catch {
-        return;
-    }
-
-    for (const entry of entries) {
-        // Skip hidden and blacklisted directories
-        if (entry.isDirectory()) {
-            if (SKIP_DIRS.has(entry.name) || entry.name.startsWith('.')) continue;
-            walkDir(path.join(dir, entry.name), callback, topLevelDir);
-        } else if (entry.isFile()) {
-            const ext = path.extname(entry.name);
-            if (SOURCE_EXTENSIONS.has(ext)) {
-                callback(path.join(dir, entry.name), topLevelDir);
-            }
-        }
-    }
-}
 
 /**
  * Count the lines in a file. Empty files return 0.
@@ -116,11 +90,11 @@ function loadCodeMetrics(projectRoot) {
         let dirLoc = 0;
         let dirFileCount = 0;
 
-        walkDir(topDirPath, (absPath) => {
-            const lines = countLines(absPath);
-            dirLoc += lines;
+        for (const absPath of walkDir(topDirPath, [...SKIP_DIRS], { skipHidden: true })) {
+            if (!SOURCE_EXTENSIONS.has(path.extname(absPath))) continue;
+            dirLoc += countLines(absPath);
             dirFileCount++;
-        }, topDirName);
+        }
 
         if (dirFileCount > 0) {
             byDir[topDirName] = dirLoc;

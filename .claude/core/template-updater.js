@@ -33,6 +33,7 @@ const agentMerger      = require('./_lib/agent-merger');
 const settingsMerger   = require('./_lib/settings-merger');
 const skillMerger      = require('./_lib/skill-merger');
 const { copyWithZoneEnforcement } = require('./_lib/zone-copy');
+const { safeCopy }                = require('./_lib/fs-safe');
 const { applyManagedBlock }       = require('./scaffold');
 
 const { classifyClaudeFile }  = zoneClassifier;
@@ -55,9 +56,9 @@ const ALWAYS_SKIP_DIRS = ['__tests__', '_helpers', 'node_modules'];
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function copyFile(src, dest) {
+function copyFile(src, dest, containRoot) {
     fs.mkdirSync(path.dirname(dest), { recursive: true });
-    fs.copyFileSync(src, dest);
+    safeCopy(src, dest, containRoot);
 }
 
 function tryAction(label, fn, stats) {
@@ -188,7 +189,7 @@ function runUpdate(targetPath, options) {
                     stats.merged++;
                 } else {
                     tryAction(`.claude/${rel}`, () => {
-                        const r = mergeSkillFile(srcAbs, destAbs);
+                        const r = mergeSkillFile(srcAbs, destAbs, targetPath);
                         console.log(`  MERGE    .claude/${rel} — ${r.detail}`);
                         stats.merged++;
                     }, stats);
@@ -201,7 +202,7 @@ function runUpdate(targetPath, options) {
                 stats.copied++;
             } else {
                 tryAction(`.claude/${rel}`, () => {
-                    copyWithZoneEnforcement(srcAbs, destAbs, 'template', options);
+                    copyWithZoneEnforcement(srcAbs, destAbs, 'template', { ...options, containRoot: targetPath });
                     console.log(`  COPY     .claude/${rel}`);
                     stats.copied++;
                 }, stats);
@@ -249,7 +250,7 @@ function runUpdate(targetPath, options) {
                     stats.merged++;
                 } else {
                     tryAction(`.claude/${rel}`, () => {
-                        const r = mergeAgentFile(srcAbs, destAbs, { canonicalSkills, targetSkills, excludedSkills });
+                        const r = mergeAgentFile(srcAbs, destAbs, { canonicalSkills, targetSkills, excludedSkills, containRoot: targetPath });
                         console.log(`  MERGE    .claude/${rel} — ${r.detail}`);
                         stats.merged++;
                     }, stats);
@@ -278,7 +279,7 @@ function runUpdate(targetPath, options) {
             stats.copied++;
         } else {
             tryAction(label, () => {
-                copyFile(claudeMdSrc, claudeMdDest);
+                copyFile(claudeMdSrc, claudeMdDest, targetPath);
                 console.log(`  COPY     ${label}`);
                 stats.copied++;
             }, stats);
@@ -291,7 +292,7 @@ function runUpdate(targetPath, options) {
         const srcAbs = path.join(projectRoot, filename);
         if (!fs.existsSync(srcAbs)) continue;
         tryAction(filename, () => {
-            copyFile(srcAbs, path.join(targetPath, filename));
+            copyFile(srcAbs, path.join(targetPath, filename), targetPath);
             console.log(`  COPY     ${filename}`);
             stats.copied++;
         }, stats);
@@ -311,7 +312,7 @@ function runUpdate(targetPath, options) {
                 stats.copied++;
             } else {
                 tryAction(`${dirName}/${relNorm}`, () => {
-                    copyFile(srcAbs, destAbs);
+                    copyFile(srcAbs, destAbs, targetPath);
                     console.log(`  COPY     ${dirName}/${relNorm}`);
                     stats.copied++;
                 }, stats);
@@ -331,7 +332,7 @@ function runUpdate(targetPath, options) {
         const gitignoreDest = path.join(targetPath, '.gitignore');
         tryAction('.gitignore (managed block)', () => {
             const content = fs.readFileSync(gitignoreSrc, 'utf8');
-            const action  = applyManagedBlock(gitignoreDest, content, { dryRun: options.dryRun });
+            const action  = applyManagedBlock(gitignoreDest, content, { dryRun: options.dryRun, containRoot: targetPath });
             if (action === 'unchanged') {
                 console.log('  SKIP     .gitignore (managed block — unchanged)');
                 stats.skipped++;
@@ -355,7 +356,7 @@ function runUpdate(targetPath, options) {
             stats.copied++;
         } else {
             tryAction('.claude/version.json', () => {
-                copyFile(versionSrc, versionDest);
+                copyFile(versionSrc, versionDest, targetPath);
                 console.log('  COPY     .claude/version.json (last — sync marker)');
                 stats.copied++;
             }, stats);
@@ -452,11 +453,14 @@ if (require.main === module) { main(); }
 
 // Re-export _lib symbols so existing consumers (template-updater.test.js) import
 // from this file without change. walkDir shim keeps the old array-returning API.
+// F57: skillMerger included — the stated contract is "re-export _lib symbols",
+// and it was the one imported module the list silently omitted.
 const _libFW = require('./_lib/file-walker');
 module.exports = Object.assign(
     { copyFile, runUpdate, loadExcludedSkills, listSkillDirs },
     zoneClassifier,
     agentMerger,
     settingsMerger,
+    skillMerger,
     { walkDir: (dirPath) => [..._libFW.walkDir(dirPath, ALWAYS_SKIP_DIRS)] }
 );

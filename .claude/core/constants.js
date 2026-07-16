@@ -37,7 +37,7 @@ module.exports = {
         // require('./constants') deterministic). The env override
         // (MEMORY_MAX_PER_CATEGORY) is applied at the two call sites
         // (memory-manager.js, memory-guard.cjs) with an identical expression.
-        MEMORY_MAX_PER_CATEGORY: 100,
+        MEMORY_MAX_PER_CATEGORY: 150,
         // Fraction of the cap at which a category counts as "near limit" — the
         // single source for the prune trigger, the guard warning, the analytics
         // near_limit flag, and the lint category-balance check (memory-manager,
@@ -293,6 +293,10 @@ module.exports = {
         'findings/reviews':        { dir: 'findings/reviews',        zone: 'durable', shape: 'discrete', bucket: 'month' },
         'findings/investigations': { dir: 'findings/investigations', zone: 'durable', shape: 'discrete', bucket: 'month' },
         'findings/research':       { dir: 'findings/research',       zone: 'durable', shape: 'discrete', bucket: 'month' },
+        // Registered for adopter-local bug-triage commands (harvested from Mfa.Hub's
+        // /bug-triage, 2026-07-16) — dormant in the workshop, but keeps path-guardrail
+        // from blocking an adopter command whose output compartment the sync removed.
+        'findings/bug-triage':     { dir: 'findings/bug-triage',     zone: 'durable', shape: 'discrete', bucket: 'month' },
         // what am I executing? (do / run-todo intent)
         plans:                     { dir: 'plans', zone: 'durable', shape: 'discrete', bucket: 'month' },
         // what production tells us & how we adapt

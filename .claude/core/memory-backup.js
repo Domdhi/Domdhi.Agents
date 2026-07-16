@@ -34,8 +34,13 @@
 
 const fs = require('fs');
 const path = require('path');
+const { resolveProjectRoot } = require('./_lib/project-root');
+const { memoryPaths } = require('./_lib/memory-paths');
+const { resolveSqliteOpener } = require('./_lib/sqlite-backend');
 
-const PROJECT_ROOT = path.resolve(__dirname, '..', '..');
+// Worktree-safe: anchor to the MAIN worktree (git-common-dir), not whichever
+// linked worktree happens to be current — see _lib/project-root.js header.
+const PROJECT_ROOT = resolveProjectRoot(path.resolve(__dirname, '..', '..'));
 // Generic default: a sibling of the repo named after it, so no two adopters
 // collide and the path carries no machine-specific assumptions.
 const DEFAULT_DEST = path.resolve(PROJECT_ROOT, '..', `_${path.basename(PROJECT_ROOT)}-memory-backup`);
@@ -76,41 +81,16 @@ function snapshotsToPrune(names, keep) {
   return snaps.slice(0, Math.max(0, snaps.length - keep));
 }
 
-/**
- * Resolve an FTS5-capable SQLite opener, preferring the SAME backend order as
- * memory-manager.js (M7): on Node 24+ the built-in node:sqlite leads — it's the
- * toolkit's zero-dependency default, so probing it first is what makes the
- * corruption gate actually fire on a plain `git clone` (no `npm install`). Older
- * Node falls back to the optional better-sqlite3. Returns a `(dbPath) => db`
- * factory, or null when neither driver can be loaded.
+/** PRAGMA integrity_check on the db. Returns 'ok' | '<error text>' | 'unavailable' | 'missing'.
  *
- * The probe (an in-memory construct) proves the driver LOADS; it does NOT touch
- * the real db — so a driver-missing case is cleanly separated from a genuine
- * open/integrity failure on the actual file (which stays a corruption verdict).
- */
-function resolveSqliteOpener() {
-  const nodeMajor = Number(process.versions.node.split('.')[0]) || 0;
-  const nodeOpener = () => {
-    const { DatabaseSync } = require('node:sqlite');
-    new DatabaseSync(':memory:').close(); // probe: module present & constructs
-    return (p) => new DatabaseSync(p, { readOnly: true });
-  };
-  const betterOpener = () => {
-    const Database = require('better-sqlite3');
-    new Database(':memory:').close(); // probe: native binding loads
-    return (p) => new Database(p, { readonly: true });
-  };
-  const order = nodeMajor >= 24 ? [nodeOpener, betterOpener] : [betterOpener, nodeOpener];
-  for (const make of order) {
-    try { return make(); } catch { /* driver unavailable — try the next */ }
-  }
-  return null;
-}
-
-/** PRAGMA integrity_check on the db. Returns 'ok' | '<error text>' | 'unavailable' | 'missing'. */
+ * The opener comes from _lib/sqlite-backend.js (F36) — the SAME resolution
+ * memory-manager.js uses (M7 backend order, construction-probed drivers), so
+ * the corruption gate fires on a plain `git clone` (no `npm install`) and a
+ * driver-missing case stays cleanly separated from a genuine open/integrity
+ * failure on the actual file (which stays a corruption verdict). */
 function checkDbIntegrity(dbPath) {
   if (!fs.existsSync(dbPath)) return 'missing';
-  const open = resolveSqliteOpener();
+  const open = resolveSqliteOpener({ readOnly: true });
   if (!open) return 'unavailable'; // no driver at all — skip the check, still back up the bytes
   try {
     const db = open(dbPath);
@@ -169,8 +149,13 @@ function countJson(dir) {
 function main(argv) {
   // Split store (ADR 0006 Am. 2): mirror the curated JSON source (.memory/);
   // the integrity check runs against the rebuilt db under .state/memory-index/.
-  const memoriesDir = path.join(PROJECT_ROOT, 'docs', '.output', '.memory');
-  const dbPath = path.join(PROJECT_ROOT, 'docs', '.output', '.state', 'memory-index', 'memories.db');
+  // Sourced from the single accessor (_lib/memory-paths.js) instead of hand-
+  // building the paths — keeps this in sync with every other memory script and
+  // resolves worktree-safely (jsonRoot via the current worktree since it's
+  // TRACKED, dbPath via the main worktree since it's gitignored).
+  const paths = memoryPaths(path.resolve(__dirname, '..', '..'));
+  const memoriesDir = paths.jsonRoot;
+  const dbPath = paths.dbPath;
   const opts = parseArgs(argv);
   const now = new Date();
 
@@ -227,7 +212,7 @@ function main(argv) {
 
 module.exports = {
   parseArgs, dateStamp, fullStamp, snapshotsToPrune, checkDbIntegrity, isCorrupt,
-  SNAPSHOT_RE, DEFAULT_DEST,
+  SNAPSHOT_RE, DEFAULT_DEST, main,
 };
 
 if (require.main === module) main(process.argv.slice(2));

@@ -22,6 +22,7 @@
 const path = require('path');
 const { appendJsonl } = require('./jsonl-writer');
 const { getJsonlPath } = require('./telemetry-paths');
+const { resolveProjectRoot } = require('./project-root');
 
 // Match command-usage-logger's caps so hook-events.jsonl tail-rotates the same
 // way command-usage.jsonl does. Without these, the file grows unbounded —
@@ -38,7 +39,11 @@ const GUARDRAIL_EVENTS_MAX_LINES = 5000;
 const GUARDRAIL_EVENTS_TAIL_KEEP = 4000;
 
 function getProjectRoot() {
-    return process.env.CLAUDE_PROJECT_DIR || path.resolve(__dirname, '..', '..', '..');
+    // F1/CR-3.1 sibling: the telemetry `.state/` writes are gitignored and
+    // shared across linked worktrees, so anchor to the git-common-dir via
+    // resolveProjectRoot (CLAUDE_PROJECT_DIR still wins) rather than the naive
+    // __dirname fallback, which loses events into a worktree-local path.
+    return resolveProjectRoot(path.resolve(__dirname, '..', '..', '..'));
 }
 
 /**

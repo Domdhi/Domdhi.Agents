@@ -146,6 +146,47 @@ describe('mergeSkillContent', () => {
         const r = mergeSkillContent('a\r\nb\r\n', 'old\n');
         expect(r.content).toBe('a\nb\n');
     });
+
+    it('reinserts a fenced block AFTER a code example containing heading-shaped lines, never inside it', () => {
+        // Live bug (2026-07-16, Mfa.Hub qa-engineer sync): the anchor section's body is
+        // a ```markdown example whose first line is `# Test Strategy: {Project Name}` —
+        // the fence-blind next-heading scan saw that as the section end and spliced the
+        // adopter's block INSIDE the code example, stranding its markers where the
+        // fence-aware marker scan ignores them (silent clobber on the next sync).
+        const src = [
+            '# QA', '',
+            '## Test Strategy Template', '',
+            '```markdown',
+            '# Test Strategy: {Project Name}',
+            '## Testing Pyramid',
+            'table here',
+            '```', '',
+            '## Test Patterns', '',
+            'generic patterns', '',
+        ].join('\n');
+        const block = [
+            '<!-- @@project-additions:start -->',
+            'project strategy variant',
+            '<!-- @@project-additions:end -->',
+        ].join('\n');
+        const dst = [
+            '# QA', '',
+            '## Test Strategy Template', '',
+            block, '',
+            '## Test Patterns', '',
+            'old generic patterns', '',
+        ].join('\n');
+
+        const r = mergeSkillContent(src, dst);
+        // The block must land between the example's closing fence and ## Test Patterns.
+        const blockIdx = r.content.indexOf(block);
+        expect(blockIdx).toBeGreaterThan(r.content.indexOf('table here\n```'));
+        expect(blockIdx).toBeLessThan(r.content.indexOf('## Test Patterns'));
+        // And the block's markers must still be OUTSIDE any fence (re-mergeable):
+        // a second merge must keep exactly one copy, not clobber or duplicate it.
+        const r2 = mergeSkillContent(src, r.content);
+        expect(r2.content.split('project strategy variant').length - 1).toBe(1);
+    });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

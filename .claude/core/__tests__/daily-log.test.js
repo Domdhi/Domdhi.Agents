@@ -82,6 +82,53 @@ describe('DailyLog', () => {
       const expectedDir = path.join(tmp.root, 'docs', '.output', '.state', 'memory-daily');
       expect(log.dailyDir).toBe(expectedDir);
     });
+
+    // F12: with no explicit arg and no CLAUDE_PROJECT_DIR, the constructor's
+    // fallback must route through resolveProjectRoot() (main-worktree-aware)
+    // rather than the raw __dirname/../.. fallback — daily-log.js was the one
+    // memory-domain module missed by the worktree-root retrofit (see project
+    // memory worktree-root-retrofit-must-sweep-all-callsites). Stub
+    // _lib/project-root's export the same way memory-backup.test.js's F37
+    // does, so this asserts the WIRING (resolveProjectRoot is actually called
+    // with daily-log.js's own __dirname/../.. as fallback) without needing a
+    // real git worktree fixture.
+    it('constructor_noEnvNoArg_routesFallbackThroughResolveProjectRoot', () => {
+      delete process.env.CLAUDE_PROJECT_DIR;
+
+      const projectRootCachePath = require.resolve('../_lib/project-root');
+      const dailyLogCachePath = require.resolve('../daily-log');
+      const savedProjectRoot = require.cache[projectRootCachePath];
+      const savedDailyLog = require.cache[dailyLogCachePath];
+
+      let calledWithFallback = null;
+      const marker = path.join(tmp.root, 'resolved-via-project-root');
+
+      require.cache[projectRootCachePath] = {
+        id: projectRootCachePath, filename: projectRootCachePath, loaded: true, children: [], paths: [],
+        exports: {
+          resolveProjectRoot: (fallbackDir) => {
+            calledWithFallback = fallbackDir;
+            return marker;
+          },
+        },
+      };
+      delete require.cache[dailyLogCachePath];
+
+      try {
+        const FreshDailyLog = require('../daily-log');
+        const log = new FreshDailyLog();
+
+        // resolveProjectRoot was invoked with daily-log.js's own __dirname/../..
+        expect(calledWithFallback).toBe(path.resolve(path.dirname(dailyLogCachePath), '..', '..'));
+        // …and its return value is what the constructor adopted.
+        expect(log.projectRoot).toBe(marker);
+      } finally {
+        if (savedProjectRoot) require.cache[projectRootCachePath] = savedProjectRoot;
+        else delete require.cache[projectRootCachePath];
+        if (savedDailyLog) require.cache[dailyLogCachePath] = savedDailyLog;
+        else delete require.cache[dailyLogCachePath];
+      }
+    });
   });
 
   // ---------------------------------------------------------------------------
@@ -535,6 +582,34 @@ describe('DailyLog', () => {
       // Assert
       expect(result).toBe('  None');
     });
+
+    // F28: per-module TODOs at docs/modules/{module}/TODO*.md were missed by the
+    // old flat readdir. The scan must recurse (matching status.js/metrics.js).
+    it('findInProgressTodos_moduleTodo_isFound', () => {
+      // Arrange — an in-progress marker in a per-module TODO, nested under docs/modules/
+      tmp.write('docs/modules/checkout/TODO_checkout.md', '- [>] Wire up the checkout module\n');
+      const log = new DailyLog();
+
+      // Act
+      const result = log.findInProgressTodos();
+
+      // Assert
+      expect(result).toContain('[>]');
+      expect(result).toContain('Wire up the checkout module');
+      expect(result).toContain('TODO_checkout.md');
+    });
+
+    it('findInProgressTodos_skipsOutputDir', () => {
+      // Arrange — a TODO-shaped file inside docs/.output must be skipped (skip-dir)
+      tmp.write('docs/.output/TODO_generated.md', '- [>] Generated noise\n');
+      const log = new DailyLog();
+
+      // Act
+      const result = log.findInProgressTodos();
+
+      // Assert
+      expect(result).not.toContain('Generated noise');
+    });
   });
 
   // ---------------------------------------------------------------------------
@@ -649,6 +724,26 @@ describe('DailyLog', () => {
 
       // Assert
       expect(result).toBe('  None');
+    });
+
+    // F28: a Key Decisions table in a per-module TODO must be picked up. Module
+    // TODOs (docs/modules/**) are scanned in addition to the docs root — but
+    // docs/work/todo/ remains excluded (see findKeyDecisions_scansDocsOnlyNotTodoSubdir).
+    it('findKeyDecisions_moduleTodo_isFound', () => {
+      const fixture = [
+        '## Key Decisions',
+        '',
+        '| Decision | Rationale | Outcome |',
+        '| --- | --- | --- |',
+        '| Module-scoped choice | reason | done |',
+        '',
+      ].join('\n');
+      tmp.write('docs/modules/checkout/TODO_checkout.md', fixture);
+      const log = new DailyLog();
+
+      const result = log.findKeyDecisions();
+
+      expect(result).toContain('Module-scoped choice');
     });
   });
 

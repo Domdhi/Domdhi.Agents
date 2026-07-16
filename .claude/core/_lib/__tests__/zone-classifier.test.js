@@ -217,4 +217,38 @@ describe('classifyClaudeFile', () => {
     it('classifies skills with nested references/ as template', () => {
         expect(classifyClaudeFile('skills/playwright-cli/references/tracing.md')).toBe('template');
     });
+
+    // Regression (CR-2.4 F20): agents-optional/** was in NO bucket → classified
+    // 'unknown' and was silently skipped by template-updater sync. install.js and
+    // tools/publish.js already treat skills-optional/** and agents-optional/** as
+    // parallel concepts (both excluded from scaffold/publish); zone-classifier must
+    // classify them identically so they propagate the same way on sync.
+    it('classifies agents-optional/**/* the same as skills-optional/**/* (F20)', () => {
+        const skillsOptionalZone = classifyClaudeFile('skills-optional/minimalist-ui/SKILL.md');
+        const agentsOptionalZone = classifyClaudeFile('agents-optional/foo.md');
+        expect(agentsOptionalZone).toBe(skillsOptionalZone);
+        expect(agentsOptionalZone).toBe('template');
+    });
+
+    it('classifies a nested agents-optional file as template (F20)', () => {
+        expect(classifyClaudeFile('agents-optional/experimental/bar.md')).toBe('template');
+    });
+
+    // Regression (CR-2.4 F21): core/**/*.js was extension-restricted, unlike the
+    // extension-agnostic skills/**/* and templates/**/*. Non-.js core files
+    // (core/statusline.sh, core/package.json) classified 'unknown' and were
+    // silently skipped by template-updater sync — they never reached onboarded
+    // adopters. Widened to core/**/* (extension-agnostic).
+    it('classifies core/statusline.sh as template (F21)', () => {
+        expect(classifyClaudeFile('core/statusline.sh')).toBe('template');
+    });
+
+    it('classifies core/package.json as template (F21)', () => {
+        expect(classifyClaudeFile('core/package.json')).toBe('template');
+    });
+
+    it('still classifies core/*.js and nested core/_lib/*.js as template (no regression)', () => {
+        expect(classifyClaudeFile('core/gate.js')).toBe('template');
+        expect(classifyClaudeFile('core/_lib/zone-classifier.js')).toBe('template');
+    });
 });

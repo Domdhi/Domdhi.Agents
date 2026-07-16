@@ -31,9 +31,10 @@ const fs = require('fs');
 const path = require('path');
 const { appendJsonl } = require('./jsonl-writer');
 const { getJsonlPath } = require('./telemetry-paths');
+const { resolveProjectRoot } = require('./project-root');
 
 function getProjectRoot() {
-    return process.env.CLAUDE_PROJECT_DIR || path.resolve(__dirname, '..', '..', '..');
+    return resolveProjectRoot(path.resolve(__dirname, '..', '..', '..'));
 }
 
 /**

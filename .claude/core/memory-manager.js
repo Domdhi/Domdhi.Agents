@@ -58,6 +58,21 @@ function clampImportance(v) {
     return Math.max(IMPORTANCE_MIN, Math.min(IMPORTANCE_MAX, n));
 }
 
+// F42: charset guard for any caller-supplied `id` that becomes a `.json`
+// filename segment (createMemory/readMemory/updateMemory/deleteMemory all join
+// it straight into `path.join(this.memoriesDir, category, filename + '.json')`).
+// idToFilename() only ever swaps '_' -> '-', so the existing memory-id
+// convention is already confined to lowercase alnum + '_'/'-' (leading
+// underscore included — memory-health-check.js's fixed probe id is
+// '_health_check_probe') — matching that convention as a whitelist means '..',
+// '/', '\\', and an absolute-path leader can never reach the join, closing the
+// read/write/delete escape. Applied BEFORE any path is built.
+const SAFE_ID_RE = /^[a-z0-9_][a-z0-9_-]*$/;
+
+function isSafeMemoryId(value) {
+    return typeof value === 'string' && SAFE_ID_RE.test(value);
+}
+
 /**
  * Convert a freeform search string into an FTS5 query.
  *
@@ -123,86 +138,18 @@ function tokenizeToOrQuery(searchTerm) {
     return tokens.join(' OR ');
 }
 
-// SQLite backend resolution — preference order:
-//   1. better-sqlite3 (npm, optionalDependency) — ships its own SQLite compiled
-//      with FTS5. A fallback for Node < 24, where the built-in may lack FTS5.
-//   2. node:sqlite (built-in, Node 22+ flagged / 24+ stable) — on Node 24+ this
-//      ships WITH FTS5 compiled in, so full-text search works with ZERO npm
-//      dependencies. Older bundles may not have it, so don't assume either way:
-//      we PROBE FTS5 capability once at require time (in-memory CREATE VIRTUAL
-//      TABLE ... USING fts5).
-//   3. JSON-only — linear scan over per-category JSON files. Fine up to a few
-//      thousand memories.
-//
-// All three paths satisfy the same minimal API: new DatabaseSync(path),
-// db.exec(sql), db.prepare(sql).run/get/all, db.close().
-//
-// NOTE: sqliteSupportsFts5 is a CAPABILITY PROBE, not a backend label. A prior
-// version hardcoded it false for node:sqlite — which produced a misleading
-// health report (search worked fine, but the report claimed FTS5 was
-// unavailable) and sent a whole work session down a phantom "mandatory npm
-// install" remediation. Probe; never assume.
-let DatabaseSync = null;
-let sqliteBackend = 'json-only';
-let sqliteSupportsFts5 = false;
-
-// Probe whether a DatabaseSync constructor can create an FTS5 virtual table.
-// Cheap (in-memory), runs once at require time, never throws to callers.
-function probeFts5(DS) {
-    let probe = null;
-    try {
-        probe = new DS(':memory:');
-        probe.exec('CREATE VIRTUAL TABLE _fts5_probe USING fts5(x)');
-        return true;
-    } catch {
-        return false;
-    } finally {
-        if (probe) { try { probe.close(); } catch { /* non-fatal */ } }
-    }
-}
-
-// Try to adopt better-sqlite3. `require()` only loads the JS wrapper — the native
-// .node binary loads lazily at construction and can fail on an ABI mismatch (a
-// better-sqlite3 built for a different Node major). So we PROBE (construct an
-// in-memory FTS5 table) before committing; a broken native binding falls through
-// instead of silently degrading every later `new DatabaseSync()` to a throw.
-function tryBetterSqlite3() {
-    try {
-        const BetterSqlite3 = require('better-sqlite3');
-        const DS = function(dbPath) { return new BetterSqlite3(dbPath); };
-        if (!probeFts5(DS)) return false; // wrapper loaded but native binding is broken
-        DatabaseSync = DS;
-        sqliteBackend = 'better-sqlite3';
-        sqliteSupportsFts5 = true;
-        return true;
-    } catch {
-        return false;
-    }
-}
-
-function tryNodeSqlite() {
-    try {
-        const { DatabaseSync: NodeDatabaseSync } = require('node:sqlite');
-        DatabaseSync = NodeDatabaseSync;
-        sqliteBackend = 'node:sqlite';
-        // Node 24+ bundles FTS5; older bundles may not. Probe, don't assume.
-        sqliteSupportsFts5 = probeFts5(NodeDatabaseSync);
-        return true;
-    } catch {
-        return false;
-    }
-}
-
-// Backend preference: on Node 24+, the built-in node:sqlite is preferred — it's
-// zero-dependency and immune to the native-ABI fragility above. On older Node it
-// is absent or unstable, so better-sqlite3 leads. Either way both branches probe,
-// so a broken candidate is skipped rather than half-adopted. (Neither → JSON-only.)
-const nodeMajor = Number(process.versions.node.split('.')[0]) || 0;
-if (nodeMajor >= 24) {
-    tryNodeSqlite() || tryBetterSqlite3();
-} else {
-    tryBetterSqlite3() || tryNodeSqlite();
-}
+// SQLite backend resolution — shared with memory-backup.js via
+// _lib/sqlite-backend.js (F36), so the backup's corruption gate and this
+// store's reader can never disagree about which driver is in play. Resolution
+// runs once at require time; the probe/preference doctrine (node:sqlite first
+// on Node 24+, capability-probed FTS5, json-only fallback) is documented in
+// the shared module.
+const { resolveSqliteBackend } = require('./_lib/sqlite-backend');
+const {
+    DatabaseSync,           // null → JSON-only linear scan over per-category files
+    backend: sqliteBackend,
+    supportsFts5: sqliteSupportsFts5,
+} = resolveSqliteBackend();
 
 class MemoryManager {
     constructor() {
@@ -323,11 +270,57 @@ class MemoryManager {
     }
 
     /**
-     * Upsert a memory into SQLite index
+     * Read the live `usage_count` for every indexed memory as an `id -> count` Map.
+     * usage_count lives ONLY in the gitignored SQLite index now (_recordRecall bumps
+     * it there, never the git-tracked `.memory/` JSON — ADR 0006 Am. 2 / F44), so this
+     * is the single source of the live value. ONE query per call. When there is no
+     * index (SQLite unavailable / JSON-scan fallback) the Map is empty and callers
+     * fall back to the JSON baseline unchanged. Pure read — never mutates.
+     *
+     * @returns {Map<string, number>}
      */
-    indexMemory(memory) {
+    _indexUsageMap() {
+        const map = new Map();
+        if (!this.initDb() || !this.db) return map;
+        try {
+            const rows = this.db.prepare('SELECT id, usage_count FROM memories').all();
+            for (const r of rows) map.set(r.id, r.usage_count || 0);
+        } catch {
+            // Non-fatal — JSON baseline values pass through unchanged.
+        }
+        return map;
+    }
+
+    /**
+     * Upsert a memory into SQLite index.
+     *
+     * usage_count is the live source in the index (F44): _recordRecall increments it
+     * here, not in the JSON. An INSERT OR REPLACE from the JSON baseline (~always 0)
+     * would wipe accumulated recalls on every update AND every rebuild. To prevent
+     * that, the row's usage_count is floored to the max of the JSON value and either
+     * (a) `usageFloor` — an explicit prior value from a pre-DELETE snapshot, used by
+     * rebuildIndex where the current row is already gone — or, when `usageFloor` is
+     * null, (b) the current row's live value read here (the create/update paths).
+     *
+     * @param {object} memory
+     * @param {number|null} [usageFloor=null] - prior usage_count when the row was
+     *   snapshotted before deletion (rebuildIndex); null → read the current row.
+     */
+    indexMemory(memory, usageFloor = null) {
         if (!this.initDb()) return;
         try {
+            // Floor usage_count so accumulated live recalls survive a re-index.
+            let floor = usageFloor;
+            if (floor === null) {
+                try {
+                    const row = this.db.prepare('SELECT usage_count FROM memories WHERE id = ?').get(memory.id);
+                    floor = row ? (row.usage_count || 0) : 0;
+                } catch {
+                    floor = 0;
+                }
+            }
+            const usage = Math.max(memory.usage_count || 0, floor);
+
             // Upsert main table
             const stmt = this.db.prepare(`
                 INSERT OR REPLACE INTO memories (id, category, content, metadata, created, updated, usage_count, confidence, importance, invalid_at, superseded_by)
@@ -336,8 +329,11 @@ class MemoryManager {
             stmt.run(
                 memory.id, memory.category,
                 JSON.stringify(memory.content), JSON.stringify(memory.metadata),
-                memory.created, memory.updated,
-                memory.usage_count || 0, memory.metadata?.confidence ?? 1.0,
+                // ?? null: node:sqlite cannot bind undefined — a hand-authored
+                // record missing `updated` used to abort indexing here, leaving
+                // that memory silently invisible to FTS search (retro 260716).
+                memory.created ?? null, memory.updated ?? memory.created ?? null,
+                usage, memory.metadata?.confidence ?? 1.0,
                 clampImportance(memory.importance ?? memory.content?.importance),
                 memory.invalid_at ?? null, memory.superseded_by ?? null
             );
@@ -371,9 +367,6 @@ class MemoryManager {
         return id.replace(/_/g, '-');
     }
 
-    static filenameToId(filename) {
-        return filename.replace(/-/g, '_').replace(/\.json$/, '');
-    }
 
     /**
      * Get count of memories in a category
@@ -423,10 +416,36 @@ class MemoryManager {
 
     /**
      * Create a new memory (JSON + SQLite)
+     *
+     * F10: read-before-write collision guard. Without it a second createMemory
+     * at the same (category, id) silently destroys the prior file — including
+     * its accumulated confidence history and any `promoted_to` marker — with
+     * detectOverlap then running against the new content after the old memory
+     * is already gone. Refuses by default; pass `{ overwrite: true }` when the
+     * caller's intent genuinely is a rewrite (e.g. a hand-authored re-seed).
+     * Routine *updates* should go through updateMemory(), not a second createMemory.
+     *
+     * @param {string} category
+     * @param {string} id
+     * @param {object} content
+     * @param {{overwrite?: boolean}} [opts]
+     * @returns {Promise<object|null>} the created memory, or null on collision/cap
      */
-    async createMemory(category, id, content) {
+    async createMemory(category, id, content, opts = {}) {
+        const { overwrite = false } = opts;
         if (!this.categories.includes(category)) {
             throw new Error(`Invalid category: ${category}`);
+        }
+        if (!isSafeMemoryId(id)) {
+            throw new Error(`Invalid id: "${id}" — must be lowercase alphanumeric with '-'/'_' only (no path separators)`);
+        }
+
+        if (!overwrite) {
+            const existing = await this.readMemory(category, id);
+            if (existing) {
+                console.log(`⛔ Memory guard: ${category}/${id} already exists — refusing to overwrite. Pass {overwrite:true} to replace it, or use updateMemory() to modify it.`);
+                return null;
+            }
         }
 
         // Memory explosion guard
@@ -583,6 +602,14 @@ class MemoryManager {
      * Read a memory from JSON (source of truth)
      */
     async readMemory(category, id) {
+        // F42: category/id are joined straight into a filesystem path below —
+        // reject anything outside the known-category whitelist / safe-id charset
+        // BEFORE that join, matching readMemory's existing not-found contract
+        // (null, with a logged reason) rather than silently no-op'ing.
+        if (!this.categories.includes(category) || !isSafeMemoryId(id)) {
+            console.error(`❌ readMemory: invalid category/id: ${category}/${id}`);
+            return null;
+        }
         const hyphenated = MemoryManager.idToFilename(id);
         let filePath = path.join(this.memoriesDir, category, `${hyphenated}.json`);
 
@@ -608,6 +635,14 @@ class MemoryManager {
      * Update a memory (JSON + SQLite)
      */
     async updateMemory(category, id, updates) {
+        // F42: readMemory() below already rejects an unsafe category/id and
+        // returns null, but validate explicitly up front so the guard is not
+        // implicit/incidental — updateMemory also writes a NEW file at the same
+        // path afterward, so it must never proceed past an unsafe id.
+        if (!this.categories.includes(category) || !isSafeMemoryId(id)) {
+            console.error(`❌ updateMemory: invalid category/id: ${category}/${id}`);
+            return null;
+        }
         const memory = await this.readMemory(category, id);
         if (!memory) return null;
 
@@ -651,26 +686,55 @@ class MemoryManager {
      * @param {string} category
      * @param {{ includeSuperseded?: boolean }} [opts]
      */
+    // F43: `includeFull: true` attaches the already-parsed record as `.full` on
+    // each summary — this method reads every JSON file anyway to build the
+    // summary, so callers that need content must NOT re-read per id (that was
+    // a systemic second disk read + JSON.parse of the whole store). Off by
+    // default so summary-only consumers (generateReport's serialized payload)
+    // don't balloon.
     async listMemories(category, opts = {}) {
-        const { includeSuperseded = false } = opts;
+        const { includeSuperseded = false, includeFull = false } = opts;
         const dir = path.join(this.memoriesDir, category);
         try {
             const files = await fs.readdir(dir);
             const memories = [];
 
+            // Read-back (F44): usage_count lives ONLY in the SQLite index now
+            // (_recordRecall bumps it there, not the git-tracked JSON). Merge the live
+            // index value back in so every downstream consumer (report total_usage,
+            // analytics never_used/top_used/prune/dead-weight, lint) sees real usage
+            // instead of the permanently-stale JSON baseline (~always 0). ONE query
+            // per listMemories call. No index → empty Map → JSON value passes through.
+            const liveUsage = this._indexUsageMap();
+
             for (const file of files) {
                 if (file.endsWith('.json')) {
-                    const fileId = file.replace('.json', '');
-                    const memory = await this.readMemory(category, fileId);
+                    // Read the enumerated file directly instead of round-tripping
+                    // its name through readMemory's id validation: idToFilename is
+                    // lossy ('_' -> '-'), so a valid leading-underscore id yields a
+                    // leading-'-' filename that SAFE_ID_RE rejects — the memory
+                    // silently vanishes from report/analytics/lint/prune. A readdir
+                    // entry joined to its own directory cannot traverse, so the F42
+                    // caller-supplied-id guard does not apply here.
+                    let memory = null;
+                    try {
+                        memory = JSON.parse(await fs.readFile(path.join(dir, file), 'utf-8'));
+                    } catch {
+                        // unreadable/malformed store file — skip, matching the old
+                        // readMemory-null behavior for this loop
+                    }
                     if (memory) {
                         // Hide superseded memories from current-state queries unless
                         // explicitly asked for. invalid_at absent/null = live.
                         if (memory.invalid_at && !includeSuperseded) continue;
                         memories.push({
+                            ...(includeFull ? { full: memory } : {}),
                             id: memory.id,
                             created: memory.created,
                             updated: memory.updated,
-                            usage_count: memory.usage_count,
+                            // max(JSON baseline, live index) — index is the live source,
+                            // JSON is the seed; max never shows a value below either.
+                            usage_count: Math.max(memory.usage_count || 0, liveUsage.get(memory.id) ?? 0),
                             confidence: memory.metadata?.confidence ?? 1.0,
                             // Backfill-on-read: legacy memories (and any written
                             // before this column) read back at the default of 3.
@@ -696,11 +760,18 @@ class MemoryManager {
      * Supersession (ME-3.1): superseded memories (invalid_at set) are excluded by
      * default on both paths; pass `{ includeSuperseded: true }` to read history.
      *
+     * F11: `recordRecall` defaults to true (the genuine-recall contract, ME-4.1) —
+     * every real search bumps usage_count + logs a memory_access event. Diagnostic
+     * callers that search only to measure latency/retrieval quality (health-check's
+     * performance probe, memory-benchmark, memory-eval's --real pass) must pass
+     * `{ recordRecall: false }` so they don't inflate usage_count (feeds decay's
+     * USAGE_BOOST) or pollute memory-injection.jsonl (feeds hit_rate/prune analytics).
+     *
      * @param {string} searchTerm
-     * @param {{ includeSuperseded?: boolean }} [opts]
+     * @param {{ includeSuperseded?: boolean, recordRecall?: boolean }} [opts]
      */
     async searchMemories(searchTerm, opts = {}) {
-        const { includeSuperseded = false } = opts;
+        const { includeSuperseded = false, recordRecall = true } = opts;
         // Try SQLite FTS5 first
         if (this.initDb()) {
             const sql = `
@@ -743,8 +814,10 @@ class MemoryManager {
                             decayed_confidence: this.calculateDecayedConfidence(mockMemory)
                         };
                     });
-                    await this._recordRecall(mapped);
-                    this._logMemoryAccess(mapped);
+                    if (recordRecall) {
+                        await this._recordRecall(mapped);
+                        this._logMemoryAccess(mapped);
+                    }
                     return mapped;
                 }
             } catch {
@@ -756,26 +829,29 @@ class MemoryManager {
         // filter, so pass the opt through to keep both paths consistent.
         const results = [];
         for (const category of this.categories) {
-            const memories = await this.listMemories(category, { includeSuperseded });
+            // F43: includeFull reuses the record listMemories already parsed —
+            // this JSON-fallback path (SQLite unavailable) used to re-read every
+            // file a second time, exactly where doubled I/O hurts most.
+            const memories = await this.listMemories(category, { includeSuperseded, includeFull: true });
             for (const memSummary of memories) {
-                const memory = await this.readMemory(category, memSummary.id);
-                if (memory) {
-                    const content = JSON.stringify(memory.content).toLowerCase();
-                    if (content.includes(searchTerm.toLowerCase())) {
-                        results.push({
-                            category,
-                            id: memory.id,
-                            relevance: this.calculateRelevance(memory, searchTerm),
-                            confidence: memory.metadata?.confidence ?? 1.0,
-                            decayed_confidence: this.calculateDecayedConfidence(memory)
-                        });
-                    }
+                const memory = memSummary.full;
+                const content = JSON.stringify(memory.content).toLowerCase();
+                if (content.includes(searchTerm.toLowerCase())) {
+                    results.push({
+                        category,
+                        id: memory.id,
+                        relevance: this.calculateRelevance(memory, searchTerm, content), // F45: reuse the stringify above
+                        confidence: memory.metadata?.confidence ?? 1.0,
+                        decayed_confidence: this.calculateDecayedConfidence(memory)
+                    });
                 }
             }
         }
         const sorted = results.sort((a, b) => b.relevance - a.relevance);
-        await this._recordRecall(sorted);
-        this._logMemoryAccess(sorted);
+        if (recordRecall) {
+            await this._recordRecall(sorted);
+            this._logMemoryAccess(sorted);
+        }
         return sorted;
     }
 
@@ -914,11 +990,11 @@ class MemoryManager {
 
         // 2. Iterate all categories + memories
         for (const category of this.categories) {
-            const summaries = await this.listMemories(category);
+            // F43: reuse listMemories' already-parsed records (no second read).
+            const summaries = await this.listMemories(category, { includeFull: true });
             for (const summary of summaries) {
                 report.scanned++;
-                const memory = await this.readMemory(category, summary.id);
-                if (!memory) continue;
+                const memory = summary.full;
 
                 const lastBoost = memory.metadata?.lastEchoBoostCommit;
 
@@ -1047,9 +1123,12 @@ class MemoryManager {
     /**
      * Calculate relevance score (for JSON fallback search)
      */
-    calculateRelevance(memory, searchTerm) {
+    // F45: `contentStr` is optional — the JSON-fallback search path already has
+    // the lowercased stringify in hand and passes it in, so the same content
+    // isn't serialized twice per match on the (already degraded) no-FTS5 path.
+    calculateRelevance(memory, searchTerm, contentStr) {
         let score = 0;
-        const content = JSON.stringify(memory.content).toLowerCase();
+        const content = contentStr || JSON.stringify(memory.content).toLowerCase();
         const term = searchTerm.toLowerCase();
 
         const matches = (content.match(new RegExp(term, 'g')) || []).length;
@@ -1077,6 +1156,15 @@ class MemoryManager {
             return;
         }
 
+        // Snapshot live usage_count BEFORE wiping — the index is the live source
+        // (_recordRecall bumps it here, not the JSON baseline of ~always 0). Without
+        // this, every rebuild resets accumulated real usage to 0 (F44). Note:
+        // listMemories below already max-merges this same live value into its
+        // summaries, so re-indexing from those summaries would preserve usage even
+        // without the explicit floor — but readMemory re-reads the raw JSON, so the
+        // pre-DELETE snapshot is what actually carries the live value across the wipe.
+        const priorUsage = this._indexUsageMap();
+
         this.db.exec('DELETE FROM memories');
         this.db.exec('DELETE FROM memories_fts');
 
@@ -1084,13 +1172,11 @@ class MemoryManager {
         for (const category of this.categories) {
             // Re-index EVERYTHING including superseded memories so their rows
             // (with invalid_at) persist in the db for includeSuperseded history.
-            const memories = await this.listMemories(category, { includeSuperseded: true });
+            // F43: includeFull — one read per file, not two.
+            const memories = await this.listMemories(category, { includeSuperseded: true, includeFull: true });
             for (const memSummary of memories) {
-                const memory = await this.readMemory(category, memSummary.id);
-                if (memory) {
-                    this.indexMemory(memory);
-                    count++;
-                }
+                this.indexMemory(memSummary.full, priorUsage.get(memSummary.full.id) ?? 0);
+                count++;
             }
         }
         console.log(`✅ Rebuilt SQLite index: ${count} memories indexed.`);
@@ -1107,12 +1193,10 @@ class MemoryManager {
     async lintMemories() {
         const allMemories = [];
         for (const category of this.categories) {
-            const summaries = await this.listMemories(category);
+            // F43: includeFull — the lint tuples reuse the single-pass records.
+            const summaries = await this.listMemories(category, { includeFull: true });
             for (const summary of summaries) {
-                const full = await this.readMemory(category, summary.id);
-                if (full) {
-                    allMemories.push({ category, summary, full });
-                }
+                allMemories.push({ category, summary, full: summary.full });
             }
         }
 
@@ -1226,7 +1310,8 @@ class MemoryManager {
         for (const category of this.categories) {
             // One pass: read all (including superseded) so we can both count the
             // superseded entries (ME-3.2) and run the existing active-only stats.
-            const withSuperseded = await this.listMemories(category, { includeSuperseded: true });
+            // F43: includeFull so the last_accessed side-read below is free.
+            const withSuperseded = await this.listMemories(category, { includeSuperseded: true, includeFull: true });
             const memories = withSuperseded.filter(m => !m.invalid_at);
             totalSuperseded += withSuperseded.length - memories.length;
             const count = memories.length;
@@ -1271,9 +1356,9 @@ class MemoryManager {
                         });
                     }
                 }
-                // last_accessed lives in the full memory JSON, not the summary
-                const full = await this.readMemory(category, m.id);
-                if (full && full.last_accessed) idLastAccessed[m.id] = full.last_accessed;
+                // last_accessed lives in the full memory JSON, not the summary —
+                // F43: read off the attached record instead of a per-id re-read.
+                if (m.full && m.full.last_accessed) idLastAccessed[m.id] = m.full.last_accessed;
             }
         }
 
@@ -1430,6 +1515,13 @@ class MemoryManager {
      * @returns {Promise<{promoted: true, category, id} | {promoted: false, error}>}
      */
     async inboxPromote(id, opts = {}) {
+        // F42 (W2-1): `id` is a raw CLI-supplied inbox filename stem joined
+        // straight into path.join below — guard it against `../` traversal
+        // exactly like the memory-id entry points, else `inbox-promote
+        // ../../../secret` reads (and then unlinks) an arbitrary .json file.
+        if (!isSafeMemoryId(id)) {
+            return { promoted: false, error: `Invalid inbox id: ${id} (must be lowercase alnum, '_' or '-'; no path separators)` };
+        }
         const filePath = path.join(this._inboxDir(), `${id}.json`);
         let raw;
         try {
@@ -1456,6 +1548,22 @@ class MemoryManager {
         }
         if (!memoryId || typeof memoryId !== 'string') {
             return { promoted: false, error: 'Missing or invalid suggested_id (no idOverride supplied)' };
+        }
+        // F13: memoryId is derived (idOverride/suggested_id) and reaches
+        // createMemory below, which THROWS on an unsafe id — violating this
+        // method's documented never-throw contract. Guard it here, mirroring
+        // deleteMemory/inboxDiscard's own isSafeMemoryId checks.
+        if (!isSafeMemoryId(memoryId)) {
+            return { promoted: false, error: `Invalid suggested id: "${memoryId}" — must be lowercase alphanumeric with '-'/'_' only (no path separators)` };
+        }
+
+        // F10: surface an id collision as its own distinct error instead of
+        // letting createMemory's refusal collapse into the generic "category
+        // limit reached?" message below — a collision and a full category are
+        // different problems with different remedies (idOverride vs. wait/prune).
+        const existingAtTarget = await this.readMemory(category, memoryId);
+        if (existingAtTarget) {
+            return { promoted: false, error: `id collision: ${category}/${memoryId} already exists — retry with a different --id, or delete/update the existing memory first` };
         }
 
         const created = await this.createMemory(category, memoryId, draft.content || {});
@@ -1486,6 +1594,9 @@ class MemoryManager {
     async deleteMemory(category, id) {
         if (!this.categories.includes(category)) {
             return { deleted: false, error: `Invalid category: ${category}. Allowed: ${this.categories.join(', ')}` };
+        }
+        if (!isSafeMemoryId(id)) {
+            return { deleted: false, error: `Invalid id: "${id}" — must be lowercase alphanumeric with '-'/'_' only (no path separators)` };
         }
 
         // Locate the JSON file — try both hyphenated and underscore IDs (createMemory
@@ -1526,6 +1637,12 @@ class MemoryManager {
      * @returns {Promise<{discarded: boolean, error?: string}>}
      */
     async inboxDiscard(id) {
+        // F42 (W2-1): guard the raw CLI-supplied `id` before it reaches
+        // path.join — an unguarded `../`-laden id deletes an arbitrary .json
+        // file outside the inbox root.
+        if (!isSafeMemoryId(id)) {
+            return { discarded: false, error: `Invalid inbox id: ${id} (must be lowercase alnum, '_' or '-'; no path separators)` };
+        }
         const filePath = path.join(this._inboxDir(), `${id}.json`);
         try {
             await fs.unlink(filePath);

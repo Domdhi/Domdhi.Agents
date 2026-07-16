@@ -96,6 +96,24 @@ const PATTERNS = [
     // --- Generic Credential Patterns ---
     { name: 'Password Assignment', regex: /(?:password|passwd|pwd)['"]?\s*[=:]\s*['"][^'"]{8,}['"]/gi },
     { name: 'Secret Assignment', regex: /(?:secret|api_?key|apikey|access_?key|auth_?token|client_?secret)['"]?\s*[=:]\s*['"][^'"]{8,}['"]/gi },
+    // --- F76: Unquoted key=value / YAML key: value coverage ---
+    // The quoted patterns above miss the most common real-world unquoted
+    // forms: shell `export KEY=value`, .properties/.ini `key=value`, and
+    // YAML `key: value`. Guarded against false-positive explosion by (1)
+    // requiring a secret-ish key name (same keyword groups as above) and
+    // (2) a minimum 8-char unquoted value (`\S{8,}`), so `count=5` / `name:
+    // bob` never match. The negative lookahead excludes values that start
+    // with a quote, `$`, `<`, or `{` — those are either already covered by
+    // the quoted patterns above (avoids double-counting) or are a variable
+    // reference / template placeholder, not a literal secret.
+    // W2-3: the unquoted Password variant drops the `pwd` alias — an UNQUOTED
+    // `pwd=/some/path` is the present-working-dir env var (an env-dump line),
+    // never a password. `pwd` stays in the QUOTED Password Assignment above,
+    // where `pwd='…8+…'` is unambiguously a credential. (No leading `\b` here:
+    // a word boundary fails between `_` and the keyword, which would break the
+    // extremely common `DB_PASSWORD=` / `MY_SECRET=` underscore-prefixed forms.)
+    { name: 'Password Assignment (Unquoted)', regex: /(?:password|passwd)\s*[=:]\s*(?!['"$<{])(\S{8,})/gi },
+    { name: 'Secret Assignment (Unquoted)', regex: /(?:secret|api_?key|apikey|access_?key|auth_?token|client_?secret)\s*[=:]\s*(?!['"$<{])(\S{8,})/gi },
     { name: 'Connection String', regex: /(?:mongodb(?:\+srv)?|postgres(?:ql)?|mysql|redis|amqp|mssql):\/\/[^\s'"]{1,256}:[^\s'"]{1,256}@[^\s'"]{1,2000}/gi },
     { name: 'Database URL', regex: /DATABASE_URL\s*=\s*['"]?[^\s'"]+:\/\/[^\s'"]+/gi },
 ];
@@ -120,6 +138,11 @@ const PLACEHOLDER_PATTERNS = [
     /^['"]?\{[^}]+\}['"]?$/,                // {placeholder}
     /^['"]?\$\{[^}]+\}['"]?$/,              // ${VARIABLE}
     /^['"]?\$[A-Z_]+['"]?$/,                // $ENV_VAR
+    // VAULT:Provider:Key — a vault-reference placeholder (e.g. a config provider
+    // that resolves it against an encrypted store at startup). The literal is a
+    // POINTER to a secret, not the secret itself; config files are expected to
+    // hold it. (Harvested from an adopter's SecretsVault convention, 2026-07.)
+    /^['"]?VAULT:[A-Za-z0-9_]+:[A-Za-z0-9_]+['"]?$/,
 ];
 
 function isPlaceholderValue(matched) {
@@ -262,7 +285,9 @@ function scanContent(content, filePath) {
             const matches = line.matchAll(pattern.regex);
             for (const match of matches) {
                 if ((pattern.name === 'Password Assignment' ||
-                    pattern.name === 'Secret Assignment') &&
+                    pattern.name === 'Secret Assignment' ||
+                    pattern.name === 'Password Assignment (Unquoted)' ||
+                    pattern.name === 'Secret Assignment (Unquoted)') &&
                     isPlaceholderValue(match[0])) {
                     continue;
                 }
@@ -319,7 +344,9 @@ function redactSecretsInText(content) {
         result = result.replace(re, (match) => {
             // Same placeholder filter scanContent uses for these patterns
             if ((pattern.name === 'Password Assignment' ||
-                 pattern.name === 'Secret Assignment') &&
+                 pattern.name === 'Secret Assignment' ||
+                 pattern.name === 'Password Assignment (Unquoted)' ||
+                 pattern.name === 'Secret Assignment (Unquoted)') &&
                 isPlaceholderValue(match)) {
                 return match;
             }
@@ -366,19 +393,12 @@ function formatFindings(findings) {
 // Stdin reader (shared utility)
 // ============================================
 
+// F77: shared stdin plumbing — delegates to _lib/hook-input.js (no timeout, as
+// before: scanner/scrubber inputs always close stdin). Export shape unchanged
+// for the two consumers (secret-scanner.cjs, post-read-scrubber.cjs).
+const { readHookInput } = require('../core/_lib/hook-input');
 function readStdin() {
-    return new Promise((resolve) => {
-        if (process.stdin.isTTY) {
-            resolve('');
-            return;
-        }
-
-        let data = '';
-        process.stdin.setEncoding('utf8');
-        process.stdin.on('data', chunk => { data += chunk; });
-        process.stdin.on('end', () => resolve(data));
-        process.stdin.on('error', () => resolve(''));
-    });
+    return readHookInput({ timeoutMs: null });
 }
 
 module.exports = {

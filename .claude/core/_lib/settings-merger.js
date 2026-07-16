@@ -116,8 +116,16 @@ function mergeSettingsFile(srcAbs, destAbs, options) {
 
     // ── Build merged object ───────────────────────────────────────────────────
 
-    // Start from dest so all project-owned + unknown keys are preserved
-    const merged = Object.assign({}, destObj);
+    // Start from dest so all project-owned + unknown keys are preserved.
+    // F17: null-prototype copy, not Object.assign({}, destObj) — destObj is
+    // JSON.parse'd ADOPTER content, and a `"__proto__"` key that JSON.parse
+    // stores as a plain own property would be re-set through the inherited
+    // Object.prototype.__proto__ SETTER by Object.assign's [[Set]] copy,
+    // silently reassigning the merged object's prototype (verified live).
+    // Own-key defineProperty-shaped copy onto a null-prototype object keeps
+    // every key inert data; JSON.stringify output is unchanged.
+    const merged = Object.create(null);
+    for (const key of Object.keys(destObj)) merged[key] = destObj[key];
 
     // Overwrite template-owned keys with the template's current values
     for (const key of TEMPLATE_OWNED_KEYS) {

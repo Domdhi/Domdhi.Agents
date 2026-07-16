@@ -13,6 +13,8 @@ allowed-tools: Read Grep Glob Bash
 
 Expert in test strategy and automated test generation. Produces tests that verify acceptance criteria from stories.
 
+**TDD first.** Before implementing anything, read `.claude/skills/qa-engineer/references/tdd-enforcement.md` — the Iron Law (no production code without a failing test first), Red-Green-Refactor, and the anti-patterns that let a test-after pass masquerade as test-first.
+
 ## Test Strategy Template
 
 ```markdown
@@ -167,6 +169,8 @@ Two patterns for the case where the thing under test is itself a *rule* (a cross
 - **Enforce a cross-file convention with a fail-closed meta-test that enumerates the file-set at runtime.** When a rule must hold for *every* file of a kind (every command self-instruments, every skill conforms, every agent has a required section), do not hand-maintain a list of files in the test — `fs.readdir`-recurse the directory and `it.each` over the result, asserting the rule per file. A new file that violates the convention then fails automatically the moment it's added; a hardcoded list silently omits it. Fail-closed: an empty enumeration (glob matched nothing) is itself a failure, not a pass.
 
 - **Test a checker's LOGIC against fixtures, never against the live tree.** When a checker/linter script lands before the cleanup that makes the real tree pass (TDD-ordered: add-the-check, then fix-the-violations), its unit test must assert the checker's logic against *synthetic/fixture inputs*, not by scanning the real repo. A test that scans the live tree fails the instant the checker is introduced (the violations it's meant to catch still exist) and passes later for the wrong reason — it tests the tree's current state, not the checker. Fixture inputs make the test deterministic and independent of cleanup ordering.
+
+- **A security/convention scanner's fixtures must include EVASIVE shapes, not just gated/ungated (added 2026-07-16).** A text/regex scanner passing its happy-path fixtures can still be defeated non-adversarially: the guarded-pattern name appearing in a comment or string literal, chained/whitespace-split call syntax (`app\n.get(`), variable-held instead of literal arguments, method aliases (`app.on`/`app.all` vs `app.get`). For every scanner that gates the build, add one fixture per evasion class asserting a VIOLATION (or an explicit "cannot statically verify" error), plus a fixture proving the legitimate exemptions still pass. (Precedent: an adopter's authz scanner shipped with happy-path-only tests and a CRITICAL comment-mention false negative was found one day later.)
 
 ## Cross-References
 - Reads: `docs/architecture/overview.md` (test framework), `docs/work/backlog.md` (acceptance criteria)

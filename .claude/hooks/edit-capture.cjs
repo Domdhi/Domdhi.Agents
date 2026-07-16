@@ -98,6 +98,12 @@ async function main() {
 }
 
 if (require.main === module) {
+    // P1.7 — hook duration instrumentation (F60), same pattern as siblings.
+    const { startHookTiming, emitHookEvent } = require('../core/_lib/hook-telemetry');
+    const _hookToken = startHookTiming('edit-capture');
+    process.on('exit', () => {
+        try { emitHookEvent(_hookToken, 'success'); } catch { /* never fail on telemetry */ }
+    });
     main().catch(() => process.exit(0));
 }
 

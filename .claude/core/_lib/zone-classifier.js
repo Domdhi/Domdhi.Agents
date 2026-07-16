@@ -36,13 +36,26 @@
  * star (`core/*.js`) silently skipped every file under core/_lib/ after the
  * library split, so downstreams received zero _lib/ updates. ALWAYS_SKIP_DIRS
  * keeps __tests__/ out at the file-walker level.
+ *
+ * core/**\/* is extension-agnostic (not core/**\/*.js) — matching the pattern
+ * already used by skills/**\/* and templates/**\/*. An extension-restricted glob
+ * silently classified non-.js core files (core/statusline.sh, core/package.json)
+ * as 'unknown', which template-updater sync then skipped — those files never
+ * reached onboarded adopters (F21). __tests__/_helpers/node_modules are still
+ * excluded at the file-walker level (ALWAYS_SKIP_DIRS), independent of this glob.
+ *
+ * agents-optional/**\/* sits in the same bucket as skills-optional/**\/*: install.js
+ * and tools/publish.js already treat the two as parallel concepts (both excluded
+ * from scaffold/publish), so they must classify — and therefore propagate on sync
+ * — identically (F20).
  */
 const TEMPLATE_GLOBS = [
     'commands/**/*.md',
-    'core/**/*.js',
+    'core/**/*',
     'hooks/**/*.cjs',
     'skills/**/*',
     'skills-optional/**/*',
+    'agents-optional/**/*',
     'templates/**/*',
     'version.json',
     'guardrail-rules.yaml',
@@ -95,7 +108,22 @@ const MIXED_GLOBS = [
  * @param {string} pattern
  * @returns {RegExp}
  */
+// F22: compiled-pattern memo. matchesAnyGlob() recompiles each glob for every
+// file classified — a template-updater/fleet walk over this repo's own 389
+// .claude/ files paid 1,000+ redundant compilations. The glob vocabulary is a
+// small static set (zone tables + manifest), so cache by pattern source. The
+// cached RegExp carries no /g flag, so .test() is stateless and safe to share.
+const _globRegexCache = new Map();
+
 function globToRegex(pattern) {
+    const cached = _globRegexCache.get(pattern);
+    if (cached) return cached;
+    const compiled = compileGlobToRegex(pattern);
+    _globRegexCache.set(pattern, compiled);
+    return compiled;
+}
+
+function compileGlobToRegex(pattern) {
     // Normalize slashes
     const normalized = pattern.replace(/\\/g, '/');
     // Split on ** first to avoid ** fragments being re-processed by * replacement.

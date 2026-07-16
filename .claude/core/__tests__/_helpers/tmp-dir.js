@@ -18,6 +18,9 @@ function createTmpDir({ prefix = 'domdhi-test-' } = {}) {
 
   return {
     root,
+    // `path` is an alias for `root` — some suites (fs-safe.test.js) refer to the
+    // tmp base as `tmp.path`. Additive, kept in sync with `root`.
+    path: root,
 
     /**
      * Write content to a relative path inside root, creating parent dirs as needed.

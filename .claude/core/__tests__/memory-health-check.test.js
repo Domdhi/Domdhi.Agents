@@ -328,6 +328,31 @@ describe('runHealthCheck (full pipeline)', () => {
     logSpy.mockRestore();
     expect(healthy).toBe(checker.results.errors.length === 0);
   });
+
+  // F39 (council-260715-2244): one run = ONE store scan. The old shape called
+  // generateReport() twice (checkBackend + checkMemoryQuality) and swept the
+  // store a third time in checkRecentMemories — ~6× full-store JSON parsing.
+  it('generates the store report exactly ONCE per run and threads it through all checks (F39 single-pass)', async () => {
+    writeHandCreatedMemory(tmp, CATEGORIES[0], 'single-pass-probe', { confidence: 0.9 });
+    checker = new MemoryHealthChecker();
+    const reportSpy = vi.spyOn(checker.manager, 'generateReport');
+    const listSpy = vi.spyOn(checker.manager, 'listMemories');
+    // Neutralize checkMemoryPerformance's searchMemories: on an FTS5-less
+    // runtime its JSON fallback would add listMemories calls this count
+    // doesn't budget for — the assertion targets the report path only.
+    const searchSpy = vi.spyOn(checker.manager, 'searchMemories').mockResolvedValue([]);
+    const logSpy = silenceConsole();
+    await checker.runHealthCheck();
+    logSpy.mockRestore();
+
+    expect(reportSpy).toHaveBeenCalledTimes(1);
+    // Every listMemories call must come from inside that single generateReport
+    // (one per category) — no independent whole-store re-sweep remains.
+    expect(listSpy.mock.calls.length).toBe(Object.values(CONSTANTS.MEMORY_CATEGORIES).length);
+    reportSpy.mockRestore();
+    listSpy.mockRestore();
+    searchSpy.mockRestore();
+  });
 });
 
 // ── CLI entry point — subprocess smoke test (exit-code/report shape only;

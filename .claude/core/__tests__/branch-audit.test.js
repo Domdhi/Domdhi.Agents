@@ -138,6 +138,20 @@ function sh(cmd, cwd) {
   return execSync(cmd, { cwd, stdio: 'pipe', encoding: 'utf8' });
 }
 
+/**
+ * Normalize a Node-fs-sourced path (e.g. from mkdtempSync) to the form git's
+ * porcelain output uses: forward slashes, and — on Windows — the long directory
+ * name rather than an 8.3 short name. Some Windows profiles (a username with a
+ * dot, e.g. "dbaca.NMMFA") get %TEMP% set to its short-name alias
+ * ("DBACA~1.NMM"); mkdtempSync preserves that alias, but git-for-windows
+ * resolves and reports the long name with forward slashes. Without this,
+ * asserting `listWorktrees()[i].path === repoPath` fails on those machines
+ * even though both sides name the same directory.
+ */
+function gitPath(p) {
+  return require('node:fs').realpathSync.native(p).split(path.sep).join('/');
+}
+
 /** git show -s --format=%T <ref> — the tree id, used to build an auditBranch ctx. */
 function treeOf(ref, cwd) {
   return sh(`git show -s --format=%T ${ref}`, cwd).trim();
@@ -263,6 +277,45 @@ describe.skipIf(!gitAvailable())('auditBranch (real git)', () => {
     const result = auditBranch('gone-branch', baseCtx(repoPath));
     expect(result.upstreamState).toBe('gone');
   });
+
+  // F24/F25 (council-260715-2244): main() batches upstream tracking (one
+  // for-each-ref + one config --get-regexp) and BASE-tree membership (one
+  // ls-tree Set) into ctx; auditBranch must consume those instead of spawning
+  // per-branch/per-file git. Prove consumption by handing ctx maps that
+  // CONTRADICT the real repo state — the batched value must win.
+  it('consumes ctx.trackByBranch/upstreamConfigured/baseFilesSet instead of re-spawning git (F24/F25)', () => {
+    sh('git branch batched-branch', repoPath);
+    // Real repo: no upstream at all. Batched maps claim [gone] — map must win.
+    const goneCtx = baseCtx(repoPath, {
+      trackByBranch: new Map([['batched-branch', '[gone]']]),
+      upstreamConfigured: new Set(),
+    });
+    expect(auditBranch('batched-branch', goneCtx).upstreamState).toBe('gone');
+
+    const trackingCtx = baseCtx(repoPath, {
+      trackByBranch: new Map([['batched-branch', '']]),
+      upstreamConfigured: new Set(['batched-branch']),
+    });
+    expect(auditBranch('batched-branch', trackingCtx).upstreamState).toBe('tracking');
+
+    // F25: a branch adding a genuinely-new code file classifies via
+    // baseFilesSet. A set that (falsely) claims the file exists in BASE must
+    // flip the signature from NEW to modified — proving no cat-file spawn.
+    require('node:fs').mkdirSync(path.join(repoPath, 'src'), { recursive: true });
+    require('node:fs').writeFileSync(path.join(repoPath, 'src/brand-new.js'), 'n\n');
+    sh('git checkout -b f25-branch -q', repoPath);
+    sh('git add src/brand-new.js', repoPath);
+    sh(`git commit -F ${writeMsg(tmp, 'new file')}`, repoPath);
+    sh('git checkout main -q', repoPath);
+
+    const honestSet = baseCtx(repoPath, { baseFilesSet: new Set() });
+    const resultNew = auditBranch('f25-branch', honestSet);
+    expect(resultNew.code.some((c) => c.file === 'src/brand-new.js' && c.sig === 'NEW')).toBe(true);
+
+    const lyingSet = baseCtx(repoPath, { baseFilesSet: new Set(['src/brand-new.js']) });
+    const resultPresent = auditBranch('f25-branch', lyingSet);
+    expect(resultPresent.code.some((c) => c.file === 'src/brand-new.js' && c.sig === 'modified')).toBe(true);
+  });
 });
 
 /** Write a commit message to a throwaway file (git commit -F avoids the repo's own commit-guard hook, which only intercepts this project's Bash tool calls, not subprocess git). */
@@ -361,7 +414,7 @@ describe.skipIf(!gitAvailable())('listWorktrees / auditWorktree (real git)', () 
   it('listWorktrees() reports the primary worktree with its branch', () => {
     const trees = listWorktrees();
     expect(trees.length).toBe(1);
-    expect(trees[0].path).toBe(repoPath);
+    expect(trees[0].path).toBe(gitPath(repoPath));
     expect(trees[0].branch).toBe('main');
   });
 
@@ -370,7 +423,7 @@ describe.skipIf(!gitAvailable())('listWorktrees / auditWorktree (real git)', () 
     sh(`git worktree add "${wtPath}" -b wt1-branch -q`, repoPath);
     const trees = listWorktrees();
     expect(trees.length).toBe(2);
-    expect(trees.some((t) => t.path === wtPath && t.branch === 'wt1-branch')).toBe(true);
+    expect(trees.some((t) => t.path === gitPath(wtPath) && t.branch === 'wt1-branch')).toBe(true);
   });
 
   it('auditWorktree: CLEAN when there are no uncommitted changes', () => {

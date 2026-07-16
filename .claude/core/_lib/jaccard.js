@@ -42,14 +42,26 @@ function jaccardFromSets(setA, setB) {
  * @returns {number} in [0, 1]
  */
 function jaccardFromText(text1, text2, { minTokenLen = 2 } = {}) {
-    const tokenize = (s) =>
-        new Set(
-            String(s)
-                .toLowerCase()
-                .split(/\W+/)
-                .filter((w) => w.length > minTokenLen)
-        );
-    return jaccardFromSets(tokenize(text1), tokenize(text2));
+    return jaccardFromSets(tokenizeText(text1, { minTokenLen }), tokenizeText(text2, { minTokenLen }));
 }
 
-module.exports = { jaccardFromSets, jaccardFromText };
+/**
+ * The tokenizer jaccardFromText uses, exported on its own (F14) so callers
+ * doing many pairwise comparisons can tokenize each string ONCE and compare
+ * with jaccardFromSets — instead of re-tokenizing both sides on every pair.
+ *
+ * @param {string} s
+ * @param {object} [opts]
+ * @param {number} [opts.minTokenLen=2]
+ * @returns {Set<string>}
+ */
+function tokenizeText(s, { minTokenLen = 2 } = {}) {
+    return new Set(
+        String(s)
+            .toLowerCase()
+            .split(/\W+/)
+            .filter((w) => w.length > minTokenLen)
+    );
+}
+
+module.exports = { jaccardFromSets, jaccardFromText, tokenizeText };

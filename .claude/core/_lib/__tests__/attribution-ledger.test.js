@@ -7,8 +7,10 @@
 //   AC2 (do.md Step 9c / run-todo.md Phase 2 Step 4b append) → [inspection] (command wiring)
 //   AC3 (end.md wrap-up surfaces ledger before staging + never-revert guidance) → [inspection]
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createRequire } from 'node:module';
+import fs from 'node:fs';
+import path from 'node:path';
 
 const require = createRequire(import.meta.url);
 const { createTmpDir } = require('../../__tests__/_helpers/tmp-dir.js');
@@ -79,6 +81,62 @@ describe('appendAttribution', () => {
         expect(written.files_touched).toEqual([]); // missing → []
         const entries = readAttribution();
         expect(entries).toHaveLength(2); // null entry + the partial entry both persisted
+    });
+});
+
+// F1 (council-260715-2244): getProjectRoot() must route through the
+// worktree-safe _lib/project-root.js resolveProjectRoot() instead of the naive
+// `CLAUDE_PROJECT_DIR || path.resolve(__dirname,...)` fallback — the latter
+// anchors the GITIGNORED docs/.output/.state/telemetry ledger to whichever
+// worktree happens to be current instead of the shared main worktree.
+describe('getProjectRoot routes through resolveProjectRoot (F1 — worktree-safe root)', () => {
+    it('invokes resolveProjectRoot() with the module fallbackDir and writes under ITS resolved root, not a naive __dirname fallback', () => {
+        const projectRootCachePath = require.resolve('../project-root.js');
+        const ledgerCachePath = require.resolve('../attribution-ledger.js');
+        const savedProjectRoot = require.cache[projectRootCachePath];
+        const savedLedger = require.cache[ledgerCachePath];
+
+        // A fake resolved root, distinct from both CLAUDE_PROJECT_DIR (unset in
+        // this test) and the real repo path that a naive __dirname fallback
+        // would produce. fs writes are spied/no-op'd so this never touches disk
+        // regardless of which path the implementation actually resolves.
+        // path.resolve makes the fake root platform-absolute ('C:\fake\…' on win32) so
+        // the implementation's path.join output still startsWith it — a bare '/fake/…'
+        // gets its separators flipped by win32 path.join and the prefix check fails.
+        const fakeRoot = path.resolve('/fake/f1-main-worktree-root');
+        let calledWithFallback = null;
+
+        require.cache[projectRootCachePath] = {
+            id: projectRootCachePath, filename: projectRootCachePath, loaded: true, children: [], paths: [],
+            exports: {
+                resolveProjectRoot: (fallbackDir) => { calledWithFallback = fallbackDir; return fakeRoot; },
+                resolveWorktreeRoot: (fallbackDir) => fallbackDir,
+            },
+        };
+        delete require.cache[ledgerCachePath];
+
+        const mkdirSpy = vi.spyOn(fs, 'mkdirSync').mockImplementation(() => {});
+        const appendSpy = vi.spyOn(fs, 'appendFileSync').mockImplementation(() => {});
+        const savedEnv = process.env.CLAUDE_PROJECT_DIR;
+        delete process.env.CLAUDE_PROJECT_DIR;
+
+        try {
+            const fresh = require('../attribution-ledger.js');
+            fresh.appendAttribution({ story_id: 'S', agent: 'a', model: 'm', files_touched: [], status: 'DONE' });
+
+            expect(calledWithFallback).toBeTruthy(); // resolveProjectRoot() was actually called
+            const call = appendSpy.mock.calls.find(([p]) => typeof p === 'string' && p.includes('attribution-'));
+            expect(call).toBeTruthy();
+            expect(call[0].startsWith(fakeRoot)).toBe(true);
+        } finally {
+            mkdirSpy.mockRestore();
+            appendSpy.mockRestore();
+            if (savedEnv === undefined) delete process.env.CLAUDE_PROJECT_DIR;
+            else process.env.CLAUDE_PROJECT_DIR = savedEnv;
+            require.cache[projectRootCachePath] = savedProjectRoot;
+            if (savedLedger) require.cache[ledgerCachePath] = savedLedger;
+            else delete require.cache[ledgerCachePath];
+        }
     });
 });
 

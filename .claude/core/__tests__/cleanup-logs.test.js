@@ -240,6 +240,78 @@ describe('cleanupLogs', () => {
 });
 
 // ---------------------------------------------------------------------------
+// cleanupLogs — flat gate-*.log files (F26)
+//
+// The ONLY producer under telemetry/logs/ is gate.js, which writes FLAT files
+// named gate-{ISO}.log (e.g. gate-2026-06-10T02-42-10-940Z.log) — never dated
+// subdirs. cleanupLogs must age these out using the timestamp in the filename.
+// ---------------------------------------------------------------------------
+
+describe('cleanupLogs — flat gate-*.log files', () => {
+    const { cleanupLogs } = require('../cleanup-logs');
+
+    function logsDir() {
+        return path.join(tmp.root, 'docs', '.output', '.state', 'telemetry', 'logs');
+    }
+
+    /** Build a gate log filename exactly as gate.js does: gate-{ISO}.log with `:`/`.` → `-` */
+    function gateLogName(date) {
+        const iso = (date instanceof Date ? date : new Date(date)).toISOString().replace(/[:.]/g, '-');
+        return `gate-${iso}.log`;
+    }
+
+    it('deletes a flat gate-*.log older than maxAgeDays', async () => {
+        const dir = logsDir();
+        fs.mkdirSync(dir, { recursive: true });
+        const oldDate = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000);
+        const oldLog = path.join(dir, gateLogName(oldDate));
+        fs.writeFileSync(oldLog, 'gate output\n');
+
+        await cleanupLogs(30);
+
+        expect(fs.existsSync(oldLog)).toBe(false);
+    });
+
+    it('keeps a flat gate-*.log newer than maxAgeDays', async () => {
+        const dir = logsDir();
+        fs.mkdirSync(dir, { recursive: true });
+        const recentDate = new Date(Date.now() - 5 * 24 * 60 * 60 * 1000);
+        const recentLog = path.join(dir, gateLogName(recentDate));
+        fs.writeFileSync(recentLog, 'gate output\n');
+
+        await cleanupLogs(30);
+
+        expect(fs.existsSync(recentLog)).toBe(true);
+    });
+
+    it('deletes old gate logs and keeps recent ones simultaneously', async () => {
+        const dir = logsDir();
+        fs.mkdirSync(dir, { recursive: true });
+        const oldLog = path.join(dir, gateLogName(new Date(Date.now() - 60 * 24 * 60 * 60 * 1000)));
+        const recentLog = path.join(dir, gateLogName(new Date(Date.now() - 2 * 24 * 60 * 60 * 1000)));
+        fs.writeFileSync(oldLog, 'old\n');
+        fs.writeFileSync(recentLog, 'recent\n');
+
+        await cleanupLogs(30);
+
+        expect(fs.existsSync(oldLog)).toBe(false);
+        expect(fs.existsSync(recentLog)).toBe(true);
+    });
+
+    it('leaves non-gate flat files alone (only gate-*.log is targeted)', async () => {
+        const dir = logsDir();
+        fs.mkdirSync(dir, { recursive: true });
+        // A stray flat file that is NOT a gate log — must be preserved regardless of age
+        const stray = path.join(dir, '2020-01-01_120000_something');
+        fs.writeFileSync(stray, 'stray\n');
+
+        await cleanupLogs(30);
+
+        expect(fs.existsSync(stray)).toBe(true);
+    });
+});
+
+// ---------------------------------------------------------------------------
 // cleanupLogs — exports surface (smoke)
 // ---------------------------------------------------------------------------
 
@@ -373,7 +445,7 @@ describe('cleanup-logs CLI main guard (subprocess)', () => {
     it('exits with code 0 when no --days flag is provided (default 30)', () => {
         const { status, stdout } = runCli([]);
         expect(status).toBe(0);
-        expect(stdout).toContain('Deleted 0 folders');
+        expect(stdout).toContain('Deleted 0 entries');
     });
 
     it('exits with code 0 when a valid --days value is provided', () => {
@@ -389,7 +461,7 @@ describe('cleanup-logs CLI main guard (subprocess)', () => {
         const { status, stdout } = runCli(['--days', '30']);
 
         expect(status).toBe(0);
-        expect(stdout).toContain('Deleted 1 folders');
+        expect(stdout).toContain('Deleted 1 entries');
         expect(fs.existsSync(oldFolder)).toBe(false);
     });
 });

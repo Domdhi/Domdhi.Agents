@@ -223,6 +223,41 @@ describe('memory-manager inbox', () => {
       expect(result.error).toMatch(/category/i);
     });
 
+    it('inboxPromote_idCollision_returnsDistinctErrorAndKeepsOriginal', async () => {
+      // F10: promoting into an id that already holds a real memory must not
+      // silently clobber it — and the error must name the collision, not
+      // read as a generic "category full" failure.
+      const m = makeManager();
+      await m.createMemory('constraints', 'already-taken', { description: 'pre-existing memory' });
+      writeInboxFile('2026-05-11-1800-w', makeDraft({
+        suggested_id: 'already-taken',
+        category: 'constraints',
+        content: { description: 'draft trying to land on the same id' },
+      }));
+
+      const result = await m.inboxPromote('2026-05-11-1800-w');
+
+      expect(result.promoted).toBe(false);
+      expect(result.error).toMatch(/collision/i);
+      const onDisk = await m.readMemory('constraints', 'already-taken');
+      expect(onDisk.content.description).toBe('pre-existing memory');
+    });
+
+    it('inboxPromote_unsafeIdOverride_returnsErrorWithoutThrowing', async () => {
+      // F13: inboxPromote's JSDoc promises {promoted:false,error} never-throw —
+      // an unsafe derived memoryId must be caught here, not left to createMemory's
+      // thrown "Invalid id" error.
+      writeInboxFile('2026-05-11-1815-w', makeDraft({ category: 'patterns' }));
+      const m = makeManager();
+
+      const result = await m.inboxPromote('2026-05-11-1815-w', {
+        idOverride: '../../../escape-attempt',
+      });
+
+      expect(result.promoted).toBe(false);
+      expect(result.error).toMatch(/invalid.*id/i);
+    });
+
   });
 
   describe('inboxDiscard', () => {

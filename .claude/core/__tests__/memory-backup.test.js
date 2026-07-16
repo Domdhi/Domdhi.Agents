@@ -2,10 +2,13 @@
 // Covers the pure arg/stamp/prune/integrity-classification helpers. The fs mirror
 // + rotation IO is integration-only.
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { createRequire } from 'node:module';
+import fs from 'node:fs';
+import path from 'node:path';
 
 const require = createRequire(import.meta.url);
+const { createTmpDir } = require('./_helpers/tmp-dir');
 const { parseArgs, dateStamp, fullStamp, snapshotsToPrune, isCorrupt, SNAPSHOT_RE, DEFAULT_DEST } = require('../memory-backup');
 
 describe('parseArgs', () => {
@@ -70,5 +73,70 @@ describe('isCorrupt', () => {
   it('treats any real verdict as corrupt', () => {
     expect(isCorrupt('error: malformed')).toBe(true);
     expect(isCorrupt('*** in database main ***')).toBe(true);
+  });
+});
+
+// F37 (council-260715-2244): main() must source its memory/db paths from
+// _lib/memory-paths.js's memoryPaths() (built on the worktree-safe
+// _lib/project-root.js resolvers) instead of hand-building
+// `path.join(PROJECT_ROOT, 'docs', '.output', '.memory')` /
+// `.../memory-index/memories.db` — the naive hand-built form reintroduces the
+// git-worktree memory-loss bug that memory-paths.js/project-root.js exist to
+// fix (see project memory `worktree-root-retrofit-must-sweep-all-callsites`).
+describe('main() routes memory/db paths through _lib/memory-paths.js (F37)', () => {
+  it('sources memoriesDir/dbPath from memoryPaths(), not a hand-built docs/.output path', () => {
+    const memoryPathsCachePath = require.resolve('../_lib/memory-paths');
+    const projectRootCachePath = require.resolve('../_lib/project-root');
+    const memoryBackupCachePath = require.resolve('../memory-backup');
+    const savedMemoryPaths = require.cache[memoryPathsCachePath];
+    const savedProjectRoot = require.cache[projectRootCachePath];
+    const savedMemoryBackup = require.cache[memoryBackupCachePath];
+
+    const tmp = createTmpDir({ prefix: 'memory-backup-f37-' });
+    tmp.write('src/.memory/patterns/x.json', '{"marker":"f37"}');
+    const jsonRoot = path.join(tmp.root, 'src', '.memory');
+    const dbPath = path.join(tmp.root, 'src', '.state', 'memory-index', 'memories.db');
+    const destDir = path.join(tmp.root, 'dest');
+
+    let calledWithFallback = null;
+
+    require.cache[memoryPathsCachePath] = {
+      id: memoryPathsCachePath, filename: memoryPathsCachePath, loaded: true, children: [], paths: [],
+      exports: {
+        memoryPaths: (fallbackDir) => {
+          calledWithFallback = fallbackDir;
+          return {
+            jsonRoot, dbPath,
+            inboxDir: '', dailyDir: '', conceptsDir: '', pendingDir: '', extractedDir: '', stateRoot: '',
+          };
+        },
+      },
+    };
+    require.cache[projectRootCachePath] = {
+      id: projectRootCachePath, filename: projectRootCachePath, loaded: true, children: [], paths: [],
+      exports: {
+        resolveProjectRoot: (fallbackDir) => fallbackDir,
+        resolveWorktreeRoot: (fallbackDir) => fallbackDir,
+      },
+    };
+    delete require.cache[memoryBackupCachePath];
+
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      const fresh = require('../memory-backup');
+      fresh.main(['--to', destDir, '--no-rotate']);
+
+      expect(calledWithFallback).toBeTruthy(); // memoryPaths() was actually invoked
+      expect(
+        fs.existsSync(path.join(destDir, 'memories-latest', 'memories', 'patterns', 'x.json'))
+      ).toBe(true);
+    } finally {
+      logSpy.mockRestore();
+      require.cache[memoryPathsCachePath] = savedMemoryPaths;
+      require.cache[projectRootCachePath] = savedProjectRoot;
+      if (savedMemoryBackup) require.cache[memoryBackupCachePath] = savedMemoryBackup;
+      else delete require.cache[memoryBackupCachePath];
+      tmp.cleanup();
+    }
   });
 });

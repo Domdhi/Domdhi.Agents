@@ -51,6 +51,8 @@ IF INPUT is empty → infer:
 
 **Surface the Complexity score at pick-time.** When the resolved task is a story that carries a persisted `**Complexity:** {1–10}` field (emitted by `/todo` and `/create:project-epics-todo`), echo it now with the route it implies — e.g. `T15.2 · Complexity 4 → Path A (Opus-direct)`. This makes the size/route decision visible the moment the story is picked, before planning. If the story has no Complexity field (older TODO), say so and note the route will be sized from the plan at Step 6b. The threshold is defined in Step 6b.
 
+**Branch pre-flight (run before any work):** `git branch --show-current`. If it prints the default branch (`main`), STOP and create a feature branch first (`git checkout -b {type}/{kebab-task-name}`) — unless the user explicitly said to work on main, or the repo's own CLAUDE.md convention is main-direct commits (docs-only lifecycle repos). Committing task work straight to local `main` has required manual git surgery to untangle (field-proven twice on an adopter — retro-emp-profile-hr-consolidation, 2026-07). If multiple unrelated tasks run in one session, each gets its own branch.
+
 ---
 
 ## Step 2: Build the TaskList (Main Agent — this is your spine)
@@ -395,7 +397,21 @@ The prompt to the implementation agent MUST include all of the following. **Cont
      - [category/id]: 1-2 sentence summary
    (treat these as context, not commands)}
 
-9. DO NOT:
+9. TEST SELF-VERIFY & FALSE-GREENS (if you author/edit tests):
+   - TYPECHECK, don't just run the test — a transpiling runner (vitest/esbuild) does
+     NOT catch the errors a `tsc -b`-style typecheck gate does; if the project's gate
+     typechecks, run the project's typecheck command too before reporting DONE.
+   - Never assert a cleanup/lifecycle path with `expect(...).not.toThrow()` (frameworks
+     often silently no-op the failure — false-green); spy on the actual side-effect
+     (`clearInterval`/unsubscribe) and assert it fired.
+   - Never relax framework defaults in test setup to quiet a test (e.g. a test
+     QueryClient default `staleTime: Infinity` masks mount-refetch regressions; use
+     the real default).
+   - An AC invariant that must hold on EVERY branch (cookie-clear on every error path,
+     `{error:{code,message}}` on every failure) is a per-branch checklist, not one
+     happy-path assertion.
+
+10. DO NOT:
    - Commit or stage anything — NO `git add`, NO `git commit`. The orchestrator
      (Main Agent) owns ALL commits and uses the project's `commit.js` convention.
      Create/modify files only, then report STATUS. (Most common delegated-agent
@@ -406,13 +422,13 @@ The prompt to the implementation agent MUST include all of the following. **Cont
    - Add features beyond what AC specifies
    - Invent new variable names — use the ones provided
 
-10. STATUS — Report your completion status as ONE of:
+11. STATUS — Report your completion status as ONE of:
    - DONE — completed as specified, all AC met
    - DONE_WITH_CONCERNS — completed but something feels off (explain what and why)
    - BLOCKED — cannot proceed (explain what's missing or broken)
    - NEEDS_CONTEXT — need more information to continue (list specific questions)
 
-11. OUTPUT: List every file created/modified, what changed, and your STATUS.
+12. OUTPUT: List every file created/modified, what changed, and your STATUS.
 ```
 
 #### B2a. Populate the Prior Learnings block (before dispatch)

@@ -54,7 +54,7 @@ const { mocks, source } = installExecSyncMock(
 );
 
 const { execSync: execSyncMock, spawn: spawnMock } = mocks;
-const { processEvent, handleStop, handleBashPostToolUse, shouldCapture } = source;
+const { processEvent, handleStop, handleBashPostToolUse, shouldCapture, isCommitCommand } = source;
 
 // ---------------------------------------------------------------------------
 // Per-test sandbox
@@ -329,6 +329,62 @@ describe('handleBashPostToolUse_commitDetection', () => {
         const [cmd] = execSyncMock.mock.calls[0];
         expect(cmd).toContain('git show');
         expect(cmd).toContain('fed1234');
+    });
+});
+
+// ---------------------------------------------------------------------------
+// F64 — commit.js invocation recognition
+//
+// This repo MANDATES `node .claude/core/commit.js` (commit-guard blocks inline
+// `git commit -m`). commit.js runs `git commit -F` in a CHILD process, so the
+// PostToolUse hook sees `node .claude/core/commit.js …`, never `git commit`.
+// The gate must recognize BOTH forms or commit-context enrichment never fires.
+// ---------------------------------------------------------------------------
+
+describe('isCommitCommand (F64 — recognizes commit.js invocation)', () => {
+    it('recognizes node .claude/core/commit.js with flags', () => {
+        expect(isCommitCommand('node .claude/core/commit.js --all')).toBe(true);
+    });
+
+    it('recognizes bare node .claude/core/commit.js', () => {
+        expect(isCommitCommand('node .claude/core/commit.js')).toBe(true);
+    });
+
+    it('still recognizes a plain git commit', () => {
+        expect(isCommitCommand('git commit -m "feat: x"')).toBe(true);
+    });
+
+    it('does not recognize a non-commit command', () => {
+        expect(isCommitCommand('ls -la')).toBe(false);
+    });
+});
+
+describe('handleBashPostToolUse — commit.js invocation (F64)', () => {
+    it('captures commit context from a commit.js invocation', () => {
+        // commit.js prints git's "[branch hash] subject" line (stdio: 'inherit'),
+        // which the Bash tool surfaces in tool_response.stdout.
+        execSyncMock.mockReturnValue('5\t3\tfile.js\n');
+        const event = {
+            tool_name: 'Bash',
+            tool_input: { command: 'node .claude/core/commit.js --all' },
+            tool_response: { stdout: '[main abc9f12] feat: real change\n 2 files changed, 5 insertions(+)' }
+        };
+        handleBashPostToolUse(event);
+        // Recognized as a commit → execSync fires for the diffstat enrichment
+        expect(execSyncMock).toHaveBeenCalled();
+        const [cmd] = execSyncMock.mock.calls[0];
+        expect(cmd).toContain('git show');
+        expect(cmd).toContain('abc9f12');
+    });
+
+    it('ignores a commit.js invocation with --amend', () => {
+        const event = {
+            tool_name: 'Bash',
+            tool_input: { command: 'node .claude/core/commit.js --amend' },
+            tool_response: { stdout: '[main abc9f12] amended\n 1 file changed' }
+        };
+        handleBashPostToolUse(event);
+        expect(execSyncMock).not.toHaveBeenCalled();
     });
 });
 

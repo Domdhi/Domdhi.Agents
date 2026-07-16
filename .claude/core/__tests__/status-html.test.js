@@ -365,7 +365,7 @@ describe('status-html', () => {
                 sessions: 7,
                 memoryBenchmark: null,
             };
-            const gitMetrics = { activeDays: 21, commitCount: 30, branch: 'main' };
+            const gitMetrics = { commits7d: 21, commitCount: 30, branch: 'main' };
             try {
                 const html = generateHtml([], telemetry, gitMetrics, tmpDir);
                 expect(html).toContain('Command Frequency');
@@ -512,6 +512,47 @@ describe('status-html', () => {
             try {
                 const html = generateHtml(files, null, null, tmpDir);
                 expect(html).toContain('Epic &lt;Alpha&gt; &amp; &quot;Beta&quot;');
+            } finally {
+                fs.rmSync(tmpDir, { recursive: true, force: true });
+            }
+        });
+
+        // ── CR-2.3 / F18+F19: stored XSS via attacker-influenceable Epic ID ──
+        //
+        // e.id is cols[0] from parseMasterIndex() — a raw markdown table cell
+        // from a checked-in TODO_{Project}.md Epic Index, i.e. repo content an
+        // attacker could control. It must be escaped exactly like the sibling
+        // e.title field on the very next cell.
+
+        it('HTML-escapes the epic ID (F18/F19 stored XSS)', () => {
+            const tmpDir = makeTmpDir();
+            const files = [makeFile({
+                type: 'master',
+                epics: [
+                    { id: '<script>alert(document.domain)</script>', title: 'Core Infra', stories: 5, estHours: 12, status: 'done' },
+                ],
+            })];
+            try {
+                const html = generateHtml(files, null, null, tmpDir);
+                expect(html).not.toContain('<script>alert(document.domain)</script>');
+                expect(html).toContain('&lt;script&gt;alert(document.domain)&lt;/script&gt;');
+            } finally {
+                fs.rmSync(tmpDir, { recursive: true, force: true });
+            }
+        });
+
+        it('HTML-escapes an epic ID with an img/onerror payload (F18/F19 stored XSS)', () => {
+            const tmpDir = makeTmpDir();
+            const files = [makeFile({
+                type: 'master',
+                epics: [
+                    { id: '<img src=x onerror=alert(document.domain)>', title: 'Auth', stories: 3, estHours: 8, status: 'in_progress' },
+                ],
+            })];
+            try {
+                const html = generateHtml(files, null, null, tmpDir);
+                expect(html).not.toContain('<img src=x onerror=alert(document.domain)>');
+                expect(html).toContain('&lt;img src=x onerror=alert(document.domain)&gt;');
             } finally {
                 fs.rmSync(tmpDir, { recursive: true, force: true });
             }

@@ -138,7 +138,7 @@ describe('registry-derived ground truth', () => {
 
   it('groupChildren derives findings/evolution children from the registry', () => {
     const g = groupChildren();
-    expect([...g.findings].sort()).toEqual(['investigations', 'research', 'reviews']);
+    expect([...g.findings].sort()).toEqual(['bug-triage', 'investigations', 'research', 'reviews']);
     expect([...g.evolution].sort()).toEqual(['agents', 'canary', 'intake', 'skills', 'triage']);
   });
 

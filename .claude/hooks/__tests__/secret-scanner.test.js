@@ -351,6 +351,51 @@ describe('precommit', () => {
         expect(stderr).toMatch(/AWS Access Key/);
     });
 
+    it.skipIf(!gitAvailable())('precommit_renamedAndModifiedStaged_blocksCommit', () => {
+        // F6 (260716 code review): a rename that ALSO modifies content lands at
+        // git status R (rename), not M. --diff-filter=ACM silently excluded R,
+        // so a secret introduced via `git mv old && edit` skipped the scan.
+        const tmp = createTmpDir();
+        const repo = createGitRepo({ root: tmp.root });
+
+        repo.addCommit({
+            message: 'setup',
+            files: [{ path: 'old.js', content: 'line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n' }],
+        });
+
+        const fakeKey = 'AKIA' + 'FAKETESTKEY1234567';
+        execFileSync('git', ['mv', 'old.js', 'new.js'], { cwd: repo.repoPath, stdio: 'pipe' });
+        fs.appendFileSync(path.join(repo.repoPath, 'new.js'), `export const key = "${fakeKey}";\n`);
+        execFileSync('git', ['add', 'new.js'], { cwd: repo.repoPath, stdio: 'pipe' });
+
+        // Confirm the fixture actually produced a rename (status R), not a
+        // plain modify — otherwise this test would pass for the wrong reason.
+        const status = execFileSync('git', ['diff', '--cached', '--name-status'], { cwd: repo.repoPath, encoding: 'utf8' });
+        expect(status).toMatch(/^R\d+\s/);
+
+        const scannerPath = path.resolve(
+            fileURLToPath(import.meta.url),
+            '..', '..', 'secret-scanner.cjs'
+        );
+        let exitCode = 0;
+        let stderr = '';
+        try {
+            execFileSync('node', [scannerPath, '--git-precommit'], {
+                cwd: repo.repoPath,
+                env: { ...process.env, CLAUDE_PROJECT_DIR: repo.repoPath },
+                stdio: 'pipe',
+            });
+        } catch (err) {
+            exitCode = err.status;
+            stderr = err.stderr?.toString() || '';
+        }
+
+        tmp.cleanup();
+
+        expect(exitCode).not.toBe(0);
+        expect(stderr).toMatch(/AWS Access Key/);
+    });
+
     it.skipIf(!gitAvailable())('precommit_cleanStaged_exits0', () => {
         const tmp = createTmpDir();
         const repo = createGitRepo({ root: tmp.root });

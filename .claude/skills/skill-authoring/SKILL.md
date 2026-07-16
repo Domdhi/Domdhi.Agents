@@ -404,34 +404,17 @@ When in doubt, ask "does this skill own a scaffolded domain-doc template (in `as
 - [ ] `description` leads with what-it-does + keeps the "Use WHEN…" triggering clause (CSO) — never a workflow summary
 - [ ] If a doc-producer: template lives in `assets/` (raw, marker on line 1) and is registered in `SKILL_TEMPLATE_MANIFEST`
 
-## Project additions to a template skill (the `<!-- @@project-additions -->` marker)
+## Project additions to a template skill
 
 Skills are **Template zone** — `template-updater`/`fleet:sync` overwrites them in every
-adopter, so the template stays the single source of truth. The cost: any project-specific
-guidance written *into* a template skill is clobbered on the next sync (the reason the
-crude `skills/brand-guidelines/**` project-zone exception exists).
-
-The section-level escape hatch — the skill analog of the agent Soul-Zone/Project-Context
-merge — is the sentinel line:
-
-```
-<!-- @@project-additions -->
-```
-
-Everything **below** it is adopter-owned and **preserved under `--merge`**; everything
-above is template-owned and refreshed from source. Logic: `_lib/skill-merger.js`, wired
-into `template-updater.js`'s template-zone branch (no marker, or no `--merge` → plain
-overwrite, exactly as before).
-
-**Rules:**
-- Project-specific content (stack quirks, local conventions, project tokens) added to a
-  *template-owned* skill goes **below** the marker — never edit above it (those edits are
-  lost on sync). Prefer a brand-new **project-added skill dir** when the content is
-  substantial — entirely new skill dirs are never touched by sync.
-- Commands that customize template skills (`/review:specialize`, `/sweep`,
-  `/review:evolve-skills`) MUST append below the marker, creating it if absent.
-- A template skill MAY ship an empty marker stub to invite additions; the merger drops a
-  duplicate source stub so the marker never doubles.
+adopter. Project-specific content added to a template skill MUST go inside one of two
+sentinel forms — never edit template-owned prose in place — or it's clobbered on the
+next sync: a whole-tail `<!-- @@project-additions -->` marker for a new section appended
+at EOF, or an anchored `<!-- @@project-additions:start -->`/`:end` fence for a bullet
+inserted INSIDE an existing section (the whole-tail marker can't protect that shape).
+Both are matched only outside documentation code fences. Full doctrine, examples, the
+`fleet:diverge` interaction, and a live bug this fixed:
+`references/project-additions-marker.md`.
 
 ## The Law (evidence bookends the work)
 

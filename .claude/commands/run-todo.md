@@ -50,7 +50,7 @@ Identify:
 - Stories `[!]` blocked → skip, report at end
 - Stories `[ ]` pending → execute
 
-If no Wave Plan exists in the TODO → compute one now (same rules: zero file overlap, dependency order).
+If no Wave Plan exists in the TODO → compute one now (same rules: zero file overlap, dependency order). Refinement for *symmetric* file collisions (two stories share a file but neither consumes the other's output): serialize them **within** the same wave — commit story A, then story B starts from the committed state — rather than paying a whole extra wave for what is only a merge-conflict risk, not a sequencing requirement. Asymmetric data dependencies still require hard wave sequencing.
 
 ### 3. Check for existing execution plan
 
@@ -122,6 +122,12 @@ TaskCreate: "Organize + report" (blockedBy: verify)
 ```
 
 **The dependency chain is the execution plan.** If Main Agent loses context, the TaskList tells it exactly where it is and what's next.
+
+> **⚠ Breaking-rename wave collapse.** If an early story REMOVES a public member (an enum value, a model field, an interface member) that later-wave files still consume, per-wave build gating is **impossible** in a statically-typed/compiled stack — the whole solution compiles together, so deleting the old member reds the build for every wave until the last one lands. Detect this at plan time and pick a shape by blast radius, do NOT chase per-wave gates:
+> - **Shape A (large — many files / a persisted column / a schema-version bump):** *additive coexistence.* Introduce the new surface alongside the old (build stays green), flip consumers wave by wave (each consumer story co-owns its own test updates — a rename breaks test COMPILATION in lockstep, so role-split Tests/Code/Verify is impossible), then delete the old member in a single **atomic cutover story** at the end, orchestrator-direct, gated once. Make any data migration idempotent + legacy-row-detecting; defer version-constant bumps to the cutover.
+> - **Shape B (small — few consumers / an empty table / no data migration):** skip additive; land ALL stories in **one atomic build-coherent commit** — orchestrator owns entity/config/migrations/docs + the breaking removal while parallel agents author the DISJOINT consumer files against a shared interface contract (exact signatures handed to each), gate once.
+>
+> Either shape: the cutover/landing legitimately exceeds the per-agent file cap — a member deletion cannot be partial and still compile, and the cap exists to stop background-agent compaction, not to bound orchestrator-direct mechanical removals.
 
 ### Step 3: Write execution plan file — PERSIST BEFORE EXECUTION
 
@@ -259,6 +265,7 @@ For each story in the wave with testable AC:
 |-----------------|----------|-----------|
 | **1 story** | Main Agent implements directly | No parallelism benefit from delegation |
 | **All XS stories** | Main Agent implements sequentially | Delegation overhead exceeds XS task cost |
+| **Patch text 100% pre-specified (any size)** | Main Agent implements directly (Path A) | Size-independent trigger: when `/todo` research already produced verbatim, verified patch text (incl. tests) for every story, there is no interpretation left to delegate — Path B's value IS independent interpretation. Field-proven in mfahub-harvest (S and M stories, retro `retro-mfahub-harvest.md`) |
 | **2+ stories, all ≤ S (≤ ~40 tests each)** | One-round dispatch — see fast-path below | Tests + refactor combined in single agent call; saves a round. **Opt-in.** |
 | **2+ stories, any S/M/L** | Delegate to Sonnet agents in parallel (Path B, two-round default) | Parallelism justifies delegation overhead |
 
@@ -277,7 +284,7 @@ Enable explicitly per wave: declare in the plan file (`Strategy: one-round dispa
 
 ---
 
-### Path A: Main Agent Implements Directly (single-story or all-XS waves)
+### Path A: Main Agent Implements Directly (single-story, all-XS, or fully-pre-specified waves)
 
 `TaskUpdate: "Wave {N}: Story {ID}" → in_progress`
 
@@ -294,6 +301,13 @@ After all stories complete → proceed to Step 5 (gate).
 ### Path B: Delegate to Sonnet (multi-story waves with S+ stories)
 
 For each story in the wave, dispatch dev agents in parallel. Tests were already written by Main Agent in Step 2b — dev agents implement to pass them.
+
+**Story-class AC requirements (fold into the dispatch prompt when the story matches).** Three story classes have a proven failure mode — the agent fixes the *named* sites, ships green, and the real surface stays open (this recurred in all three waves of the codereview-260715 remediation; only adversarial review caught it). The dispatch prompt MUST add the matching requirement:
+- **Guard/validate an id/path/input at entry points** → "guard EVERY function that builds a path/decision from this value — siblings in the same file (e.g. inbox promote/discard next to CRUD verbs), and any duplicate/shadow implementation in a hook or CLI; confirm the fix reaches the RUNTIME caller with a test that drives the live entry point, not just the `_lib` unit."
+- **Symlink/traversal-safety** → "guard the ANCESTOR chain (with a root boundary), not just the leaf; cover every READ site as well as write sites; one regression test per named finding ID."
+- **Guard-hardening / bypass fixes** → "enumerate the whole evasion class in the AC (line-continuation, wrapper prefix, global-option prefix, heredoc-quoting, absolute-path/basename) — closing one form with siblings open is not done."
+- **Data-model/metric refactors** → "corpus-scan the real store to prove the field read actually holds the value; never change a test fixture to match the new read without an explicit before/after-value justification."
+Additionally: if a dev agent self-flags an architectural gap in an inbox memory draft, treat that as a BLOCKING concern on its story — not a footnote to ship past.
 
 **Parallel count-assertion rule (must be in every dispatch prompt for the wave).** When the wave fans out N agents that each add one item to a *globally-counted* list guarded by an architecture/structure test (nav-item count, registered-service count, `hub-card` count, RoleEntityType count), each dispatch prompt MUST instruct the agent **not to touch that count assertion**. Each agent independently bumping it `+1` yields a final count wrong by N — the classic `61→62` three times when the answer was `64`. The orchestrator reconciles the single correct total once at merge (failure-mode #3 in Step 4b is *orchestrator*-owned, not per-agent). Per-story local assertions (the agent's own new test) are still the agent's job — this rule is only for assertions that count across the whole accumulated set.
 
@@ -370,6 +384,26 @@ literal shows up incidentally in dates/labels/IDs and the test passes even when 
 real count is wrong. This exact anti-pattern slipped past dev agents twice in one
 coverage epic — assert the labelled value, e.g. `toContain('Concept articles:  1')`
 or `toMatch(/\(2 commits, \d+ files\)/)`.
+
+TEST SELF-VERIFY & FALSE-GREENS (R6c) — for any story that authors or edits tests,
+before reporting DONE:
+- TYPECHECK, don't just run the test. A transpiling runner (vitest/esbuild, ts-jest
+  isolatedModules) does NOT catch the type errors a `tsc -b`-style gate does — a suite
+  green in your shell can be red at the gate. If the project's gate typechecks, run the
+  project's typecheck command IN ADDITION to running the test.
+- Never assert a cleanup/lifecycle path with `expect(...).not.toThrow()` — it's a
+  false-green (e.g. React 18/19 silently no-ops setState on an unmounted component, so
+  the assertion passes even if the `clearInterval`/`removeEventListener`/unsubscribe
+  cleanup is deleted). Spy on the actual side-effect and assert it fired.
+- Never relax framework defaults in test setup to quiet a test (e.g. a test QueryClient
+  default `staleTime: Infinity` masks mount-refetch regressions — a component whose own
+  `staleTime` line is deleted still passes). Use the real defaults and let the code
+  under test's own config govern.
+- ALL-BRANCH INVARIANTS: when an AC states something that must hold on EVERY branch
+  (a cookie clear on every error path, an `{error:{code,message}}` shape on every
+  failure return), test each branch explicitly as a per-branch checklist — one
+  happy-path assertion is not coverage of an all-branches invariant (field case: an
+  oauth callback cleared cookies on only 4 of 8 branches under exactly this gap).
 
 DO NOT TOUCH: {files owned by other stories in this wave}
 
@@ -525,6 +559,7 @@ If the project's E2E suite is slow/flaky or environment-bound (e.g. headed Chrom
 - **Pass** (every suite the wave touched is green, the E2E leg passed or was legitimately skipped on a no-contract-change wave, and `gate.js test` did not report `zeroCollected`) → proceed to Step 6
 - **Fail** → diagnose, fix directly (Main Agent), re-run gate
 - **3 consecutive failures** → stop, report what's broken, ask user
+- **Gate-hang escalation.** If a gate run hits its timeout ceiling (e.g. a 20-minute build hang) **twice in a row**, treat it as an infra signal, not a code signal: kill the run, capture whatever cause is discoverable (last log lines, stuck process, disk/lock state), retry ONCE, and — whether or not the retry passes — record a root-cause note (or an explicit "cause unknown, symptoms: …") in the plan file's Wave Execution Log. (Field case: two silent 20-minute hangs cost an adopter session ~an hour with nothing recorded for the retro to learn from.)
 - **NEVER proceed past a failed gate.** Note the gate now **fails closed on a zero-collected test run** (a real runner that exits 0 having collected 0 tests is a FAIL, not a pass) — if you hit that, the suite isn't actually running; fix the runner, don't wave it through. (Requires the upstream `testPassed`/`isZeroCollected` fix; an adopter on an older template may still false-green here — verify with `npm test` directly until it's synced.)
 
 `TaskUpdate: "Wave {N}: Build + Test gate" → completed`
@@ -566,6 +601,7 @@ Only after spec passes. Check:
 - No hardcoded values that should be configurable
 - Test coverage matches AC bullets (each AC has a corresponding test)
 - File responsibility — no god files doing everything
+- **New anti-recurrence tooling gets adversarial fixtures.** When a story ships a scanner, lint gate, or regression-test generator meant to permanently prevent a defect class, its test suite must include *evasive* fixtures — the guard/pattern name appearing only in a comment or string literal, chained/aliased call syntax, variable-held instead of literal arguments — not just the gated/ungated happy-path shapes it was built to catch. (Field case: an adopter's authz scanner shipped with happy-path tests only; a CRITICAL comment-bypass false negative surfaced one day later.)
 - **If a story added a new canonical/shared type** (one introduced specifically to stop hand-duplication elsewhere), grep the repo for pre-existing hand-duplicated versions of that exact type and consolidate them onto the new canonical one now.
 
 **Any AC not met → targeted fix, then re-verify that AC only. Do not re-run the entire wave.**
@@ -636,6 +672,19 @@ Agent(
     verify both files agree on who performs each write. A single wave's diff can look
     correct in isolation while contradicting a sibling wave's file — that seam is only
     visible from here, not from either wave's own review.
+  - CLASS CLOSURE (mandatory when a story fixes a bug class, not a one-off): name the
+    defect CLASS the story closes (missing ownership check, unsafe date formatting,
+    un-gated error message, hand-rolled helper, ...) and run a repo-wide grep for the
+    pattern — explicitly including parallel component/route trees, server-side copies
+    of the same logic, sibling API endpoints on the same table family, and tool/schema
+    mirrors. Every surviving instance is a finding. (Field case: a 2026-07-16
+    post-remediation sweep on an adopter found 7 of 16 MAJORs were siblings the
+    story-scoped fix missed.)
+  - VERIFY THE PROPERTY, NOT THE AC: an AC can specify the bug it means to close
+    (one adopter's AC literally spec'd a SELECT-then-write idempotency shape — itself
+    a check-then-act race). State the property the story exists to establish
+    (idempotent, race-free, owner-scoped, hydration-stable) and verify the code has
+    that property; AC compliance alone is not a pass.
 
   Classify findings: CRITICAL / MAJOR / MINOR / NIT.
   EVERY finding, CRITICAL down to NIT, must be fixed before commit — no

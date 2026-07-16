@@ -277,6 +277,127 @@ describe('scanContent', () => {
         });
     });
 
+    // F76 — unquoted key=value / YAML key: value coverage. The generic
+    // Password/Secret Assignment fallback previously required a QUOTED value
+    // (['"][^'"]{8,}['"]), missing the most common real-world unquoted forms:
+    // shell `export KEY=value`, .properties/.ini `key=value`, and YAML
+    // `key: value`. Guarded against false-positive explosion by requiring a
+    // secret-ish key name AND a minimum unquoted value length (8 chars).
+    describe('scanContent_unquotedAssignment', () => {
+        it('scanContent_shellExportPassword_detected', () => {
+            const content = 'export DB_PASSWORD=SuperSecretPass123';
+            const findings = scanContent(content, '.env.sh');
+            expect(findings.map(f => f.name)).toContain('Password Assignment (Unquoted)');
+        });
+
+        it('scanContent_propertiesFilePassword_detected', () => {
+            const content = 'db.password=SuperSecretPass123';
+            const findings = scanContent(content, 'application.properties');
+            expect(findings.map(f => f.name)).toContain('Password Assignment (Unquoted)');
+        });
+
+        it('scanContent_iniFilePassword_detected', () => {
+            const content = '[database]\npassword=SuperSecretPass123';
+            const findings = scanContent(content, 'config.ini');
+            expect(findings.map(f => f.name)).toContain('Password Assignment (Unquoted)');
+        });
+
+        it('scanContent_yamlPassword_detected', () => {
+            const content = 'password: SuperSecretPass123';
+            const findings = scanContent(content, 'config.yaml');
+            expect(findings.map(f => f.name)).toContain('Password Assignment (Unquoted)');
+        });
+
+        it('scanContent_yamlApiKey_detected', () => {
+            const content = 'api_key: aB3xK9mP2qR7tY1wZ5nL8vC4';
+            const findings = scanContent(content, 'config.yaml');
+            expect(findings.map(f => f.name)).toContain('Secret Assignment (Unquoted)');
+        });
+
+        it('scanContent_shellExportSecret_detected', () => {
+            const content = 'export CLIENT_SECRET=aB3xK9mP2qR7tY1wZ5nL8vC4';
+            const findings = scanContent(content, '.env.sh');
+            expect(findings.map(f => f.name)).toContain('Secret Assignment (Unquoted)');
+        });
+
+        it('scanContent_benignCountAssignment_noDetection', () => {
+            const content = 'count=5';
+            const findings = scanContent(content, 'app.properties');
+            expect(findings.map(f => f.name)).not.toContain('Password Assignment (Unquoted)');
+            expect(findings.map(f => f.name)).not.toContain('Secret Assignment (Unquoted)');
+        });
+
+        it('scanContent_benignYamlName_noDetection', () => {
+            const content = 'name: bob';
+            const findings = scanContent(content, 'config.yaml');
+            expect(findings.map(f => f.name)).not.toContain('Password Assignment (Unquoted)');
+            expect(findings.map(f => f.name)).not.toContain('Secret Assignment (Unquoted)');
+        });
+
+        it('scanContent_unquotedShortValue_belowMinLength_noDetection', () => {
+            // "short" is 5 chars — below the 8-char minimum
+            const content = 'pwd=short';
+            const findings = scanContent(content, 'app.ini');
+            expect(findings.map(f => f.name)).not.toContain('Password Assignment (Unquoted)');
+        });
+
+        it('scanContent_unquotedPlaceholderValue_changeme_noDetection', () => {
+            const content = 'password=changeme';
+            const findings = scanContent(content, 'app.properties');
+            expect(findings.map(f => f.name)).not.toContain('Password Assignment (Unquoted)');
+        });
+
+        it('scanContent_unquotedPwdPresentWorkingDir_noDetection_W2_3', () => {
+            // W2-3: an UNQUOTED `pwd=/path` is the present-working-dir env var
+            // (an env-dump line), never a password — `pwd` was dropped from the
+            // unquoted Password variant (it stays in the QUOTED one). The value
+            // here is long enough (≥8 chars) that the pre-fix pattern, which
+            // included `pwd`, WOULD have flagged it as a false positive.
+            const content = 'pwd=/home/user/projects/deep/nested/dir';
+            const findings = scanContent(content, 'env-dump.txt');
+            expect(findings.map(f => f.name)).not.toContain('Password Assignment (Unquoted)');
+        });
+
+        it('scanContent_unquotedRealPassword_stillDetected_W2_3_regressionGuard', () => {
+            // The W2-3 tightening must not weaken real detection: a genuine
+            // unquoted `password=<secret>` still blocks.
+            const content = 'password=Sup3rS3cretValue!';
+            const findings = scanContent(content, 'app.properties');
+            expect(findings.map(f => f.name)).toContain('Password Assignment (Unquoted)');
+        });
+
+        it('scanContent_unquotedEnvVarReference_noDetection', () => {
+            // A shell variable reference used as the value, not a literal secret
+            const content = 'password=$DB_PASSWORD';
+            const findings = scanContent(content, 'app.sh');
+            expect(findings.map(f => f.name)).not.toContain('Password Assignment (Unquoted)');
+        });
+
+        it('scanContent_unquotedValue_doesNotDoubleMatchQuotedForm', () => {
+            // A quoted value must not ALSO trip the unquoted pattern
+            const content = 'password="SuperSecretPass123"';
+            const findings = scanContent(content, 'config.js');
+            const names = findings.map(f => f.name);
+            expect(names).toContain('Password Assignment');
+            expect(names).not.toContain('Password Assignment (Unquoted)');
+        });
+
+        // Placeholder/false-positive guard — "example" and "xxx" style dummy
+        // values are recognized dummy words (PLACEHOLDER_PATTERNS), same
+        // allowlist the quoted patterns already rely on.
+        it('scanContent_unquotedPlaceholderValue_exampleWord_noDetection', () => {
+            const content = 'password=example';
+            const findings = scanContent(content, 'app.properties');
+            expect(findings.map(f => f.name)).not.toContain('Password Assignment (Unquoted)');
+        });
+
+        it('scanContent_unquotedPlaceholderValue_xxxRepeated_noDetection', () => {
+            const content = 'api_key=xxxxxxxx';
+            const findings = scanContent(content, 'config.yaml');
+            expect(findings.map(f => f.name)).not.toContain('Secret Assignment (Unquoted)');
+        });
+    });
+
     describe('scanContent_jsonQuotedAssignment', () => {
         // Regression: JSON config writes the key name in quotes ("api_key": "…"),
         // which put a quote between the key and the `:` separator and slipped the
@@ -638,6 +759,31 @@ describe('redactSecretsInText', () => {
         expect(result).toMatch(/^before\n/);
         expect(result).toMatch(/\nafter$/);
         expect(result).toContain('<REDACTED:AWS Access Key>');
+    });
+
+    // F76 — unquoted assignment must be redacted too, not just detected.
+    it('redactSecretsInText_unquotedShellExportPassword_redacted', () => {
+        const content = 'export DB_PASSWORD=SuperSecretPass123';
+        const result = redactSecretsInText(content);
+
+        expect(result).not.toContain('SuperSecretPass123');
+        expect(result).toContain('<REDACTED:Password Assignment (Unquoted)>');
+    });
+
+    it('redactSecretsInText_unquotedYamlSecret_redacted', () => {
+        const content = 'api_key: aB3xK9mP2qR7tY1wZ5nL8vC4';
+        const result = redactSecretsInText(content);
+
+        expect(result).not.toContain('aB3xK9mP2qR7tY1wZ5nL8vC4');
+        expect(result).toContain('<REDACTED:Secret Assignment (Unquoted)>');
+    });
+
+    it('redactSecretsInText_unquotedPlaceholder_notRedacted', () => {
+        // Placeholder/false-positive guard on the redaction path too.
+        const content = 'password=changeme';
+        const result = redactSecretsInText(content);
+
+        expect(result).toBe(content);
     });
 
 });

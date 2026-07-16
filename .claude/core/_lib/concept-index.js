@@ -13,7 +13,7 @@
 
 const fs = require('fs').promises;
 const path = require('path');
-const { parseFrontmatter } = require('./frontmatter');
+const { scanConceptFiles } = require('./concept-reader');
 
 const DEFAULT_CONFIDENCE = 0.6;
 
@@ -36,8 +36,11 @@ function confidenceIndicator(conf) {
  * @param {string}   deps.conceptsDir
  * @param {string[]} deps.categories
  * @param {(iso: string) => string} deps.formatDateOnly
+ * @param {Array}    [deps.conceptScan]  Shared per-run tree scan (F4) — pass
+ *                   scanConceptFiles()'s result so the compile pipeline reads
+ *                   the tree once; omitted → this function walks it itself.
  */
-async function generateIndex(concepts, { conceptsDir, categories, formatDateOnly }) {
+async function generateIndex(concepts, { conceptsDir, categories, formatDateOnly, conceptScan }) {
     const now = new Date().toISOString();
     const today = formatDateOnly(now);
 
@@ -49,33 +52,26 @@ async function generateIndex(concepts, { conceptsDir, categories, formatDateOnly
         }
     }
 
-    // Merge in existing on-disk concepts that weren't in this compile run
-    for (const cat of categories) {
-        const catDir = path.join(conceptsDir, cat);
-        try {
-            const files = await fs.readdir(catDir);
-            const existingSlugs = new Set(byCategory[cat].map(c => c.filename));
-            for (const file of files) {
-                if (!file.endsWith('.md') || existingSlugs.has(file)) continue;
-                try {
-                    const content = await fs.readFile(path.join(catDir, file), 'utf-8');
-                    const fm = parseFrontmatter(content);
-                    if (fm) {
-                        const summaryMatch = content.match(/## Summary\s*\n+(?:> \[!abstract\][^\n]*\n)?> ?([^\n]+)/);
-                        const plainMatch = content.match(/## Summary\s*\n+([^\n>]+)/);
-                        const description = (summaryMatch ? summaryMatch[1].trim() : plainMatch ? plainMatch[1].trim() : fm.title || file.replace('.md', '')).slice(0, 120);
-                        byCategory[cat].push({
-                            title: fm.title || file.replace('.md', ''),
-                            category: cat,
-                            filename: file,
-                            slug: file.replace('.md', ''),
-                            description,
-                            confidence: fm.confidence ? parseFloat(fm.confidence) : DEFAULT_CONFIDENCE,
-                        });
-                    }
-                } catch { /* skip unreadable files */ }
-            }
-        } catch { /* category dir may not exist */ }
+    // Merge in existing on-disk concepts that weren't in this compile run.
+    // F4: sourced from the shared per-run scan when provided (one tree read
+    // per compile), else a local walk for standalone callers.
+    const scan = conceptScan || await scanConceptFiles({ conceptsDir, categories });
+    const existingByCat = {};
+    for (const cat of categories) existingByCat[cat] = new Set(byCategory[cat].map(c => c.filename));
+    for (const { slug, filename, category, content, fm } of scan) {
+        if (!byCategory[category] || existingByCat[category].has(filename)) continue;
+        const summaryMatch = content.match(/## Summary\s*\n+(?:> \[!abstract\][^\n]*\n)?> ?([^\n]+)/);
+        const plainMatch = content.match(/## Summary\s*\n+([^\n>]+)/);
+        const description = (summaryMatch ? summaryMatch[1].trim() : plainMatch ? plainMatch[1].trim() : fm.title || slug).slice(0, 120);
+        byCategory[category].push({
+            title: fm.title || slug,
+            category,
+            filename,
+            slug,
+            description,
+            confidence: fm.confidence ? parseFloat(fm.confidence) : DEFAULT_CONFIDENCE,
+        });
+        existingByCat[category].add(filename);
     }
 
     let totalConcepts = 0;
@@ -179,8 +175,9 @@ async function generateIndex(concepts, { conceptsDir, categories, formatDateOnly
  * @param {object} deps
  * @param {string}   deps.conceptsDir
  * @param {string[]} deps.categories
+ * @param {Array}    [deps.conceptScan]  Shared per-run tree scan (F4); omitted → local walk.
  */
-async function injectRelatedConcepts(_writtenConcepts, { conceptsDir, categories }) {
+async function injectRelatedConcepts(_writtenConcepts, { conceptsDir, categories, conceptScan }) {
     const crossRefPath = path.join(conceptsDir, 'cross-references.json');
     let crossRefMap;
     try {
@@ -190,22 +187,12 @@ async function injectRelatedConcepts(_writtenConcepts, { conceptsDir, categories
         return; // No cross-references to inject
     }
 
-    // Build slug → {title, category} lookup from all concept files
+    // Build slug → {title, category} lookup from all concept files (F4: from
+    // the shared scan when provided instead of a third tree walk per compile).
+    const scan = conceptScan || await scanConceptFiles({ conceptsDir, categories });
     const conceptLookup = new Map();
-    for (const cat of categories) {
-        const catDir = path.join(conceptsDir, cat);
-        try {
-            const files = await fs.readdir(catDir);
-            for (const file of files) {
-                if (!file.endsWith('.md')) continue;
-                const slug = file.replace('.md', '');
-                try {
-                    const content = await fs.readFile(path.join(catDir, file), 'utf-8');
-                    const fm = parseFrontmatter(content);
-                    if (fm) conceptLookup.set(slug, { title: fm.title || slug, category: cat });
-                } catch { /* skip */ }
-            }
-        } catch { /* skip */ }
+    for (const { slug, category, fm } of scan) {
+        conceptLookup.set(slug, { title: fm.title || slug, category });
     }
 
     let injected = 0;

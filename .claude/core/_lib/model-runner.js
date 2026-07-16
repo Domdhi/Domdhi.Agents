@@ -18,18 +18,23 @@
  *   - pass opts.model to a single invokeModel() call (highest priority).
  */
 
-const { execSync } = require('child_process');
+// NOTE: intentionally `require('child_process')`, not `'node:child_process'` — the
+// consumer test suites (memory-curator/-benchmark/-extractor) mock this module via
+// require.cache injection keyed on the bare specifier 'child_process'; the 'node:'
+// prefix resolves to a DIFFERENT cache key and would silently bypass those mocks.
+const { execSync, execFileSync } = require('child_process');
 
 const DEFAULT_MODEL = process.env.CLAUDE_MEMORY_MODEL || 'claude-sonnet-4-6';
 const DEFAULT_TIMEOUT_MS = 90_000;
 const MAX_BUFFER_BYTES = 10 * 1024 * 1024;
 
-// A model flag is interpolated unquoted into the shelled `claude -p …` command
-// (the prompt is single-quote-escaped; the model must be too). Rather than quote
-// it, constrain it to the characters real model IDs use (e.g. claude-sonnet-4-6,
-// claude-opus-4-8) — anything with shell metacharacters is rejected, so the model
-// can never break out of the command. Config/env-sourced, so a bad value is a
-// config error surfaced as an invocation failure (null), not a thrown exception.
+// invokeModel delivers argv to execFileSync — no shell, so the prompt and model
+// can never be interpreted as shell metacharacters (was the win32 RCE: cmd.exe
+// ignores single quotes, so bash-only escaping left `&|^%<>"'` live). The model
+// flag is still constrained to the characters real model IDs use (e.g.
+// claude-sonnet-4-6, claude-opus-4-8) as defense-in-depth / input validation —
+// a bad value is a config error surfaced as an invocation failure (null), not a
+// thrown exception.
 const SAFE_MODEL_RE = /^[A-Za-z0-9._:-]+$/;
 
 /**
@@ -59,17 +64,17 @@ function checkClaudeCli() {
  * @returns {string|null}
  */
 function invokeModel(prompt, { cwd, timeout = DEFAULT_TIMEOUT_MS, model = DEFAULT_MODEL, logTag = 'model-runner' } = {}) {
-    // Reject a model that isn't a plain model ID before it reaches the shell — this
-    // closes the `--model ${model}` injection (the model was the one unescaped
-    // interpolation; the prompt is escaped below).
+    // Reject a model that isn't a plain model ID before spawning — argv delivery
+    // already prevents injection, but this catches a malformed/garbage config
+    // value early with a clear failure instead of an opaque CLI error.
     if (!SAFE_MODEL_RE.test(String(model))) {
         if (logTag) process.stderr.write(`[${logTag}] refusing unsafe model id: ${JSON.stringify(model)}\n`);
         return null;
     }
-    const escapedPrompt = String(prompt).replace(/'/g, "'\\''");
     try {
-        return execSync(
-            `claude -p '${escapedPrompt}' --model ${model} --allowedTools Read --output-format json --bare`,
+        return execFileSync(
+            'claude',
+            ['-p', String(prompt), '--model', model, '--allowedTools', 'Read', '--output-format', 'json', '--bare'],
             {
                 cwd,
                 encoding: 'utf8',

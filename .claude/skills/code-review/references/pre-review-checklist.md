@@ -151,6 +151,17 @@ A diff that **moves** a pattern, rule, or regex between tiers/files (or refactor
 - When a regex/pattern is moved or edited, confirm there is a **matcher test asserting it still matches the canonical command/input** it is meant to catch — test the form the tool emits *by default*, not a contrived variant. (e.g. a guardrail `Remove-Item .+-Recurse .+-Force` rule silently never matched the canonical single-space `Remove-Item foo -Recurse -Force`; it rode along through a tier-move with zero coverage.)
 - When a rule moves between a **hard tier and a softer/escalatable tier**, verify the precedence is still correct — a hard-block invariant must not become reachable through a softer tier that happens to match the same input.
 
+## Gated File Access — Verify the Write Path and the Read Gate Agree
+
+A confidential file-serving feature can ship with the read-side authorizer fully correct and still be completely bypassed, because the write side stores the file somewhere the authorizer never checks. Two independently-correct pieces of code (an upload call site, an endpoint authorize delegate) can each look right in isolation and still leave a live access-control gap between them.
+
+- **Trace where the uploader actually stores the bytes, then confirm that literal path is under the SAME configured base path the read-side authorizer checks** — don't accept "the authorizer looks correct" as sufficient. Grep both the upload call site and the authorizer for the config key they each resolve and confirm they're the same key, not just visually similar values.
+- **Generic upload components have no per-entity subfolder by default.** A shared upload component typically writes to one fixed, generic base path, often served by a permissive/no-extra-authorization route for the wider app. A confidential feature that reuses a generic uploader without redirecting its target path silently lands files in the more-permissive tree.
+- **A "download URL" that returns null is a signal, not just a bug.** If a gated download-link builder prefix-strips the gated base path and always returns `null`, that's often proof the file never landed there in the first place — investigate the write path before assuming it's merely a broken link.
+- **A hand-crafted-path test on the authorizer alone does not prove the feature is safe.** A test that calls the authorizer with a synthetic path verifies the authorizer's logic but never proves a real upload reaches that path. For any new gated-file feature, require (or add) an end-to-end test: real upload → assert the resulting stored path is under the gated base path.
+
+(Field-proven on an adopter project, 2026-07: config keys and the project's uploader/storage-mapping architecture live in that project's own skill — this section is the project-agnostic technique.)
+
 ## Red Flags — Never Do These
 
 - Skip review because "it's simple"

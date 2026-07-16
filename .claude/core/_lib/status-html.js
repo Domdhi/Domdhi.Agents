@@ -149,7 +149,7 @@ function generateHtml(files, telemetry, gitMetrics, outputDir, memMetrics = null
             epicRows = `<table class="epic-table">
         <tr><th>Epic</th><th>Title</th><th>Stories</th><th>Est.</th><th>Status</th></tr>
         ${f.epics.map(e => `<tr>
-          <td>${e.id}</td>
+          <td>${esc(e.id)}</td>
           <td>${esc(e.title)}</td>
           <td>${e.stories}</td>
           <td>${e.estHours}h</td>
@@ -179,7 +179,7 @@ function generateHtml(files, telemetry, gitMetrics, outputDir, memMetrics = null
     }
 
     // Build metrics card
-    const commitVelocity = gitMetrics ? gitMetrics.activeDays : 0;
+    const commitVelocity = gitMetrics ? gitMetrics.commits7d : 0;
     const sessions = telemetry ? telemetry.sessions : 0;
     const memoryBenchmark = telemetry ? telemetry.memoryBenchmark : null;
 

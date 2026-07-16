@@ -74,6 +74,7 @@ const { appendJsonl: appendJsonlLib } = require('../core/_lib/jsonl-writer');
 const { readHookInput } = require('../core/_lib/hook-input');
 const { getJsonlPath } = require('../core/_lib/telemetry-paths');
 const { readSummary } = require('../core/_lib/gate-summary');
+const { resolveProjectRoot } = require('../core/_lib/project-root');
 
 function resolveSessionId(parsedJson) {
     return process.env.CLAUDE_CODE_SESSION_ID || parsedJson?.session_id || null;
@@ -92,7 +93,12 @@ function resolveSessionId(parsedJson) {
 // reload the module. The real hook invocation path is unaffected — the env var
 // is either set by Claude Code or the __dirname fallback kicks in.
 function getProjectRoot() {
-    return process.env.CLAUDE_PROJECT_DIR || path.resolve(__dirname, '..', '..');
+    // F72-class sibling (CR-3.1 sweep): command-usage.jsonl is a gitignored
+    // `.state/` telemetry file shared across linked worktrees — anchor to the
+    // git-common-dir via resolveProjectRoot (still reads CLAUDE_PROJECT_DIR at
+    // call time, so per-test lazy resolution is preserved) rather than the
+    // naive __dirname fallback that loses history into a worktree-local path.
+    return resolveProjectRoot(path.resolve(__dirname, '..', '..'));
 }
 
 // command-usage.jsonl is the longitudinal record consumed by /retro, /status,

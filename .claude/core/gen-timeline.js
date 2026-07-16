@@ -12,7 +12,8 @@
 
 const fs = require('fs');
 const path = require('path');
-const { execSync } = require('child_process');
+const { execFileSync } = require('child_process');
+const { DOC_PATHS } = require('./constants');
 
 // ── Date helpers (timezone-safe, uses local date strings) ───────────────────
 
@@ -181,11 +182,41 @@ function mergeTimeline(newWeeksText, oldWeeksText) {
     return out;
 }
 
+// ── Ref safety (F33 / M5) ────────────────────────────────────────────────────
+//
+// Git ref names legally ALLOW shell metacharacters ($ ( ) ` ; | & and more —
+// unlike filenames, `git check-ref-format` does not forbid them). `--base <ref>`
+// (default 'HEAD') used to be string-interpolated into an `execSync` shell
+// command, so a hostile ref (`x$(touch PROOF)`) achieved RCE the moment the
+// gate ran. The primary fix is argv-mode `execFileSync` below (the ref is
+// delivered as ONE argv element, never re-parsed by a shell); this validation
+// is defense-in-depth on top of that — reject anything containing a shell
+// metacharacter or whitespace so a hostile/malformed --base value fails loudly
+// and immediately instead of being silently accepted.
+//
+// M5: a leading `-` is ALSO rejected. Argv-mode kills shell RCE, but git itself
+// still parses a leading-dash argv element as a FLAG, not a revision — e.g.
+// `--base '--output=/path/to/file'` makes `git log … --output=/path/to/file`
+// write git-log content to an arbitrary file (confirmed: `git log --output=<f>`
+// really does this). `git check-ref-format` itself forbids a ref from starting
+// with `-`, so rejecting it here costs no legitimate ref. This is layered with
+// (not a substitute for) the `--end-of-options` guard at the execFileSync call
+// site below, which neutralizes flag-injection even for any value that slips
+// past this check (e.g. inside a `hash..ref` range, where the ref itself can't
+// start the whole argv element).
+
+function assertSafeRef(ref) {
+    if (/[\s$`;|&()]/.test(ref) || ref.startsWith('-')) {
+        console.error(`[gen-timeline] refusing --base "${ref}": contains shell/ref-hostile characters ($ ( ) \` ; | & or whitespace) or a leading "-" (git-flag injection).`);
+        process.exit(1);
+    }
+}
+
 // ── Main ────────────────────────────────────────────────────────────────────
 
 function main() {
     const projectDir = process.env.CLAUDE_PROJECT_DIR || path.resolve(__dirname, '..', '..');
-    const timelinePath = path.join(projectDir, 'docs', 'work/timeline.md');
+    const timelinePath = path.join(projectDir, 'docs', DOC_PATHS.timeline);
 
     // Parse argv: a positional mode (full|update) plus an optional `--base <ref>`.
     // Default base is HEAD (always valid on the current branch) — the old hardcoded
@@ -199,23 +230,35 @@ function main() {
         if (a.startsWith('--')) continue;
         positional.push(a);
     }
+    assertSafeRef(baseRef);
     const mode = positional[0] || (fs.existsSync(timelinePath) ? 'update' : 'full');
 
     // ── Gather git data ─────────────────────────────────────────────────────
+    //
+    // F33: baseRef (and, in update mode, the `hash..baseRef` range) is passed as
+    // a single argv element to execFileSync — NEVER string-interpolated into a
+    // shell command. A commit range is one git revision argument, so it's built
+    // in JS and passed as one element, same as a bare ref.
 
-    let gitCmd = `git log --format="%H|%ai|%s" --reverse --numstat ${baseRef}`;
+    let revArg = baseRef;
 
     if (mode === 'update' && fs.existsSync(timelinePath)) {
         const existing = fs.readFileSync(timelinePath, 'utf8');
         const hashMatch = existing.match(/<!-- last:([a-f0-9]{40}) -->/);
         if (hashMatch) {
-            gitCmd = `git log --format="%H|%ai|%s" --reverse --numstat ${hashMatch[1]}..${baseRef}`;
+            revArg = `${hashMatch[1]}..${baseRef}`;
         }
     }
 
+    // M5: `--end-of-options` tells git that every argv element AFTER it is a
+    // revision/pathspec, never a flag — so even a value that begins with `-`
+    // (which assertSafeRef already rejects for `baseRef` alone, but which could
+    // otherwise still reach git via other paths, e.g. embedded in a range) can
+    // never be reinterpreted as `--output=<file>` or any other git flag. Applies
+    // to both the bare-ref (full mode) and `hash..ref` range (update mode) forms.
     let raw;
     try {
-        raw = execSync(gitCmd, {
+        raw = execFileSync('git', ['log', '--format=%H|%ai|%s', '--reverse', '--numstat', '--end-of-options', revArg], {
             cwd: projectDir,
             maxBuffer: 50 * 1024 * 1024,
             windowsHide: true,
@@ -239,7 +282,10 @@ function main() {
                 hash: parts[0],
                 shortHash: parts[0].slice(0, 7),
                 localDate,
-                msg: (parts[2] || '').replace(/Co-Authored-By:.*/gi, '').trim(),
+                // F34: rejoin everything after the second `|` — a subject
+                // containing a literal pipe ("fix: handle a|b case") was
+                // silently truncated at its first embedded `|` by parts[2].
+                msg: parts.slice(2).join('|').replace(/Co-Authored-By:.*/gi, '').trim(),
                 files: 0,
             };
         } else if (current && (line.match(/^\d/) || line.match(/^-\t/))) {
@@ -340,4 +386,5 @@ if (require.main === module) {
 module.exports = {
     getMonday, formatDate, formatWeekHeader, groupByTheme, main,
     splitWeekBlocks, normalizeWeekBody, parseDayBlocks, mergeWeekDays, mergeTimeline,
+    assertSafeRef,
 };

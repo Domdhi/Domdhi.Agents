@@ -27,6 +27,7 @@ const {
     injectRelatedConcepts: injectRelatedConceptsLib,
 } = require('./_lib/concept-index');
 const { generateCrossReferences: generateCrossReferencesLib } = require('./_lib/cross-references');
+const { scanConceptFiles } = require('./_lib/concept-reader');
 const { memoryPaths } = require('./_lib/memory-paths');
 
 const CATEGORIES = Object.values(CONSTANTS.MEMORY_CATEGORIES);
@@ -116,15 +117,21 @@ class MemoryCompiler {
             if (concept) writtenConcepts.push(concept);
         }
 
+        // 7-9 share ONE concepts-tree scan (F4): read after step 6 so freshly
+        // written articles are included, then thread the parsed list through
+        // index generation, cross-references, and Related-Concepts injection —
+        // previously each step independently re-walked and re-parsed the tree.
+        const conceptScan = await scanConceptFiles({ conceptsDir: this.conceptsDir, categories: CATEGORIES });
+
         // 7. Generate index
-        await this.generateIndex(writtenConcepts);
+        await this.generateIndex(writtenConcepts, conceptScan);
 
         // 8. Generate cross-references
-        const crossRefCount = await this.generateCrossReferences();
+        const crossRefCount = await this.generateCrossReferences(conceptScan);
         console.log(`Cross-references: ${crossRefCount} pair(s) found.`);
 
         // 9. Inject Related Concepts sections with [[wiki-links]] (Obsidian compat)
-        await this.injectRelatedConcepts(writtenConcepts);
+        await this.injectRelatedConcepts(writtenConcepts, conceptScan);
 
         console.log(`\nDone. ${writtenConcepts.length} concept article(s) written.`);
         console.log(`Index: ${path.join(this.conceptsDir, 'index.md')}`);
@@ -440,10 +447,11 @@ class MemoryCompiler {
     /**
      * Inject Related Concepts sections — thin wrapper over _lib/concept-index.
      */
-    async injectRelatedConcepts(writtenConcepts) {
+    async injectRelatedConcepts(writtenConcepts, conceptScan) {
         return injectRelatedConceptsLib(writtenConcepts, {
             conceptsDir: this.conceptsDir,
             categories: CATEGORIES,
+            conceptScan,
         });
     }
 
@@ -466,11 +474,12 @@ class MemoryCompiler {
     /**
      * Generate the MOC index — thin wrapper over _lib/concept-index.
      */
-    async generateIndex(concepts) {
+    async generateIndex(concepts, conceptScan) {
         return generateIndexLib(concepts, {
             conceptsDir: this.conceptsDir,
             categories: CATEGORIES,
             formatDateOnly: (iso) => this.formatDateOnly(iso),
+            conceptScan,
         });
     }
 
@@ -481,12 +490,13 @@ class MemoryCompiler {
     /**
      * Generate cross-references — thin wrapper over _lib/cross-references.
      */
-    async generateCrossReferences() {
+    async generateCrossReferences(conceptScan) {
         return generateCrossReferencesLib({
             conceptsDir: this.conceptsDir,
             categories: CATEGORIES,
             crossRefThreshold: CROSS_REF_THRESHOLD,
             similarityThreshold: SIMILARITY_THRESHOLD,
+            conceptScan,
         });
     }
 }

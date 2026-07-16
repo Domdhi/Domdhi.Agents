@@ -17,8 +17,12 @@
 
 /**
  * HTML-escape a string for safe injection into HTML attributes and text.
- * Escapes &, <, >, and " (double-quotes) — not apostrophes, matching the
- * historical behavior of the three extracted copies.
+ * Escapes &, <, >, " (double-quotes), and ' (single-quotes → &#39;).
+ *
+ * Apostrophe escaping was added for CR-2.3 / F13: none of today's consumers
+ * use single-quoted attributes, but this is the ONE shared escaping
+ * primitive for decision-html.js, timeline-format.js, and status-html.js — a
+ * future single-quoted-attr consumer must not silently reopen an XSS hole.
  *
  * @param {string} str
  * @returns {string}
@@ -28,7 +32,8 @@ function esc(str) {
         .replace(/&/g, '&amp;')
         .replace(/</g, '&lt;')
         .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;');
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
 }
 
 module.exports = { esc };

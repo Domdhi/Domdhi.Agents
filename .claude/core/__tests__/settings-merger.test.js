@@ -160,6 +160,30 @@ describe('mergeSettingsFile — hooks block overwritten from template', () => {
 
         expect(result.detail).toMatch(/hooks/);
     });
+
+    // F17 (council-260715-2244): adopter settings.json is attacker-influenceable
+    // repo content. A `"__proto__"` key parsed by JSON.parse is a plain own
+    // property, but Object.assign's [[Set]] copy fires the inherited setter and
+    // reassigns the merged object's prototype. The merge must keep it inert.
+    it('a "__proto__" key in adopter settings cannot pollute the merged object (F17)', () => {
+        const srcPath  = tmp.write('src/settings.json', JSON.stringify(TEMPLATE_SETTINGS, null, 2) + '\n');
+        const destPath = tmp.write(
+            'dest/settings.json',
+            '{\n  "permissions": { "allow": [] },\n  "__proto__": { "polluted": "yes" },\n  "adopterKey": true\n}\n'
+        );
+
+        const result = mergeSettingsFile(srcPath, destPath);
+        expect(['merged', 'unchanged']).toContain(result.action);
+
+        // Global prototype untouched…
+        expect({}.polluted).toBeUndefined();
+        expect(Object.prototype.polluted).toBeUndefined();
+        // …and the written file still carries the key as inert data (adopter
+        // keys are never deleted) alongside preserved adopter content.
+        const out = JSON.parse(fs.readFileSync(destPath, 'utf8'));
+        expect(out.adopterKey).toBe(true);
+        expect(Object.prototype.hasOwnProperty.call(out, '__proto__')).toBe(true);
+    });
 });
 
 describe('mergeSettingsFile — plansDirectory overwritten from template', () => {

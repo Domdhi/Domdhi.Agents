@@ -798,10 +798,13 @@ describe('gate', () => {
       // Act
       const config = loadConfig();
 
-      // Assert
+      // Assert — F31: dotnet legs are argv-mode (no shell-interpolated `.command`
+      // string), so the solution filename is never concatenated into a shell string.
       expect(config.stack).toBe('dotnet');
-      expect(config.build.command).toContain('dotnet build');
-      expect(config.test.command).toContain('dotnet test');
+      expect(config.build.command).toBeUndefined();
+      expect(config.build.argv).toEqual(['dotnet', 'build', 'MyApp.sln', '--configuration', 'Release', '--verbosity', 'minimal']);
+      expect(config.test.command).toBeUndefined();
+      expect(config.test.argv).toEqual(['dotnet', 'test', 'MyApp.sln', '--configuration', 'Release', '--verbosity', 'minimal', '--no-build']);
     });
 
     it('loadConfig_slnx_returnsDotnetStack', () => {
@@ -814,6 +817,33 @@ describe('gate', () => {
 
       // Assert
       expect(config.stack).toBe('dotnet');
+      expect(config.build.argv).toContain('MyApp.slnx');
+    });
+
+    it('loadConfig_dotnet_hostileSolutionFilename_isSingleArgvElement_F31', () => {
+      // F31: a crafted solution filename (readdirSync gives us whatever is on
+      // disk) must never be split/reinterpreted by a shell — it must survive as
+      // ONE argv element, byte-for-byte, in both the build and test legs.
+      // (No literal `/` in the name — that would make tmp.write's path.join
+      // create a subdirectory instead of a top-level file; `/` is disallowed in
+      // a real filename anyway, so this is still a faithful RCE-shaped payload.)
+      // NTFS forbids `"` in filenames (POSIX allows it) — on win32 use `'`, which is
+      // legal on NTFS and keeps the same quote-breaking RCE shape.
+      const hostileName = process.platform === 'win32' ? "x'; touch pwned #.sln" : 'x"; touch pwned #.sln';
+      tmp.write(hostileName, 'Microsoft Visual Studio Solution File');
+      const loadConfig = freshLoadConfig();
+
+      const config = loadConfig();
+
+      expect(config.stack).toBe('dotnet');
+      // Argv-mode only — no shell-command string exists to interpolate into.
+      expect(config.build.command).toBeUndefined();
+      expect(config.test.command).toBeUndefined();
+      expect(Array.isArray(config.build.argv)).toBe(true);
+      expect(Array.isArray(config.test.argv)).toBe(true);
+      // The hostile filename appears exactly once, as a single array element.
+      expect(config.build.argv.filter((a) => a === hostileName)).toHaveLength(1);
+      expect(config.test.argv.filter((a) => a === hostileName)).toHaveLength(1);
     });
 
     it('loadConfig_makefile_returnsMakeStack', () => {
@@ -989,7 +1019,7 @@ describe('gate', () => {
   });
 
   describe('runCommand — stderr capture (F31)', () => {
-    const { runCommand } = require('../gate');
+    const { runCommand, describeLeg, legRunnable } = require('../gate');
 
     it('captures stderr on a SUCCESSFUL (exit 0) command', () => {
       // Root cause of F1/F24/F31: jest prints its "Tests: N passed, N total"
@@ -1018,6 +1048,49 @@ describe('gate', () => {
       expect(r.exitCode).toBe(1);
       expect(r.output).toContain('out');
       expect(r.stderr).toContain('err');
+    });
+
+    it('argv-mode (F31): shell:false makes a metacharacter-laden arg inert — no shell interpolation', () => {
+      // If this arg were ever concatenated into a shell:true string (the old
+      // dotnet build/test path), the embedded `;` would run `touch <proofFile>`
+      // as a SECOND shell command. In argv mode, spawnSync delivers it as ONE
+      // argv element to the child process; there is no shell to reinterpret it.
+      const tmp = createTmpDir();
+      try {
+        const proofFile = path.join(tmp.root, 'PROOF');
+        const hostile = `x"; touch ${proofFile} #`;
+        const r = runCommand({ argv: ['node', '-e', 'console.log(process.argv[1])', hostile] }, process.cwd(), 30000);
+        expect(r.exitCode).toBe(0);
+        expect(r.output.trim()).toBe(hostile);
+        expect(fs.existsSync(proofFile)).toBe(false);
+      } finally {
+        tmp.cleanup();
+      }
+    });
+
+    it('argv-mode (F31): a failing argv-mode command still reports a real exit code', () => {
+      const r = runCommand({ argv: ['node', '-e', 'process.exit(3)'] }, process.cwd(), 30000);
+      expect(r.exitCode).toBe(3);
+    });
+  });
+
+  describe('describeLeg / legRunnable (F31 display + dispatch helpers)', () => {
+    const { describeLeg, legRunnable } = require('../gate');
+
+    it('describeLeg renders a shell-mode leg as its command string', () => {
+      expect(describeLeg({ command: 'npm run build', timeout: 1000 })).toBe('npm run build');
+    });
+
+    it('describeLeg renders an argv-mode leg as a space-joined display string', () => {
+      expect(describeLeg({ argv: ['dotnet', 'build', 'x.sln'], timeout: 1000 })).toBe('dotnet build x.sln');
+    });
+
+    it('legRunnable passes shell-mode legs through as a string (for shell:true dispatch)', () => {
+      expect(legRunnable({ command: 'npm test', timeout: 1000 })).toBe('npm test');
+    });
+
+    it('legRunnable passes argv-mode legs through as { argv } (for shell:false dispatch)', () => {
+      expect(legRunnable({ argv: ['dotnet', 'test', 'x.sln'], timeout: 1000 })).toEqual({ argv: ['dotnet', 'test', 'x.sln'] });
     });
   });
 });

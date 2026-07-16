@@ -221,6 +221,24 @@ describe('scoreOverlap + attributeSignal', () => {
         const dirs = index.map((s) => s.dir);
         expect(dirs).not.toContain('no-skill-here');
     });
+
+    it('buildSkillIndex counts a symlinked skill dir (bespoke-skill shape)', () => {
+        // Adopter bespoke skills are frequently symlinks into ../.agents/skills/ —
+        // Dirent.isDirectory() is false for symlinks (same class as skill-conformance.js).
+        const linkTarget = path.join(tmpDir, 'agents-skills', 'linked-skill');
+        fs.mkdirSync(linkTarget, { recursive: true });
+        fs.writeFileSync(
+            path.join(linkTarget, 'SKILL.md'),
+            ['---', 'name: linked-skill', 'description: "Use WHEN linked."', '---', '', '# Linked'].join('\n'),
+        );
+        fs.symlinkSync(linkTarget, path.join(skillsRoot, 'linked-skill'), 'dir');
+        fs.symlinkSync(path.join(tmpDir, 'nonexistent'), path.join(skillsRoot, 'broken-link'), 'dir');
+
+        const index = m.buildSkillIndex(skillsRoot);
+        const dirs = index.map((s) => s.dir);
+        expect(dirs).toContain('linked-skill');   // the fix: symlinked dir counts
+        expect(dirs).not.toContain('broken-link'); // broken symlink guarded out
+    });
 });
 
 // ── classifyPolarity + signal-stopword attribution (caught vs slipped) ────────

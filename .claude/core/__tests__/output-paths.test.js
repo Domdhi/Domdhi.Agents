@@ -103,6 +103,49 @@ describe('output-paths — open taxonomy & guards', () => {
   });
 });
 
+describe('output-paths — open-taxonomy path-traversal guard (F16)', () => {
+  // An unregistered `kind` used to be joined verbatim into
+  // path.join(OUTPUT_ROOT, e.dir) + mkdirSync(recursive) — '../', an embedded
+  // '../../', or an absolute leader escaped docs/.output entirely. Verify each
+  // shape is neutralized and the resulting path/dir stays confined.
+
+  function assertConfined(p) {
+    expect(p.startsWith('docs/.output/')).toBe(true);
+    expect(p).not.toMatch(/(^|\/)\.\.(\/|$)/); // no literal '..' path segment
+    const abs = path.resolve(tmp, p);
+    expect(abs.startsWith(path.join(tmp, 'docs', '.output') + path.sep)).toBe(true);
+  }
+
+  it('strips a parent-dir-traversal kind (../../etc/x)', () => {
+    const p = op.outputPath('../../etc/x', { slug: 'evil', cwd: tmp });
+    assertConfined(p);
+  });
+
+  it('strips an embedded traversal kind (a/../../b)', () => {
+    const p = op.outputPath('a/../../b', { slug: 'evil', cwd: tmp });
+    assertConfined(p);
+  });
+
+  it('strips an absolute-path kind (/etc/passwd)', () => {
+    const p = op.outputPath('/etc/passwd', { slug: 'evil', cwd: tmp });
+    assertConfined(p);
+  });
+
+  it('a normal unregistered kind still resolves unchanged (no false rejection)', () => {
+    const p = op.outputPath('bugs', { slug: 'crash', cwd: tmp });
+    expect(p).toMatch(
+      new RegExp(`^docs/\\.output/bugs/${MONTH.source}/${STAMP.source}-crash\\.md$`)
+    );
+  });
+
+  it('a normal nested unregistered kind still resolves unchanged (no false rejection)', () => {
+    const p = op.outputPath('bugs/tracker', { slug: 'crash', cwd: tmp });
+    expect(p).toMatch(
+      new RegExp(`^docs/\\.output/bugs/tracker/${MONTH.source}/${STAMP.source}-crash\\.md$`)
+    );
+  });
+});
+
 describe('output-paths — latest()', () => {
   function seed(rel, names) {
     const dir = path.join(tmp, rel);

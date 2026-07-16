@@ -27,9 +27,10 @@ const path = require('path');
 const fs = require('fs');
 const { readHookInput } = require('../core/_lib/hook-input');
 const { parseYaml, stripComment } = require('../core/_lib/yaml-parser');
-const { matchesPattern, evaluate, checkPathAccess } = require('../core/_lib/guardrail-rules');
+const { matchesPattern, evaluate, checkPathAccess, loadRules: libLoadRules } = require('../core/_lib/guardrail-rules');
 const { buildHookResponse, checkFreezeState } = require('../core/_lib/command-blocker');
 const { emitGuardrailHit } = require('../core/_lib/hook-telemetry');
+const { splitCommandSegments } = require('../core/_lib/shell-command-split');
 
 // ─── Path resolution ──────────────────────────────────────────────────────────
 
@@ -45,6 +46,15 @@ function resolveRulesPath() {
  * or unreadable — signals processEvent() to pass through with a stderr warn.
  * The _lib loadRules(yamlPath) is silent and returns emptyRules(); this wrapper
  * preserves the historical null = "warn + pass" behavior for the hook.
+ *
+ * W2-2: the FINAL ruleset is produced by delegating to the F12-validated
+ * `_lib/guardrail-rules.loadRules`, so the per-tier regex-source validation +
+ * loud fail-safe warning reach the live Bash guard (previously this hook
+ * returned the raw parsed object, so a malformed `/regex/` in a pattern tier
+ * silently no-op'd here — the whole point of F12 was lost at the one hook that
+ * guards destructive commands). The hook-level guards below stay for the
+ * null = "warn + pass-through" contract on missing/unreadable/malformed-YAML
+ * and for the specific operator warnings `_lib` (silent) does not emit.
  *
  * @returns {object|null}
  */
@@ -104,7 +114,15 @@ function loadRules() {
         }
     }
 
-    return rules;
+    // Delegate to the F12-validated _lib loader for the actual ruleset: it
+    // re-reads + re-parses the same file, then per-tier regex-source-validates
+    // dangerousPatterns/block/nudge/confirm (dropping only a malformed tier to
+    // [] with a loud stderr warning) and returns emptyRules() fail-safe on any
+    // structural problem. The double-read is a small YAML per Bash command —
+    // negligible next to closing a silent guard-bypass. The hook-level checks
+    // above (missing/unreadable/malformed → null pass-through + specific warn)
+    // already ran, so we only reach here on a structurally-valid file.
+    return libLoadRules(rulesPath);
 }
 
 // ─── Pattern matching (array variant — backward compat) ───────────────────────
@@ -148,31 +166,63 @@ function checkRules(command, rules) {
  * Strip git commit message content before pattern matching. Without stripping,
  * a message like 'fix: prevent git push --force' false-positives on the block
  * pattern. Handles: -m "...", -m '...', heredoc -m "$(cat <<'EOF'...EOF)".
+ *
+ * F61 — DO NOT blank a command substitution ($(...) or backtick) that lives
+ * inside a DOUBLE-QUOTED -m argument. Bash EXECUTES such a substitution, so
+ * blanking it (the old wholesale `-m "…" → -m ""`) deleted a destructive payload
+ * from the guardrail's view while bash still ran it — `echo -m "$(rm -rf .env)"`
+ * sailed through. A double-quoted message that contains a substitution is now
+ * left intact so the downstream path/pattern evaluation (and the `$(`/backtick
+ * split in splitCommandSegments) still sees the real command.
+ *
+ * The known-benign `$(cat <<'EOF' … EOF)` heredoc form is a message-body carrier
+ * (cat is not destructive), so it is still blanked FIRST — otherwise a heredoc
+ * commit body would false-positive on a block phrase it merely quotes.
+ *
+ * SINGLE-quoted messages are always blanked: bash does NOT perform command
+ * substitution inside single quotes, so `$(…)` there is inert literal text and
+ * safe to strip. Unquoted bare tokens are only blanked when they carry no
+ * substitution (same reasoning as double-quoted).
  */
+function hasCommandSubstitution(s) {
+    return /\$\(|`/.test(s);
+}
+
 function stripCommitMessages(command) {
     let result = command;
-    result = result.replace(/-m\s*"\$\(cat\s*<<'?EOF'?\s*\n[\s\S]*?\nEOF\s*\)"/g, '-m ""');
-    result = result.replace(/-m\s*"(?:[^"\\]|\\.)*"/g, '-m ""');
+    // Heredoc message carrier $(cat <<EOF … EOF). M4: only blank it when the
+    // delimiter is QUOTED (`<<'EOF'`) AND the body has no command substitution.
+    // A QUOTED delimiter makes the body literal (bash performs no expansion in
+    // it), so it is a safe, inert message carrier. An UNQUOTED delimiter
+    // (`<<EOF`) expands the body — `$(rm -rf .env)` in it EXECUTES — so blanking
+    // it would delete the destructive payload from the guardrail's view while
+    // bash still runs it. Leave the unquoted form intact so the `$(` split in
+    // splitCommandSegments reaches extractDeletePaths (the `hasCommandSubstitution`
+    // guard on the double-quote rule below then also leaves it intact).
+    result = result.replace(
+        /-m\s*"\$\(cat\s*<<('?)EOF'?\s*\n([\s\S]*?)\nEOF\s*\)"/g,
+        (m, q, body) => (q === "'" && !hasCommandSubstitution(body)) ? '-m ""' : m
+    );
+    // Double-quoted: blank ONLY when it holds no command substitution (F61).
+    result = result.replace(/-m\s*"(?:[^"\\]|\\.)*"/g, (m) => hasCommandSubstitution(m) ? m : '-m ""');
+    // Single-quoted: substitution is inert inside '…', so always safe to blank.
     result = result.replace(/-m\s*'[^']*'/g, "-m ''");
-    result = result.replace(/-m\s+([^\s"'][^\s]*)/g, '-m STRIPPED');
+    // Unquoted bare token: blank unless it carries a substitution.
+    result = result.replace(/-m\s+([^\s"'][^\s]*)/g, (m) => hasCommandSubstitution(m) ? m : '-m STRIPPED');
     return result;
 }
 
 // ─── Path extraction for delete-style commands (P2.5 — A3 routing) ───────────
 
-/**
- * Shell separators that start a NEW command. Splitting on these lets the path
- * extractors (and thus the non-escalatable four-tier check) see a delete that
- * is chained or nested rather than at position 0 — `echo hi && rm -rf .env`,
- * `cd /tmp; rm -rf ~/.env`, `$(rm -rf .git)` (G1 / M1 bypass).
- * Order matters: `&&`/`||` are listed before `&`/`|` so the two-char forms win.
- */
-const SHELL_SEPARATORS = /&&|\|\||;|\||&|\n|\$\(|`|\)/;
-
-function splitCommandSegments(command) {
-    if (typeof command !== 'string') return [];
-    return command.split(SHELL_SEPARATORS);
-}
+// Command-boundary splitting is delegated to the shared _lib/shell-command-split
+// module (imported as splitCommandSegments) — the single source of truth for
+// both guard hooks. It splits on the classic metacharacters `&& || ; | & \n $(
+// ` ( )` AND on the shell keyword statement-starts `then do else elif { }`, so a
+// keyword-wrapped delete of a protected path (`if true; then rm -rf .env; fi`,
+// `for i in 1; do rm -rf .env; done`) is segmented and thus still reaches the
+// non-escalatable four-tier hard block — parity with the bare form (F62). The
+// old local SHELL_SEPARATORS split only on metacharacters and let the keyword
+// forms downgrade a zeroAccessPaths hard block to an escalatable nudge.
 
 function tokenizeArgs(str) {
     const tokens = [];
@@ -316,8 +366,10 @@ const PATH_CLASS_ENUM = Object.freeze({
  * @returns {string|null}   One of PATH_CLASS_ENUM values, or null when the
  *                          command is not a delete-style command / has no path.
  */
-function classifyDeletePath(command) {
-    const paths = extractDeletePaths(command);
+// F63: `paths` is optional — processEvent extracts once and passes the result
+// in, so the split+tokenize pass isn't redone here on every Bash call. The
+// default keeps the one-arg form working for direct/test callers.
+function classifyDeletePath(command, paths = extractDeletePaths(command)) {
     if (!paths.length) return null;
 
     // Normalize the first path: strip surrounding quotes, lowercase, use /.
@@ -387,7 +439,9 @@ function processEvent(parsedJson) {
 
     // Coarse, secret-safe path class for delete-style commands (C1). null for
     // non-delete commands; carried on the telemetry of delete-relevant branches.
-    const pathClass = classifyDeletePath(sanitizedCommand);
+    // F63: extract once — reused for the P2.5 delete-path enforcement below.
+    const rawDeletePaths = extractDeletePaths(sanitizedCommand);
+    const pathClass = classifyDeletePath(sanitizedCommand, rawDeletePaths);
 
     if (decision.action === 'block') {
         const resp = buildHookResponse('block', { command, pattern: decision.pattern });
@@ -403,7 +457,7 @@ function processEvent(parsedJson) {
     // approvable confirm — violating the "zero-access = all ops blocked"
     // invariant. Checking the path tier here keeps it non-escalatable. (sweep A1)
     const deletePaths = [
-        ...extractDeletePaths(sanitizedCommand),
+        ...rawDeletePaths, // F63: extracted once above
         ...extractAltDeleteTargets(sanitizedCommand),
     ];
     for (const p of deletePaths) {

@@ -121,8 +121,9 @@ function renderDecisionHtml(data, options = {}) {
   const timestamp = now.toISOString().replace('T', ' ').slice(0, 19);
 
   // Detect project name (not anchored to projectRoot here — renderer is pure).
-  // The orchestrator passes _projectName for stable output; in production, we
-  // attempt package.json relative to cwd.
+  // F8: the production caller (decision-viz.js) ALWAYS passes _projectName,
+  // derived from its PROJECT_ROOT — the cwd-reading fallback below only serves
+  // bare/test invocations and must never become the production path again.
   let projectName = overrideProjectName;
   if (!projectName) {
     try {

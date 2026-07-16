@@ -45,11 +45,44 @@ const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
 const { stamp } = require('./_lib/run-stamp');
+const { OUTPUT_ROOT } = require('./_lib/output-paths');
+const { OUTPUT_PATHS } = require('./constants');
 
-const HANDOFF_DIR = 'docs/.output/handoffs';
+// Single-source the handoffs compartment dir from the registry (ADR 0006). Note
+// this is the BASE dir only (no {YYYY-MM} bucket) — output-paths.js's
+// compartmentDir('handoffs') would append the month; buildWritePath() adds the
+// month segment itself, so we compose from OUTPUT_ROOT + the registered dir.
+const HANDOFF_DIR = `${OUTPUT_ROOT}/${OUTPUT_PATHS.handoffs.dir}`;
 const CALLERS = ['end', 'do', 'run-todo', 'run-tests', 'todo'];
-// Longest alternatives first so `run-todo`/`run-tests` match before `do`/`todo`.
-const FILE_RE = /^(\d{6}-\d{4})-(run-todo|run-tests|end|do|todo)-(.+)\.md$/;
+// A handoff filename is `{stamp}-{descriptor}.md`. The ONLY hard requirement is
+// a valid run-stamp prefix — everything after is the descriptor. We deliberately
+// do NOT require a known caller token here: a hand-written or off-contract
+// handoff (e.g. `260624-1500-xdb-zero-hour-grid-fix.md`, no caller, no branch
+// tag) is still a real handoff and must not be invisible to `latest` — silently
+// dropping the genuine newest handoff is exactly what hands `/prime` stale context.
+const STAMP_RE = /^(\d{6}-\d{4})-(.+)\.md$/;
+// Longest alternatives first so `run-todo`/`run-tests` peel before `do`/`todo`.
+const CALLER_RE = /^(run-todo|run-tests|end|do|todo)-(.+)$/;
+
+/**
+ * Parse a handoff filename into { stampStr, caller, branch, conforming }.
+ * `conforming` = the descriptor after the stamp matched a known CALLER token
+ * (the `{stamp}-{caller}-{branch}` contract) — its `branch` is a TRUSTED tag.
+ * A non-conforming file (hand-written, or from outside the CLI convention)
+ * still carries a valid stamp and IS a real handoff — it's treated as
+ * branch-agnostic (eligible on any branch) rather than silently dropped.
+ * Returns null if there's no valid stamp prefix at all.
+ */
+function parseHandoffName(name) {
+    const m = STAMP_RE.exec(name);
+    if (!m) return null;
+    const stampStr = m[1];
+    const descriptor = m[2];
+    const cm = CALLER_RE.exec(descriptor);
+    return cm
+        ? { stampStr, caller: cm[1], branch: cm[2], conforming: true }
+        : { stampStr, caller: null, branch: descriptor, conforming: false };
+}
 
 /** Slugify a branch name into a filename-safe, lowercase token. */
 function slugBranch(raw) {
@@ -133,8 +166,8 @@ function resolveLatest({ cwd = process.cwd(), branch, any = false } = {}) {
             return;
         }
         for (const name of entries) {
-            const m = FILE_RE.exec(name);
-            if (m) parsed.push({ name, sub, stampStr: m[1], caller: m[2], branch: m[3] });
+            const info = parseHandoffName(name);
+            if (info) parsed.push({ name, sub, ...info });
         }
     };
 
@@ -157,7 +190,15 @@ function resolveLatest({ cwd = process.cwd(), branch, any = false } = {}) {
     // Sort by stamp prefix (chronological), then pick newest for the branch.
     parsed.sort((a, b) => (a.stampStr < b.stampStr ? -1 : a.stampStr > b.stampStr ? 1 : 0));
     const b = branch || currentBranchSlug(cwd);
-    const mine = any ? [] : parsed.filter((e) => e.branch === b);
+    // `any: true` still means "ignore branch preference entirely" (unchanged
+    // contract for /prime's cross-branch recall). Otherwise a handoff is "mine"
+    // when its TRUSTED branch tag matches the current branch (conforming files),
+    // OR it carries no reliable branch tag at all (non-conforming files are
+    // branch-agnostic — they belong to whoever reads them). This preserves
+    // parallel-branch isolation for properly-named files written on a DIFFERENT
+    // branch (conforming + branch !== b → excluded) while never hiding an
+    // off-contract handoff on the current line of work.
+    const mine = any ? [] : parsed.filter((e) => (e.conforming && e.branch === b) || !e.conforming);
     const pool = mine.length ? mine : parsed;
     const pick = pool[pool.length - 1];
     return pick.sub ? `${HANDOFF_DIR}/${pick.sub}/${pick.name}` : `${HANDOFF_DIR}/${pick.name}`;
@@ -170,6 +211,7 @@ module.exports = {
     currentBranchSlug,
     stamp,
     monthFromStamp,
+    parseHandoffName,
     buildWritePath,
     resolveLatest,
     ensureDir,

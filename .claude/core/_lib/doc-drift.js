@@ -68,6 +68,13 @@ const TEMPLATE_MARKER = '<!-- @@template -->';
 //     (dot) is kept too for any legacy hand-rolled archive dir.
 const TODO_SKIP_DIRS = new Set(['.output', '.archive', '_archive', 'node_modules', '.git', 'design', 'scratch']);
 const TODO_CANONICAL_DIRS = new Set(['', 'work/todo']); // relative to docs/ (ADR domain taxonomy)
+// Subfolders UNDER the canonical todo root are also canonical — an adopter that
+// groups its checklists (work/todo/{group}/TODO_*.md) is organizing, not misplacing.
+// (Harvested from Mfa.Hub's page-folder layout, 2026-07-16; their `modules/` resting
+// place was NOT adopted — it's project taxonomy, not the shared convention.)
+const TODO_CANONICAL_PREFIXES = ['work/todo/'];
+const isCanonicalTodoDir = (relDir) =>
+    TODO_CANONICAL_DIRS.has(relDir) || TODO_CANONICAL_PREFIXES.some((p) => relDir.startsWith(p));
 
 /** True if a file exists and is NOT just an unfilled scaffold stub. */
 function isRealDoc(absPath) {
@@ -247,7 +254,7 @@ function findMisplacedTodos(docsDir) {
                 if (TODO_SKIP_DIRS.has(entry.name)) continue;
                 walk(path.join(absDir, entry.name), relDir ? `${relDir}/${entry.name}` : entry.name);
             } else if (entry.isFile() && /^TODO.*\.md$/i.test(entry.name)) {
-                if (!TODO_CANONICAL_DIRS.has(relDir)) {
+                if (!isCanonicalTodoDir(relDir)) {
                     misplaced.push({ file: `docs/${relDir ? relDir + '/' : ''}${entry.name}`, dir: `docs/${relDir}` });
                 }
             }

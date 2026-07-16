@@ -6,7 +6,7 @@
 //   - pruneStaleMemories deletes files (no archive tier)
 //   - Category limit → createMemory returns null at 51st
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -132,6 +132,33 @@ describe('memory-manager', () => {
 
       // Act / Assert
       await expect(manager.createMemory('bogus', 'x', {})).rejects.toThrow(/Invalid category/);
+    });
+
+    it('createMemory_idCollision_refusesByDefault_returnsNullAndKeepsOriginal', async () => {
+      // F10: a second createMemory at the same (category, id) must not silently
+      // clobber the prior file's content/history.
+      const manager = makeManager();
+      await manager.createMemory('patterns', 'collide_me', { description: 'original' });
+
+      const result = await manager.createMemory('patterns', 'collide_me', { description: 'attempted overwrite' });
+
+      expect(result).toBeNull();
+      const onDisk = await manager.readMemory('patterns', 'collide_me');
+      expect(onDisk.content.description).toBe('original');
+    });
+
+    it('createMemory_idCollision_overwriteTrue_replacesContent', async () => {
+      // F10: {overwrite:true} is the explicit opt-in for a sanctioned rewrite.
+      const manager = makeManager();
+      await manager.createMemory('patterns', 'collide_overwrite', { description: 'original' });
+
+      const result = await manager.createMemory(
+        'patterns', 'collide_overwrite', { description: 'replaced' }, { overwrite: true }
+      );
+
+      expect(result).not.toBeNull();
+      const onDisk = await manager.readMemory('patterns', 'collide_overwrite');
+      expect(onDisk.content.description).toBe('replaced');
     });
 
     it('readMemory_existingId_roundTripsContent', async () => {
@@ -281,7 +308,192 @@ describe('memory-manager', () => {
       expect(list).toEqual([]);
     });
 
+    // F43 (council-260715-2244): listMemories reads every JSON file to build
+    // its summaries — includeFull hands callers that already-parsed record so
+    // they never re-read per id (the systemic double file-read).
+    it('listMemories_includeFull_attachesTheParsedRecord_noSecondRead (F43)', async () => {
+      const manager = makeManager();
+      await manager.createMemory('patterns', 'full_mem', { description: 'the full record', marker: 42 });
+
+      const withFull = await manager.listMemories('patterns', { includeFull: true });
+      expect(withFull).toHaveLength(1);
+      expect(withFull[0].full).toBeTruthy();
+      expect(withFull[0].full.content.marker).toBe(42); // full content available without readMemory
+      expect(withFull[0].full.id).toBe(withFull[0].id);
+
+      // Default shape stays lean — no full record serialized into reports.
+      const summariesOnly = await manager.listMemories('patterns');
+      expect(summariesOnly[0].full).toBeUndefined();
+    });
+
+    it('lintMemories performs ONE read per file (F43 single-pass)', async () => {
+      const manager = makeManager();
+      await manager.createMemory('patterns', 'single_read_a', { description: 'alpha single read probe' });
+      await manager.createMemory('patterns', 'single_read_b', { description: 'beta single read probe' });
+
+      // listMemories now reads store files directly (no readMemory round-trip),
+      // so count actual JSON reads via the shared CJS fs.promises object.
+      const fsp = require('fs').promises;
+      const readSpy = vi.spyOn(fsp, 'readFile');
+      await manager.lintMemories();
+      const storeReads = readSpy.mock.calls.filter(([p]) =>
+        String(p).startsWith(manager.memoriesDir) && String(p).endsWith('.json'));
+      // 2 files in the store → exactly 2 reads (inside listMemories), zero re-reads.
+      expect(storeReads.length).toBe(2);
+      readSpy.mockRestore();
+    });
+
+    // Retro codereview-260715 regression: listMemories used to derive an id from
+    // each FILENAME and push it back through readMemory's SAFE_ID_RE guard. But
+    // idToFilename is lossy ('_' -> '-'), so a perfectly valid leading-underscore
+    // id (e.g. '_lib-...', explicitly allowed by SAFE_ID_RE) produced a
+    // leading-'-' filename that the guard rejected — the memory silently vanished
+    // from report/analytics/lint/prune. Same for legacy files whose stored id
+    // contains uppercase. listMemories must read enumerated files directly.
+    it('listMemories_includesLeadingUnderscoreIds_andLegacyUppercaseFiles', async () => {
+      const manager = makeManager();
+      await manager.createMemory('patterns', '_lib_probe_mem', { description: 'leading underscore id' });
+      // Seed a legacy uppercase-id file the way old stores actually hold them.
+      const legacy = {
+        id: 'legacy-camelCase-mem',
+        category: 'patterns',
+        created: '2026-01-01T00:00:00.000Z',
+        updated: '2026-01-01T00:00:00.000Z',
+        usage_count: 0,
+        content: { description: 'legacy uppercase id' },
+        metadata: {}
+      };
+      fs.writeFileSync(
+        path.join(manager.memoriesDir, 'patterns', 'legacy-camelCase-mem.json'),
+        JSON.stringify(legacy, null, 2));
+
+      const list = await manager.listMemories('patterns');
+      const ids = list.map((m) => m.id);
+      expect(ids).toContain('_lib_probe_mem');
+      expect(ids).toContain('legacy-camelCase-mem');
+    });
+
   }); // CRUD
+
+  // ── Path-traversal guard (F42) ───────────────────────────────────────────────
+  // createMemory/readMemory/updateMemory/deleteMemory all join caller-supplied
+  // `id` straight into a `.json` filename. Verify each entry point refuses the
+  // three attack shapes (parent-dir traversal, embedded traversal, absolute
+  // path) BEFORE any path is built, and that no file escapes the store.
+
+  describe('path-traversal guard (F42)', () => {
+    const BAD_IDS = ['../../etc/x', 'a/../../b', '/etc/passwd'];
+
+    // Any file that would land outside docs/.output/.memory/{category}/ as a
+    // result of a successful escape — checked after each attempt to prove
+    // nothing was written/read/deleted outside the store.
+    function escapeCandidates() {
+      return [
+        path.join(tmp.root, 'docs', '.output', 'etc', 'x.json'),
+        path.join(tmp.root, 'docs', '.output', 'b.json'),
+        path.join(tmp.root, 'docs', '.output', '.memory', 'patterns', 'etc', 'passwd.json'),
+        path.join(tmp.root, 'etc', 'x.json'),
+      ];
+    }
+
+    for (const badId of BAD_IDS) {
+      it(`createMemory_rejects_${badId}`, async () => {
+        const manager = makeManager();
+        await expect(manager.createMemory('patterns', badId, { description: 'x' })).rejects.toThrow(/Invalid id/);
+        for (const candidate of escapeCandidates()) {
+          expect(fs.existsSync(candidate)).toBe(false);
+        }
+      });
+
+      it(`readMemory_refuses_${badId}`, async () => {
+        const manager = makeManager();
+        // Plant a sentinel file at a plausible escape target — if the guard
+        // failed, readMemory would happily read this back.
+        const sentinelPath = path.join(tmp.root, 'docs', '.output', 'etc', 'x.json');
+        fs.mkdirSync(path.dirname(sentinelPath), { recursive: true });
+        fs.writeFileSync(sentinelPath, JSON.stringify({ id: 'sentinel', content: { secret: true } }));
+
+        const result = await manager.readMemory('patterns', badId);
+        expect(result).toBeNull();
+      });
+
+      it(`updateMemory_refuses_${badId}`, async () => {
+        const manager = makeManager();
+        const result = await manager.updateMemory('patterns', badId, { content: { x: 1 } });
+        expect(result).toBeNull();
+      });
+
+      it(`deleteMemory_refuses_${badId}`, async () => {
+        const manager = makeManager();
+        // Plant a sentinel file at a plausible escape target — if the guard
+        // failed, deleteMemory would happily unlink this file.
+        const sentinelPath = path.join(tmp.root, 'docs', '.output', 'etc', 'x.json');
+        fs.mkdirSync(path.dirname(sentinelPath), { recursive: true });
+        fs.writeFileSync(sentinelPath, 'sentinel');
+
+        const result = await manager.deleteMemory('patterns', badId);
+        expect(result.deleted).toBe(false);
+        expect(result.error).toMatch(/Invalid id/);
+        expect(fs.existsSync(sentinelPath)).toBe(true); // untouched
+      });
+    }
+
+    it('createMemory_normalId_stillWorks_noFalseRejection', async () => {
+      const manager = makeManager();
+      const result = await manager.createMemory('patterns', 'safe-normal-id_123', { description: 'fine' });
+      expect(result).not.toBeNull();
+      expect(result.id).toBe('safe-normal-id_123');
+    });
+
+    it('readMemory_updateMemory_deleteMemory_normalId_stillWork_noFalseRejection', async () => {
+      const manager = makeManager();
+      await manager.createMemory('patterns', 'safe_round_trip', { a: 1 });
+
+      const read = await manager.readMemory('patterns', 'safe_round_trip');
+      expect(read).not.toBeNull();
+      expect(read.content.a).toBe(1);
+
+      const updated = await manager.updateMemory('patterns', 'safe_round_trip', { content: { b: 2 } });
+      expect(updated).not.toBeNull();
+      expect(updated.content.b).toBe(2);
+
+      const deleted = await manager.deleteMemory('patterns', 'safe_round_trip');
+      expect(deleted).toEqual({ deleted: true });
+    });
+
+    // ── W2-1: inbox entry points (sibling sinks the F42 first pass missed) ──────
+    // inboxPromote/inboxDiscard take the raw CLI-supplied `id` straight into
+    // path.join(inboxDir, id + '.json') — an unguarded `../`-laden id READS +
+    // then UNLINKS (promote) or UNLINKS (discard) an arbitrary .json file
+    // outside the inbox root. Verify both refuse traversal and leave the victim
+    // intact.
+    for (const badId of BAD_IDS) {
+      it(`inboxDiscard_refuses_${badId}`, async () => {
+        const manager = makeManager();
+        const victim = path.join(tmp.root, 'docs', '.output', 'victim.json');
+        fs.mkdirSync(path.dirname(victim), { recursive: true });
+        fs.writeFileSync(victim, JSON.stringify({ keep: true }));
+
+        const result = await manager.inboxDiscard(badId);
+        expect(result.discarded).toBe(false);
+        expect(result.error).toMatch(/Invalid inbox id/);
+        expect(fs.existsSync(victim)).toBe(true); // never deleted
+      });
+
+      it(`inboxPromote_refuses_${badId}`, async () => {
+        const manager = makeManager();
+        // Plant a would-be-ingested file at a plausible escape target.
+        const victim = path.join(tmp.root, 'docs', '.output', 'victim.json');
+        fs.mkdirSync(path.dirname(victim), { recursive: true });
+        fs.writeFileSync(victim, JSON.stringify({ category: 'patterns', suggested_id: 'x', content: { leaked: true } }));
+
+        const result = await manager.inboxPromote(badId);
+        expect(result.promoted).toBe(false);
+        expect(result.error).toMatch(/Invalid inbox id/);
+        expect(fs.existsSync(victim)).toBe(true); // never read-then-unlinked
+      });
+    }
+  }); // path-traversal guard (F42)
 
   // ── Inbox staging ───────────────────────────────────────────────────────────
 
@@ -424,6 +636,60 @@ describe('memory-manager', () => {
     });
 
   }); // searchMemories
+
+  // ── F44: usage_count read-back from the SQLite index ─────────────────────────
+
+  describe.skipIf(!hasSqlite)('F44 usage_count read-back', () => {
+
+    it('recall bumps usage_count that report/analytics/listMemories all see', async () => {
+      // Arrange — usage_count lives ONLY in the SQLite index (_recordRecall bumps
+      // it there, never the git-tracked JSON). Before F44 every read path sourced
+      // usage_count from the stale JSON (~always 0), so a genuinely-recalled memory
+      // read back as never-used and looked like a prune/dead-weight candidate.
+      const manager = makeManager();
+      await manager.createMemory('patterns', 'readback_mem', { description: 'uniquekiwiF44 read-back token' });
+
+      // Act — a genuine recall (the ONLY place usage_count grows).
+      const results = await manager.searchMemories('uniquekiwiF44');
+      expect(results.some(r => r.id === 'readback_mem')).toBe(true);
+
+      // Assert — listMemories surfaces the live index value, not the JSON 0.
+      const list = await manager.listMemories('patterns');
+      const summary = list.find(m => m.id === 'readback_mem');
+      expect(summary.usage_count).toBeGreaterThanOrEqual(1);
+
+      // Assert — report total_usage reflects it.
+      const report = await manager.generateReport();
+      expect(report.categories.patterns.total_usage).toBeGreaterThanOrEqual(1);
+
+      // Assert — analytics: appears in top_used with live count, and is NOT flagged
+      // as a prune or dead-weight candidate (both key off usage_count === 0).
+      const analytics = await manager.generateAnalytics();
+      expect(analytics.usage.top_used.some(u => u.id === 'readback_mem' && u.usage_count >= 1)).toBe(true);
+      expect(analytics.prune.candidates.some(c => c.id === 'readback_mem')).toBe(false);
+      expect(analytics.dead_weight.candidates.some(c => c.id === 'readback_mem')).toBe(false);
+    });
+
+    it('rebuildIndex preserves accumulated usage_count (not reset to 0)', async () => {
+      // Arrange — before F44, rebuildIndex re-seeded usage_count from the JSON
+      // baseline via INSERT OR REPLACE, destroying accumulated real usage on every
+      // rebuild. The pre-DELETE snapshot must carry the live value across the wipe.
+      const manager = makeManager();
+      await manager.createMemory('patterns', 'rebuild_mem', { description: 'uniquemangoF44 survive rebuild' });
+
+      await manager.searchMemories('uniquemangoF44');
+      const before = (await manager.listMemories('patterns')).find(m => m.id === 'rebuild_mem').usage_count;
+      expect(before).toBeGreaterThanOrEqual(1);
+
+      // Act
+      await manager.rebuildIndex();
+
+      // Assert — the count SURVIVES the rebuild.
+      const after = (await manager.listMemories('patterns')).find(m => m.id === 'rebuild_mem').usage_count;
+      expect(after).toBe(before);
+    });
+
+  }); // F44 usage_count read-back
 
   // ── buildFtsQuery ──────────────────────────────────────────────────────────
 
@@ -1527,6 +1793,24 @@ describe('memory-manager', () => {
       reopened.initDb();
       expect(reopened.db
         .prepare('SELECT usage_count AS n FROM memories WHERE id = ?').get('recall_mem').n).toBe(2);
+    });
+
+    it('searchMemories_recordRecallFalse_doesNotBumpUsageCountOrLogAccess', async () => {
+      // F11: diagnostic callers (health-check probe, benchmark, eval --real pass)
+      // must be able to search without polluting usage analytics.
+      const manager = makeManager();
+      if (!manager.initDb()) return;
+      await manager.createMemory('patterns', 'diag_probe_mem', { description: 'diagnostic token here' });
+
+      const results = await manager.searchMemories('diagnostic', { recordRecall: false });
+      expect(results.length).toBeGreaterThan(0);
+
+      const idxCount = manager.db
+        .prepare('SELECT usage_count AS n FROM memories WHERE id = ?').get('diag_probe_mem').n;
+      expect(idxCount).toBe(0);
+
+      const logPath = path.join(tmp.root, 'docs', '.output', '.state', 'telemetry', 'memory-injection.jsonl');
+      expect(fs.existsSync(logPath)).toBe(false);
     });
   }); // honest usage
 

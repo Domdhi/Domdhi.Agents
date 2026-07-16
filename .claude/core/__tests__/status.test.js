@@ -43,7 +43,7 @@ describe('status', () => {
         try {
             const files = [];
             const telemetry = { commands: {}, gates: {}, sessions: 0, memoryBenchmark: null };
-            const gitMetrics = { commitCount: 0, branch: 'main', lastCommitAt: null, activeDays: 0 };
+            const gitMetrics = { commitCount: 0, branch: 'main', lastCommitAt: null, commits7d: 0 };
             const html = generateHtml(files, telemetry, gitMetrics, outputDir);
             expect(typeof html).toBe('string');
             expect(html.length).toBeGreaterThan(0);
@@ -72,7 +72,7 @@ describe('status', () => {
             const html = generateHtml(
                 [],
                 { commands: {}, gates: {}, sessions: 0, memoryBenchmark: null },
-                { commitCount: 0, branch: 'main', lastCommitAt: null, activeDays: 0 },
+                { commitCount: 0, branch: 'main', lastCommitAt: null, commits7d: 0 },
                 outputDir,
                 memMetrics,
             );
@@ -91,7 +91,7 @@ describe('status', () => {
             const html = generateHtml(
                 [],
                 { commands: {}, gates: {}, sessions: 0, memoryBenchmark: null },
-                { commitCount: 0, branch: 'main', lastCommitAt: null, activeDays: 0 },
+                { commitCount: 0, branch: 'main', lastCommitAt: null, commits7d: 0 },
                 outputDir,
             );
             expect(html).not.toContain('Memory Health');
@@ -890,7 +890,7 @@ describe('status', () => {
                 sessions: 5,
                 memoryBenchmark: { rate: 75, hits: 15, total: 20, meanRank: 1.5 },
             };
-            const gitMetrics = { activeDays: 14 };
+            const gitMetrics = { commits7d: 14 };
             const output = [];
             const spy = vi.spyOn(console, 'log').mockImplementation((...args) => output.push(args.join(' ')));
             try {

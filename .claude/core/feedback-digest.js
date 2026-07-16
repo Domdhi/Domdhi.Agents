@@ -33,7 +33,8 @@
 
 const fs = require('fs');
 const path = require('path');
-const { getJsonlPath } = require('./_lib/telemetry-paths');
+const { getJsonlPath, getTelemetryDir } = require('./_lib/telemetry-paths');
+const { compartmentDir } = require('./_lib/output-paths');
 const { readSummary } = require('./_lib/gate-summary');
 const { aggregate: aggregateGuardrail } = require('./guardrail-stats');
 
@@ -90,9 +91,11 @@ function countFilesRecursive(absDir, match) {
  * @param {string} root  Absolute project root
  * @returns {{ total: number, passed: number, failed: number, source: 'jsonl'|'logs'|'none' }}
  */
-function readGateRuns(root) {
-    // Attempt primary: count gate_run rows in command-usage.jsonl
-    const rows = readJsonl(getJsonlPath(root, 'command-usage.jsonl'));
+function readGateRuns(root, usageRows) {
+    // Attempt primary: count gate_run rows in command-usage.jsonl.
+    // F29: buildDigest parses the file once and passes the rows in — the
+    // no-arg form (tests, direct callers) still reads it itself.
+    const rows = usageRows || readJsonl(getJsonlPath(root, 'command-usage.jsonl'));
     let total = 0, passed = 0, failed = 0;
     for (const ev of rows) {
         if (ev.type !== 'gate_run') continue;
@@ -104,7 +107,7 @@ function readGateRuns(root) {
     if (total > 0) return { total, passed, failed, source: 'jsonl' };
 
     // Fallback: count gate-*.log files — no pass/fail info available from logs alone
-    const logsDir = path.join(root, 'docs', '.output', '.state', 'telemetry', 'logs');
+    const logsDir = path.join(getTelemetryDir(root), 'logs');
     let logCount = 0;
     for (const ent of listDir(logsDir)) {
         if (ent.isFile() && ent.name.startsWith('gate-') && ent.name.endsWith('.log')) {
@@ -142,8 +145,9 @@ function readScannerBlocks(root) {
     }
 }
 
-function readCommandUsage(root) {
-    const rows = readJsonl(getJsonlPath(root, 'command-usage.jsonl'));
+function readCommandUsage(root, usageRows) {
+    // F29: see readGateRuns — shared single parse when called from buildDigest.
+    const rows = usageRows || readJsonl(getJsonlPath(root, 'command-usage.jsonl'));
     const invocations = {};
     let selfInstrumented = 0;
     const gate = { runs: 0, pass: 0, fail: 0, unknown: 0, durations: [] };
@@ -239,8 +243,10 @@ function readMemoryInjection(root) {
 
 function readMemoryStore(root) {
     // Split store (ADR 0006 Am. 2): JSON categories under the TRACKED .memory/;
-    // the rebuilt db under the gitignored .state/memory-index/.
-    const memDir = path.join(root, 'docs', '.output', '.memory');
+    // the rebuilt db under the gitignored .state/memory-index/. Both are registered
+    // OUTPUT_PATHS compartments — resolve their dirs through the registry (read-only
+    // path resolution; the memory subsystem still owns writes) rather than re-deriving.
+    const memDir = path.join(root, compartmentDir('memory'));
     const byCategory = {};
     let total = 0;
     for (const ent of listDir(memDir)) {
@@ -250,7 +256,7 @@ function readMemoryStore(root) {
             .filter(e => e.isFile() && e.name.endsWith('.json')).length;
         if (count > 0) { byCategory[ent.name] = count; total += count; }
     }
-    const hasDb = fs.existsSync(path.join(root, 'docs', '.output', '.state', 'memory-index', 'memories.db'));
+    const hasDb = fs.existsSync(path.join(root, compartmentDir('state/memory-index'), 'memories.db'));
     return { total, byCategory, hasDb };
 }
 
@@ -281,6 +287,9 @@ function inferProjectName(root) {
  */
 function buildDigest(root = resolveRoot()) {
     const gateSummary = readSummary(root);
+    // F29: command-usage.jsonl parsed ONCE — readGateRuns and readCommandUsage
+    // used to each read + JSON.parse the same ~6000-line file independently.
+    const usageRows = readJsonl(getJsonlPath(root, 'command-usage.jsonl'));
     return {
         generated: new Date().toISOString(),
         project: inferProjectName(root),
@@ -292,13 +301,13 @@ function buildDigest(root = resolveRoot()) {
         // S-PI.5: explicit gate-run counter (primary: gate_run JSONL rows;
         // fallback: gate-*.log file count). Separate from commands.gates so the
         // two sources can coexist without double-counting.
-        gateRuns: readGateRuns(root),
+        gateRuns: readGateRuns(root, usageRows),
         // S-PI.5: secret-scanner commit blocks as a distinct digest line.
         // Source: guardrail-events.jsonl where source==='secret-scanner',
         // emitted by secret-scanner.cjs recordScannerBlock() since 2026-06-13.
         // Field is always present so the digest contract is stable.
         scannerBlocks: readScannerBlocks(root),
-        commands: readCommandUsage(root),
+        commands: readCommandUsage(root, usageRows),
         hooks: readHookEvents(root),
         guardrail: readGuardrailHits(root),
         agents: readSkillUsage(root),

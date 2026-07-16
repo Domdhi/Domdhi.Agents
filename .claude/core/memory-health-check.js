@@ -102,9 +102,14 @@ class MemoryHealthChecker {
         }
     }
 
-    async checkBackend() {
+    // F39: the three report-consuming checks accept the report as a parameter —
+    // runHealthCheck() generates it ONCE and threads it through (the old shape
+    // ran generateReport() twice plus a third whole-store listMemories sweep,
+    // ~6× full-store JSON parsing per health-check run). The no-arg fallback
+    // keeps each check independently callable.
+    async checkBackend(report) {
         console.log('🔎 Checking memory search backend...');
-        const report = await this.manager.generateReport();
+        report = report || await this.manager.generateReport();
         const storage = report.storage || {};
         const { sqliteBackend, sqliteSupportsFts5 } = storage;
 
@@ -138,10 +143,15 @@ class MemoryHealthChecker {
         // intervening search (previously unwrapped, M6) can't leave the probe file
         // behind in a tracked category dir where a later commit could sweep it up.
         try {
+            // F10 made createMemory refuse a same-id collision by default — this
+            // probe intentionally reuses a fixed id every run (see comment above)
+            // and relies on that "next run overwrites anyway" fallback when the
+            // finally-block delete below didn't run (e.g. a prior crash), so it
+            // must opt in explicitly.
             await this.manager.createMemory(CONSTANTS.MEMORY_CATEGORIES.PATTERNS, testId, {
                 test: true,
                 timestamp: new Date().toISOString()
-            });
+            }, { overwrite: true });
             const createTime = Date.now() - startCreate;
 
             if (createTime < CONSTANTS.PERFORMANCE.CACHE_HIT_MS * 10) { // Should be very fast
@@ -152,9 +162,11 @@ class MemoryHealthChecker {
                 this.results.errors.push(`❌ Memory creation: ${createTime}ms (too slow)`);
             }
 
-            // Test memory search speed
+            // Test memory search speed. F11: this is a latency probe, not a
+            // genuine recall — recordRecall:false keeps it from inflating
+            // usage_count / polluting memory-injection.jsonl analytics.
             const startSearch = Date.now();
-            await this.manager.searchMemories('test');
+            await this.manager.searchMemories('test', { recordRecall: false });
             const searchTime = Date.now() - startSearch;
 
             if (searchTime < CONSTANTS.PERFORMANCE.SIMPLE_QUERY_MS) {
@@ -170,10 +182,10 @@ class MemoryHealthChecker {
         }
     }
 
-    async checkMemoryQuality() {
+    async checkMemoryQuality(report) {
         console.log('📊 Checking memory quality metrics...');
 
-        const report = await this.manager.generateReport();
+        report = report || await this.manager.generateReport();
 
         for (const [category, data] of Object.entries(report.categories)) {
             if (data.count === 0) {
@@ -205,14 +217,17 @@ class MemoryHealthChecker {
         }
     }
 
-    async checkRecentMemories() {
+    async checkRecentMemories(report) {
         console.log('📅 Checking recent memory updates...');
 
         let recentCount = 0;
         let oldCount = 0;
 
+        // F39: bucket from the report's per-category memory summaries (each
+        // carries `updated`) instead of a third independent full-store sweep.
+        report = report || await this.manager.generateReport();
         for (const category of Object.values(CONSTANTS.MEMORY_CATEGORIES)) {
-            const memories = await this.manager.listMemories(category);
+            const memories = (report.categories[category] || {}).memories || [];
 
             for (const memory of memories) {
                 const daysSinceUpdate =
@@ -248,10 +263,16 @@ class MemoryHealthChecker {
         // opens/creates it (see checkIndexFreshness).
         await this.checkIndexFreshness();
         await this.checkInboxBacklog();
-        await this.checkBackend();
+        // F39: ONE store scan for the whole run — checkBackend, checkMemoryQuality,
+        // and checkRecentMemories all consume this single report. (Generated
+        // before checkMemoryPerformance so its transient probe memory can never
+        // leak into the quality/recency numbers — same net view as the old
+        // post-probe-deletion reads.)
+        const report = await this.manager.generateReport();
+        await this.checkBackend(report);
         await this.checkMemoryPerformance();
-        await this.checkMemoryQuality();
-        await this.checkRecentMemories();
+        await this.checkMemoryQuality(report);
+        await this.checkRecentMemories(report);
 
         // Display results
         console.log('\n' + '='.repeat(60));

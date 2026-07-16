@@ -36,6 +36,7 @@
 const path = require('path');
 const { appendJsonl } = require('./_lib/jsonl-writer');
 const { getJsonlPath } = require('./_lib/telemetry-paths');
+const { resolveProjectRoot } = require('./_lib/project-root');
 
 // Mirror command-usage-logger.cjs's sizing for command-usage.jsonl — it's the
 // longitudinal record consumed by /retro, /status, /timeline, and metrics.js,
@@ -45,7 +46,13 @@ const MAX_JSONL_LINES = 6000;
 const TAIL_KEEP_LINES = 5000;
 
 function getProjectRoot() {
-    return process.env.CLAUDE_PROJECT_DIR || path.resolve(__dirname, '..', '..');
+    // W3-2 / F72-class: telemetry-log.js writes command-usage.jsonl — the SAME
+    // gitignored `.state/` file the fixed command-usage-logger.cjs hook writes —
+    // as an in-session preamble from 10+ commands. It must anchor to the
+    // git-common-dir via resolveProjectRoot (CLAUDE_PROJECT_DIR still wins) or a
+    // linked worktree writes self-instrumented rows to a worktree-local file that
+    // is deleted with the worktree, split-braining the log the hook hardened.
+    return resolveProjectRoot(path.resolve(__dirname, '..', '..'));
 }
 
 /**

@@ -96,7 +96,23 @@ function handleStop() {
 }
 
 /**
- * Handle PostToolUse:Bash events — detect git commits and enrich daily log.
+ * Recognize a command that produces a commit whose context we want to capture.
+ *
+ * Two forms produce a commit in this repo:
+ *   1. a plain `git commit …`
+ *   2. `node .claude/core/commit.js …` — the MANDATED path (commit-guard blocks
+ *      inline `git commit -m`). commit.js runs `git commit -F` in a CHILD
+ *      process, so the PostToolUse hook only ever sees the commit.js invocation,
+ *      never a bare `git commit`. Missing form 2 meant the diffstat/hash/daily-log
+ *      enrichment never fired for the repo's normal commit flow (F64).
+ */
+function isCommitCommand(command) {
+    return /^git\s+commit\b/.test(command) ||
+        /(?:^|\s)node\s+\S*commit\.js(?:\s|$)/.test(command);
+}
+
+/**
+ * Handle PostToolUse:Bash events — detect commits and enrich daily log.
  *
  * Payload shape note (2026-04-20): Claude Code sends the command's output under
  * `tool_response.stdout`. The `tool_output` field was the older shape; kept as
@@ -109,8 +125,8 @@ function handleBashPostToolUse(input) {
         (input.tool_output && input.tool_output.stdout) ||
         '';
 
-    // Only capture successful git commits (not --amend)
-    if (!/^git\s+commit\b/.test(command) || /--amend/.test(command)) {
+    // Only capture successful commits (git commit OR commit.js), not --amend
+    if (!isCommitCommand(command) || /--amend/.test(command)) {
         return;
     }
 
@@ -230,6 +246,7 @@ module.exports = {
     processEvent,
     handleStop,
     handleBashPostToolUse,
+    isCommitCommand,
     shouldCapture,
 };
 

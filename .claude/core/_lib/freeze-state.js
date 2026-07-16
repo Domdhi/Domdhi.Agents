@@ -25,11 +25,23 @@
 
 const fs = require('fs');
 const path = require('path');
+const { resolveProjectRoot } = require('./project-root');
 
 function getStateFilePath() {
-    const projectRoot = process.env.CLAUDE_PROJECT_DIR || path.resolve(__dirname, '..', '..', '..');
+    // F1/CR-3.1 sibling: freeze-state.json lives under the gitignored `.state/`
+    // shared across linked worktrees, so anchor to the git-common-dir via
+    // resolveProjectRoot (CLAUDE_PROJECT_DIR still wins) rather than the naive
+    // __dirname fallback.
+    const projectRoot = resolveProjectRoot(path.resolve(__dirname, '..', '..', '..'));
     return path.join(projectRoot, 'docs', '.output', '.state', 'freeze-state.json');
 }
+
+// F10: memoize the parsed list per (file, mtime). guardrail.cjs checks freeze
+// state once per delete-path candidate — `rm -rf a b c d` used to re-read and
+// re-JSON.parse the same file four times in one hook invocation. The mtime key
+// keeps the cache honest across processes/sessions; setFrozen() below also
+// invalidates explicitly (same-millisecond rewrites would fool mtime alone).
+let _frozenCache = null; // { file, mtimeMs, frozen }
 
 /**
  * Load the frozen-path list. Returns [] on any read/parse error.
@@ -37,12 +49,21 @@ function getStateFilePath() {
  */
 function listFrozen() {
     const stateFile = getStateFilePath();
-    if (!fs.existsSync(stateFile)) return [];
+    let st;
     try {
-        const raw = fs.readFileSync(stateFile, 'utf8');
-        const parsed = JSON.parse(raw);
+        st = fs.statSync(stateFile);
+    } catch {
+        return []; // absent — the common case
+    }
+    if (_frozenCache && _frozenCache.file === stateFile && _frozenCache.mtimeMs === st.mtimeMs) {
+        return _frozenCache.frozen;
+    }
+    try {
+        const parsed = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
         if (!parsed || !Array.isArray(parsed.frozen)) return [];
-        return parsed.frozen.filter((p) => typeof p === 'string');
+        const frozen = parsed.frozen.filter((p) => typeof p === 'string');
+        _frozenCache = { file: stateFile, mtimeMs: st.mtimeMs, frozen };
+        return frozen;
     } catch {
         return [];
     }
@@ -69,6 +90,7 @@ function setFrozen(paths) {
     fs.mkdirSync(path.dirname(stateFile), { recursive: true });
     const payload = { frozen: Array.isArray(paths) ? paths.filter((p) => typeof p === 'string') : [] };
     fs.writeFileSync(stateFile, JSON.stringify(payload, null, 2));
+    _frozenCache = null; // F10: never serve a pre-write list from the memo
 }
 
 module.exports = { isFrozen, listFrozen, setFrozen, getStateFilePath };

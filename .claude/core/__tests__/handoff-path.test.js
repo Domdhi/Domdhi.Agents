@@ -6,6 +6,8 @@ import path from 'node:path';
 
 const require = createRequire(import.meta.url);
 const hp = require('../handoff-path');
+const { OUTPUT_PATHS } = require('../constants');
+const { OUTPUT_ROOT } = require('../_lib/output-paths');
 
 let tmp;
 function mkHandoffs(names) {
@@ -27,6 +29,14 @@ describe('handoff-path', () => {
     expect(hp.slugBranch('main')).toBe('main');
     expect(hp.slugBranch('')).toBe('nobranch');
     expect(hp.slugBranch('  spaces here ')).toBe('spaces-here');
+  });
+
+  it('HANDOFF_DIR_derivesFromOutputPathsRegistry_notAHardcodedLiteral', () => {
+    // F35/CR-3.3: the handoffs base dir must be single-sourced from the OUTPUT_PATHS
+    // registry (via output-paths.js OUTPUT_ROOT), so an ADR-0006-style compartment
+    // rename touches constants.js only — never this const in lockstep. Proves the
+    // registry is the source, not that the current string happens to equal a literal.
+    expect(hp.HANDOFF_DIR).toBe(`${OUTPUT_ROOT}/${OUTPUT_PATHS.handoffs.dir}`);
   });
 
   it('stamp_isYYMMDD_HHMM', () => {
@@ -112,6 +122,30 @@ describe('handoff-path', () => {
 
   it('resolveLatest_ignoresNonHandoffFiles', () => {
     mkHandoffs(['260607-1200-do-main.md', 'README.md', 'notes.txt']);
+    expect(hp.resolveLatest({ cwd: tmp, branch: 'main' })).toBe(
+      'docs/.output/handoffs/260607-1200-do-main.md'
+    );
+  });
+
+  it('resolveLatest_treatsOffContractFilename_asBranchAgnostic', () => {
+    mkHandoffs([
+      '260607-1200-do-main.md',                    // conforming, branch=main
+      '260624-1500-xdb-zero-hour-grid-fix.md',      // off-contract: no caller, no branch tag
+    ]);
+    // Current branch has NO conforming handoff of its own — the off-contract
+    // file must still be picked (branch-agnostic), not silently dropped.
+    expect(hp.resolveLatest({ cwd: tmp, branch: 'some-other-branch' })).toBe(
+      'docs/.output/handoffs/260624-1500-xdb-zero-hour-grid-fix.md'
+    );
+  });
+
+  it('resolveLatest_offContractFile_stillLosesToNewerConformingSameBranchFile', () => {
+    mkHandoffs([
+      '260601-0900-xdb-zero-hour-grid-fix.md',   // off-contract, older
+      '260607-1200-do-main.md',                  // conforming, branch=main, newer
+    ]);
+    // Both are "mine" (off-contract is branch-agnostic, conforming matches
+    // branch) — recency picks the newer one, same sort as any other pair.
     expect(hp.resolveLatest({ cwd: tmp, branch: 'main' })).toBe(
       'docs/.output/handoffs/260607-1200-do-main.md'
     );

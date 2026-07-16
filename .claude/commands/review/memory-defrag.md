@@ -204,7 +204,7 @@ Before SPLIT or CROSS-REF that would create a new memory, check the target categ
 node .claude/core/memory-manager.js list {category} | grep -c '"id"'
 ```
 
-If the category is at 49 (one below the hard cap of 50), warn the user and suggest pruning before proceeding. Do NOT silently fail at the cap.
+If the category is one below the hard cap (`MEMORY_MAX_PER_CATEGORY` in `.claude/core/constants.js` — read it, do NOT assume a number; it has gone 50→60→100→150), warn the user and suggest pruning before proceeding. Do NOT silently fail at the cap.
 
 ### Step 5: Commit
 

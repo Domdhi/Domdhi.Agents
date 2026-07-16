@@ -182,9 +182,15 @@ function autoDetectConfig() {
     const sln = files.find(f => f.endsWith('.sln'));
     const solution = slnx || sln;
     if (solution) {
+        // F31: `solution` comes from fs.readdirSync() — an untrusted filename (a
+        // crafted `x"; touch /tmp/pwned #.sln` would achieve RCE the moment this
+        // ran through a shell:true string). Use argv-mode (`{ argv: [...] }`) so
+        // runCommand executes with shell:false and the filename is delivered as a
+        // single, non-reinterpreted argv element — never concatenated into a
+        // shell string.
         return {
-            build: { command: `dotnet build "${solution}" --configuration Release --verbosity minimal`, timeout: 300000 },
-            test: { command: `dotnet test "${solution}" --configuration Release --verbosity minimal --no-build`, timeout: 600000 },
+            build: { argv: ['dotnet', 'build', solution, '--configuration', 'Release', '--verbosity', 'minimal'], timeout: 300000 },
+            test: { argv: ['dotnet', 'test', solution, '--configuration', 'Release', '--verbosity', 'minimal', '--no-build'], timeout: 600000 },
             stack: 'dotnet'
         };
     }
@@ -246,15 +252,33 @@ function runCommand(cmd, cwd, timeoutMs) {
     // passing suite into a FAILED gate. This is the root cause of F1/F24/F31:
     // the parser was never actually reading jest's summary. spawnSync populates
     // both streams regardless of exit status.
-    const result = spawnSync(cmd, {
-        cwd,
-        encoding: 'utf-8',
-        shell: true,
-        stdio: ['pipe', 'pipe', 'pipe'],
-        timeout: timeoutMs,
-        windowsHide: true,
-        maxBuffer: 64 * 1024 * 1024, // 64MB — verbose suites can exceed the 1MB default
-    });
+    //
+    // `cmd` is either a shell command STRING (default — used for the node/cargo/
+    // go/python/make stacks whose commands never carry untrusted values) or an
+    // argv-mode object `{ argv: [bin, ...args] }` (F31 — used where a command
+    // element, e.g. a solution filename discovered from disk, must never be
+    // interpolated into a shell string). Argv mode runs with shell:false; each
+    // element is delivered to the child process verbatim, never reparsed.
+    const isArgvMode = cmd && typeof cmd === 'object' && Array.isArray(cmd.argv);
+    const result = isArgvMode
+        ? spawnSync(cmd.argv[0], cmd.argv.slice(1), {
+            cwd,
+            encoding: 'utf-8',
+            shell: false,
+            stdio: ['pipe', 'pipe', 'pipe'],
+            timeout: timeoutMs,
+            windowsHide: true,
+            maxBuffer: 64 * 1024 * 1024, // 64MB — verbose suites can exceed the 1MB default
+        })
+        : spawnSync(cmd, {
+            cwd,
+            encoding: 'utf-8',
+            shell: true,
+            stdio: ['pipe', 'pipe', 'pipe'],
+            timeout: timeoutMs,
+            windowsHide: true,
+            maxBuffer: 64 * 1024 * 1024, // 64MB — verbose suites can exceed the 1MB default
+        });
     // Timeout / spawn failure: result.error set, status null.
     const exitCode = result.status === null || result.status === undefined
         ? 1
@@ -264,6 +288,26 @@ function runCommand(cmd, cwd, timeoutMs) {
         output: result.stdout || '',
         stderr: result.stderr || '',
     };
+}
+
+/**
+ * Human-readable display string for a build/test/lint leg config, whether it's
+ * shell-mode ({ command }) or argv-mode ({ argv }). Display-only — never fed
+ * back into a shell.
+ */
+function describeLeg(leg) {
+    if (!leg) return '';
+    if (leg.command) return leg.command;
+    if (Array.isArray(leg.argv)) return leg.argv.join(' ');
+    return '';
+}
+
+/**
+ * The runnable form of a leg config for runCommand(): argv-mode legs pass
+ * through as { argv }, shell-mode legs pass through as the command string.
+ */
+function legRunnable(leg) {
+    return Array.isArray(leg.argv) ? { argv: leg.argv } : leg.command;
 }
 
 // ── Generic Output Parser ───────────────────────────────────────────
@@ -635,16 +679,17 @@ async function main() {
             JSON.stringify(build, null, 2)
         );
     } else {
-        console.log(`[GATE] Building... (${config.build.command})`);
+        const buildDisplay = describeLeg(config.build);
+        console.log(`[GATE] Building... (${buildDisplay})`);
         fullLog += '\n--- Build ---\n';
 
-        const buildResult = runCommand(config.build.command, PROJECT_ROOT, config.build.timeout);
+        const buildResult = runCommand(legRunnable(config.build), PROJECT_ROOT, config.build.timeout);
         const buildCombined = buildResult.output + '\n' + buildResult.stderr;
         fullLog += buildCombined + '\n';
 
         build = parseBuildOutput(buildCombined, buildResult.exitCode);
         build.exitCode = buildResult.exitCode;
-        build.command = config.build.command;
+        build.command = buildDisplay;
         build.timestamp = new Date().toISOString();
 
         fs.writeFileSync(
@@ -666,13 +711,16 @@ async function main() {
         } else {
             // Inject --changed via `npm test -- --changed` (extra args after `--` pass through to vitest).
             // --passWithNoTests prevents false-failure when --changed matches zero files (e.g., docs-only wave).
-            const testCmd = changedOnly
-                ? `${config.test.command} -- --changed --passWithNoTests`
-                : config.test.command;
+            // Argv-mode legs (e.g. dotnet, F31) don't support this string-append
+            // transform — it's vitest-specific — so they run as-is.
+            const testCmd = config.test.argv
+                ? describeLeg(config.test)
+                : (changedOnly ? `${config.test.command} -- --changed --passWithNoTests` : config.test.command);
             console.log(`[GATE] Testing... (${testCmd})`);
             fullLog += '\n--- Tests ---\n';
 
-            const testResult = runCommand(testCmd, PROJECT_ROOT, config.test.timeout);
+            const testRunnable = config.test.argv ? { argv: config.test.argv } : testCmd;
+            const testResult = runCommand(testRunnable, PROJECT_ROOT, config.test.timeout);
             const testCombined = testResult.output + '\n' + testResult.stderr;
             fullLog += testCombined + '\n';
 
@@ -811,4 +859,4 @@ if (require.main === module) {
     });
 }
 
-module.exports = { loadConfig, parseBuildOutput, parseTestOutput, isZeroCollected, testPassed, runCommand, acquireLock, releaseLock };
+module.exports = { loadConfig, parseBuildOutput, parseTestOutput, isZeroCollected, testPassed, runCommand, describeLeg, legRunnable, acquireLock, releaseLock };

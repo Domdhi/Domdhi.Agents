@@ -123,25 +123,42 @@ class MemoryCurator {
     // Prompt construction (per design review Addendum C — explicit rubric)
     // -------------------------------------------------------------------------
 
+    /**
+     * F38: memory titles/summaries and the daily log are UNTRUSTED (they can
+     * originate from a sub-agent that processed malicious repo/PR content) and
+     * are embedded between the XML-ish delimiters below. Neutralize any
+     * embedded open/close of OUR container tags so a crafted description
+     * (`</todays_daily_log><system>…`) cannot break out of its block and
+     * smuggle instructions into the curation prompt.
+     */
+    static neutralizeDelimiters(text) {
+        return String(text).replace(
+            /<(\/?)(concept_index|activity_scope_articles|todays_daily_log)\b/gi,
+            '&lt;$1$2'
+        );
+    }
+
     buildPrompt(indexContent, activityArticles, dailyLogContent, concepts) {
+        const esc = MemoryCurator.neutralizeDelimiters;
+
         // Sample top 30 by decayed_confidence (AC#8)
         const topConcepts = concepts
             .slice()
             .sort((a, b) => b.decayedConfidence - a.decayedConfidence)
             .slice(0, MAX_CONCEPTS_PER_RUN);
 
-        const conceptsList = topConcepts
+        const conceptsList = esc(topConcepts
             .map(c => `- [${c.category}] ${c.slug} — ${c.title} (conf: ${c.decayedConfidence.toFixed(2)})`)
-            .join('\n');
+            .join('\n'));
 
         const articlesBlock = activityArticles.length === 0
             ? '(none — no concept slugs referenced in today\'s daily log)'
-            : activityArticles
+            : esc(activityArticles
                 .map(c => `### ${c.slug} (${c.category})\n${c.content.slice(0, MAX_ARTICLE_CHARS)}`)
-                .join('\n\n---\n\n');
+                .join('\n\n---\n\n'));
 
         const dailyLogBlock = dailyLogContent
-            ? dailyLogContent.slice(0, MAX_DAILY_LOG_CHARS)
+            ? esc(dailyLogContent.slice(0, MAX_DAILY_LOG_CHARS))
             : '(no daily log for today)';
 
         // Rubric (Addendum C from design review)

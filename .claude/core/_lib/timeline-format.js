@@ -68,7 +68,7 @@ function toTimelineNodes(data) {
       className: `cat-${c.category}`,
       slug: c.slug,
       type: 'concept',
-      title: `${c.title}\nCategory: ${c.category}\nConfidence: ${c.confidence.toFixed(2)}\nSources: ${(c.sources || []).length}\n${c.summary || ''}`,
+      title: `${esc(c.title)}\nCategory: ${esc(c.category)}\nConfidence: ${c.confidence.toFixed(2)}\nSources: ${(c.sources || []).length}\n${esc(c.summary || '')}`,
       confidence: c.confidence,
     });
   }
@@ -84,7 +84,7 @@ function toTimelineNodes(data) {
       group: 'commits',
       className: 'cat-commits',
       type: 'commit',
-      title: `${commit.message}\nHash: ${commit.hash.slice(0, 8)}\nDate: ${commit.date}`,
+      title: `${esc(commit.message)}\nHash: ${esc(commit.hash.slice(0, 8))}\nDate: ${esc(commit.date)}`,
       confidence: 1.0,
     });
   }
@@ -99,7 +99,7 @@ function toTimelineNodes(data) {
       group: 'decisions',
       className: 'cat-adrs',
       type: 'adr',
-      title: `ADR-${adr.number}: ${adr.title}\nStatus: ${adr.status}\n${adr.summary || ''}`,
+      title: `ADR-${adr.number}: ${esc(adr.title)}\nStatus: ${esc(adr.status)}\n${esc(adr.summary || '')}`,
       confidence: 1.0,
     });
   }
@@ -113,7 +113,7 @@ function toTimelineNodes(data) {
       group: 'workflows',
       className: 'cat-workflows',
       type: 'daily-log',
-      title: `Daily log: ${log.trigger}\nDate: ${log.date} ${log.time}\nBranch: ${log.branch || 'unknown'}`,
+      title: `Daily log: ${esc(log.trigger)}\nDate: ${esc(log.date)} ${esc(log.time)}\nBranch: ${esc(log.branch || 'unknown')}`,
       confidence: 1.0,
     });
   }
@@ -147,7 +147,7 @@ function toNetworkGraph(data) {
     nodes.push({
       id: c.slug,
       label,
-      title: `${c.title}\\nCategory: ${c.category}\\nConfidence: ${c.confidence.toFixed(2)}\\nSources: ${(c.sources || []).length}\\nRelated: ${related}`,
+      title: `${esc(c.title)}\\nCategory: ${esc(c.category)}\\nConfidence: ${c.confidence.toFixed(2)}\\nSources: ${(c.sources || []).length}\\nRelated: ${related}`,
       size,
       color: {
         background: color,
@@ -169,7 +169,7 @@ function toNetworkGraph(data) {
     nodes.push({
       id: adrId,
       label: `ADR-${adr.number}: ${shortTitle}`,
-      title: `ADR-${adr.number}: ${adr.title}\\nStatus: ${adr.status}\\n${adr.summary || ''}`,
+      title: `ADR-${adr.number}: ${esc(adr.title)}\\nStatus: ${esc(adr.status)}\\n${esc(adr.summary || '')}`,
       size: 20,
       color: {
         background: '#a371f7',

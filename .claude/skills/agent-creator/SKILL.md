@@ -107,6 +107,8 @@ Before creating an agent, apply the **agents-vs-skills decision rule**:
 
 An agent that "helps with documentation" is a skill. A system architect who believes every decision is a constraint imposed on the future — that's an agent.
 
+**Existing specialty overlapping ~100% with general-purpose + skills? Retire it, don't keep both.** When a specialty agent (e.g. a stack-specific `{framework}-specialist` agent) has no distinct point of view beyond the domain skills a properly-skilled `general-purpose` agent already loads, fold its knowledge into skills and retire the agent. Skills use progressive disclosure — metadata loads at startup, body loads on-demand by trigger — so a skill referenced by 3 agents isn't loaded 3x. This also closes a reviewer/implementer drift gap: `code-reviewer` and `qa-engineer` loading the same stack skills as the implementer means all three reason from the same domain knowledge. Keep a specialty agent only when it earns a genuinely distinct decision philosophy the Obvious Test above would keep — not just a different tech-stack label.
+
 ### The Obvious Test for Principles
 
 Every principle in Decision Philosophy must pass the **Obvious Test**: "Would this be obvious to anyone in this role?" If yes, cut it.

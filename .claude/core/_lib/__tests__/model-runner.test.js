@@ -6,7 +6,7 @@
 //     - tryParseInnerJson(text)           — primitive, strips fences, JSON.parse
 //     - extractTokenCounts(raw)           — { input, output }; returns zeros on failure
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
@@ -20,9 +20,10 @@ const {
 
 // Note: `invokeModel` + `checkClaudeCli` hit the real subprocess by design.
 // The existing curator/benchmark/extractor test suites cover those paths by
-// mocking execSync via require.cache injection (see claude-mock.js). Here we
-// test only the pure parsers that don't need a subprocess — plus the model-id
-// validation guard, which rejects BEFORE any subprocess is spawned.
+// mocking execSync/execFileSync via require.cache injection (see claude-mock.js).
+// Here we test only the pure parsers that don't need a subprocess — plus the
+// model-id validation guard, which rejects BEFORE any subprocess is spawned —
+// plus the argv-delivery test below (installs its own fresh mock).
 
 // ─── invokeModel model-id guard (sec-n2) ─────────────────────────────────────
 
@@ -35,6 +36,58 @@ describe('invokeModel model-id validation', () => {
         expect(invokeModel('hi', { model: 'x$(whoami)', logTag: null })).toBeNull();
         expect(invokeModel('hi', { model: 'a`id`', logTag: null })).toBeNull();
         expect(invokeModel('hi', { model: 'a b', logTag: null })).toBeNull();
+    });
+});
+
+// ─── invokeModel argv delivery (F14 fix) ─────────────────────────────────────
+
+describe('invokeModel argv delivery', () => {
+    // Was: `claude -p '${escapedPrompt}' --model ${model} …` interpolated into a
+    // shelled execSync — bash-only single-quote escaping, live shell-metacharacter
+    // injection on win32 (cmd.exe ignores single quotes). Fix: execFileSync with an
+    // argv array — no shell parses the prompt, so it must arrive as ONE verbatim
+    // argv element regardless of content.
+    it('delivers a prompt containing shell metacharacters verbatim as a single argv element', () => {
+        const mockExecFileSync = vi.fn(() => 'ok');
+        const fakeChildProcess = { execFileSync: mockExecFileSync, execSync: () => '' };
+        require.cache['child_process'] = {
+            id: 'child_process',
+            filename: 'child_process',
+            loaded: true,
+            exports: fakeChildProcess,
+            children: [],
+            paths: [],
+            parent: null,
+        };
+        // Force a fresh load of model-runner.js so its destructure captures the fake —
+        // the top-level `invokeModel` import above was already bound to the real one.
+        const modelRunnerPath = require.resolve('../model-runner');
+        const priorModelRunnerCache = require.cache[modelRunnerPath];
+        delete require.cache[modelRunnerPath];
+        let freshInvokeModel;
+        try {
+            freshInvokeModel = require('../model-runner').invokeModel;
+        } finally {
+            delete require.cache['child_process'];
+            // Restore model-runner's cache entry to the original (real-child_process-backed)
+            // module so nothing downstream is left holding the fake.
+            delete require.cache[modelRunnerPath];
+            if (priorModelRunnerCache) require.cache[modelRunnerPath] = priorModelRunnerCache;
+            else require('../model-runner'); // repopulate cache with the real module
+        }
+
+        const dangerousPrompt = 'summarize this: &|^%<>"\' rm -rf /';
+        const result = freshInvokeModel(dangerousPrompt, { model: 'claude-sonnet-4-6', logTag: null });
+
+        expect(result).toBe('ok');
+        expect(mockExecFileSync).toHaveBeenCalledOnce();
+        const [file, args] = mockExecFileSync.mock.calls[0];
+        expect(file).toBe('claude');
+        expect(Array.isArray(args)).toBe(true);
+        // The prompt is exactly one argv element, byte-for-byte, right after '-p'.
+        const promptIndex = args.indexOf('-p') + 1;
+        expect(args[promptIndex]).toBe(dangerousPrompt);
+        expect(args.filter(a => a === dangerousPrompt)).toHaveLength(1);
     });
 });
 
