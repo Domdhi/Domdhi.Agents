@@ -10,7 +10,7 @@ const path = require('node:path');
 
 // CJS bridge — loads the scanner after module.exports is added
 const scanner = require('../secret-scanner.cjs');
-const { processEvent, scanFile } = scanner;
+const { processEvent, scanFile, isBinaryStagedFile, classifyUnreadableStagedFile } = scanner;
 
 const { createTmpDir } = require('../../core/__tests__/_helpers/tmp-dir');
 const { createGitRepo, gitAvailable } = require('../../core/__tests__/_helpers/git-fixture');
@@ -19,6 +19,13 @@ const { createGitRepo, gitAvailable } = require('../../core/__tests__/_helpers/g
 
 function fakeAwsKey() {
     return 'AKIA' + 'IOSFODNN7' + 'EXAMPLE123456';
+}
+
+// A syntactically valid AWS-shaped key that is NOT AWS's documented example
+// (AKIAIOSFODNN7EXAMPLE, which fakeAwsKey() above happens to produce once the
+// regex trims it to 16 chars) — used where a test needs a still-real-looking key.
+function fakeAwsKeyNotPlaceholder() {
+    return 'AKIA' + 'QW3ERTY7UIOP' + 'AS2D';
 }
 
 function fakeOpenAiKey() {
@@ -218,6 +225,69 @@ describe('processEvent', () => {
                 tool_name: 'Read',
                 tool_input: {
                     file_path: '/project/config.js',
+                },
+            };
+            const result = processEvent(event);
+            expect(result).toBeNull();
+        });
+    });
+
+    describe('processEvent_testFilePath_namedProvidersOnly', () => {
+        it('processEvent_writeAwsKeyToTestFile_stillBlocks', () => {
+            // Was previously wholesale-skipped via SKIP_PATHS/shouldSkipPath — a
+            // real provider key pasted into a test file is still a leak.
+            const event = {
+                tool_name: 'Write',
+                tool_input: {
+                    file_path: '/project/src/auth.test.js',
+                    content: `const key = "${fakeAwsKeyNotPlaceholder()}";`,
+                },
+            };
+            const result = processEvent(event);
+            expect(result).not.toBeNull();
+            expect(result.block).toBe(true);
+            expect(result.feedback).toContain('AWS Access Key');
+        });
+
+        it('processEvent_writeAwsDocumentedExampleKeyToTestFile_doesNotBlock', () => {
+            // AWS's own published example access key (AKIAIOSFODNN7EXAMPLE) is
+            // extremely common in SDK test fixtures/READMEs — it must not block
+            // a commit when it shows up in a test file. fakeAwsKey() happens to
+            // produce this exact literal once the regex trims it to 16 chars.
+            const event = {
+                tool_name: 'Write',
+                tool_input: {
+                    file_path: '/project/src/auth.test.js',
+                    content: `const key = "${fakeAwsKey()}";`,
+                },
+            };
+            const result = processEvent(event);
+            expect(result).toBeNull();
+        });
+
+        it('processEvent_writeGitHubTokenToSpecFile_stillBlocks', () => {
+            const event = {
+                tool_name: 'Write',
+                tool_input: {
+                    file_path: '/project/src/auth.spec.ts',
+                    content: `const token = "${fakeGitHubPAT()}";`,
+                },
+            };
+            const result = processEvent(event);
+            expect(result).not.toBeNull();
+            expect(result.block).toBe(true);
+            expect(result.feedback).toContain('GitHub Token');
+        });
+
+        it('processEvent_writeGenericPasswordFixtureToTestFile_doesNotBlock', () => {
+            // A generic Password/Secret Assignment fixture in a test file must
+            // still be suppressed (this is exactly the false-positive class
+            // the wholesale skip existed to avoid).
+            const event = {
+                tool_name: 'Write',
+                tool_input: {
+                    file_path: '/project/src/__tests__/auth.js',
+                    content: 'const password = "hunter2hunter2";',
                 },
             };
             const result = processEvent(event);
@@ -426,6 +496,82 @@ describe('precommit', () => {
     });
 });
 
+// ─── isBinaryStagedFile / classifyUnreadableStagedFile ────────────────────────
+// The pre-commit `git show` read can fail for reasons other than "the file is
+// binary" (maxBuffer exceeded, a transient git error). classifyUnreadableStagedFile
+// is the pure decision that used to be inlined as a blanket warn-and-continue —
+// it must now fail closed unless the file is DETECTABLY binary.
+
+describe('isBinaryStagedFile', () => {
+    it.skipIf(!gitAvailable())('isBinaryStagedFile_textFile_returnsFalse', () => {
+        const tmp = createTmpDir();
+        const repo = createGitRepo({ root: tmp.root });
+        repo.addCommit({ message: 'setup', files: [{ path: 'README.md', content: 'initial' }] });
+
+        fs.writeFileSync(path.join(repo.repoPath, 'plain.txt'), 'hello world\n');
+        execFileSync('git', ['add', 'plain.txt'], { cwd: repo.repoPath, stdio: 'pipe' });
+
+        const result = isBinaryStagedFile('plain.txt', repo.repoPath);
+        tmp.cleanup();
+        expect(result).toBe(false);
+    });
+
+    it.skipIf(!gitAvailable())('isBinaryStagedFile_binaryFile_returnsTrue', () => {
+        const tmp = createTmpDir();
+        const repo = createGitRepo({ root: tmp.root });
+        repo.addCommit({ message: 'setup', files: [{ path: 'README.md', content: 'initial' }] });
+
+        // NUL bytes trip git's own binary heuristic (same one `git diff` uses).
+        fs.writeFileSync(
+            path.join(repo.repoPath, 'blob.bin'),
+            Buffer.from([0x00, 0x01, 0x02, 0x89, 0x50, 0x4e, 0x47, 0x00])
+        );
+        execFileSync('git', ['add', 'blob.bin'], { cwd: repo.repoPath, stdio: 'pipe' });
+
+        const result = isBinaryStagedFile('blob.bin', repo.repoPath);
+        tmp.cleanup();
+        expect(result).toBe(true);
+    });
+});
+
+describe('classifyUnreadableStagedFile', () => {
+    it.skipIf(!gitAvailable())('classifyUnreadableStagedFile_binaryFile_skipsNotFail', () => {
+        const tmp = createTmpDir();
+        const repo = createGitRepo({ root: tmp.root });
+        repo.addCommit({ message: 'setup', files: [{ path: 'README.md', content: 'initial' }] });
+        fs.writeFileSync(
+            path.join(repo.repoPath, 'blob.bin'),
+            Buffer.from([0x00, 0x01, 0x02, 0x89, 0x50, 0x4e, 0x47, 0x00])
+        );
+        execFileSync('git', ['add', 'blob.bin'], { cwd: repo.repoPath, stdio: 'pipe' });
+
+        const simulatedErr = new Error('simulated git show failure');
+        const decision = classifyUnreadableStagedFile('blob.bin', simulatedErr, repo.repoPath);
+        tmp.cleanup();
+
+        expect(decision.action).toBe('skip');
+    });
+
+    it.skipIf(!gitAvailable())('classifyUnreadableStagedFile_nonBinaryFile_failsClosed', () => {
+        // A NON-binary staged file that `git show` failed to read (simulated
+        // here — e.g. a maxBuffer overrun or transient git error in reality)
+        // must fail the commit closed rather than warn-and-continue.
+        const tmp = createTmpDir();
+        const repo = createGitRepo({ root: tmp.root });
+        repo.addCommit({ message: 'setup', files: [{ path: 'README.md', content: 'initial' }] });
+        fs.writeFileSync(path.join(repo.repoPath, 'plain.txt'), 'a secret might hide here\n');
+        execFileSync('git', ['add', 'plain.txt'], { cwd: repo.repoPath, stdio: 'pipe' });
+
+        const simulatedErr = new Error('simulated git show failure');
+        const decision = classifyUnreadableStagedFile('plain.txt', simulatedErr, repo.repoPath);
+        tmp.cleanup();
+
+        expect(decision.action).toBe('fail');
+        expect(decision.message).toMatch(/FAIL-CLOSED/);
+        expect(decision.message).toContain('plain.txt');
+    });
+});
+
 // ─── recordScannerBlock (S-PI.5 producer — scanner-block telemetry) ───────────
 describe('recordScannerBlock', () => {
     const { recordScannerBlock } = scanner;
@@ -564,4 +710,69 @@ describe('runClaudeHook (spawned process)', () => {
             tmp.cleanup();
         }
     });
+
+    // Wave 5 F1: a stdin read that never completes (wedged pipe) or completes
+    // with garbled/truncated content must FAIL CLOSED (block), never silently
+    // pass through as "nothing to scan" — unlike every other blocking hook,
+    // this one is a security gate.
+    it('hookMode_malformedJsonOnStdin_failsClosedExit2NotExit0', () => {
+        const tmp = createTmpDir('scanner-hook-mode');
+        try {
+            const result = execFileSyncWithInput('not valid json {{{', tmp.root);
+            expect(result.exitCode).not.toBe(0); // never silently "nothing to scan"
+            expect(result.exitCode).toBe(2);
+            expect(result.stderr).toContain('FAIL-CLOSED');
+        } finally {
+            tmp.cleanup();
+        }
+    });
+
+    it('hookMode_stdinNeverCloses_timesOutAndFailsClosedExit2', async () => {
+        // spawnSync's `input` option writes then immediately closes stdin —
+        // that can't simulate a genuinely wedged pipe. Use async spawn and
+        // deliberately never end() the child's stdin, so the only way the
+        // process exits is via readStdin's own timeout firing.
+        const { spawn } = require('node:child_process');
+        const tmp = createTmpDir('scanner-hook-mode');
+        try {
+            const child = spawn('node', [scannerPath], {
+                env: {
+                    ...process.env,
+                    CLAUDE_PROJECT_DIR: tmp.root,
+                    SECRET_SCANNER_STDIN_TIMEOUT_MS: '150',
+                },
+                stdio: ['pipe', 'pipe', 'pipe'],
+            });
+            child.stdin.write('{"tool_name":"Write","tool_input":'); // truncated; stdin intentionally left open
+
+            let stderr = '';
+            child.stderr.on('data', (chunk) => { stderr += chunk; });
+
+            const exitCode = await new Promise((resolve) => {
+                child.on('exit', (code) => resolve(code));
+            });
+
+            expect(exitCode).toBe(2);
+            expect(stderr).toContain('FAIL-CLOSED');
+        } finally {
+            tmp.cleanup();
+        }
+    });
+
+    function execFileSyncWithInput(input, envRoot) {
+        try {
+            const stdout = execFileSync('node', [scannerPath], {
+                input,
+                env: { ...process.env, CLAUDE_PROJECT_DIR: envRoot },
+                stdio: 'pipe',
+            });
+            return { exitCode: 0, stdout: stdout.toString(), stderr: '' };
+        } catch (err) {
+            return {
+                exitCode: err.status,
+                stdout: err.stdout?.toString() || '',
+                stderr: err.stderr?.toString() || '',
+            };
+        }
+    }
 });

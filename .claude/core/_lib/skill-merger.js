@@ -173,10 +173,28 @@ function extractFencedBlocks(text) {
  *
  * @param {string} text
  * @param {Array} blocks
+ * @param {object} [opts]
+ * @param {boolean} [opts.alreadyPresent] — `text` already carries every block in
+ *   `blocks` verbatim, in its original position (the mergeSkillContent
+ *   heading-collision fallback reused dest's own unrefreshed head, which is exactly
+ *   what `blocks` was extracted from) — skip re-insertion entirely rather than
+ *   re-scanning. This replaces a per-block content-search idempotency check that
+ *   used to live in the loop below: searching `content` for `block.raw` cannot tell
+ *   apart "this exact block is already here" from "a DIFFERENT block with
+ *   byte-identical text was already inserted a moment ago" — two distinct blocks
+ *   under different anchor headings with identical raw text would collide, and the
+ *   second block would be silently skipped (dropped) because the search matched the
+ *   first block's just-inserted copy. The only real case needing an idempotency
+ *   guard is the whole-content reuse this flag now names explicitly; every other
+ *   call builds `text` fresh (no blocks in it yet), so no search is needed at all.
  * @returns {{ content: string, orphans: Array }}
  */
-function reinsertFencedBlocks(text, blocks) {
+function reinsertFencedBlocks(text, blocks, opts) {
+    opts = opts || {};
     let content = text.replace(/\r\n/g, '\n');
+    if (opts.alreadyPresent) {
+        return { content: content.endsWith('\n') ? content : content + '\n', orphans: [] };
+    }
     const orphans = [];
     for (const block of blocks) {
         // Fence-aware line scan: BOTH the anchor lookup and the next-heading scan must
@@ -187,11 +205,6 @@ function reinsertFencedBlocks(text, blocks) {
         // which also strands its markers where the fence-blind marker scan ignores
         // them, so the block is clobbered on the NEXT sync (observed live, 2026-07-16).
         const { lines, inFence } = scanFenceState(content);
-        // Idempotency: `content` may already contain this exact block verbatim — e.g.
-        // Form 1's heading-collision fallback reuses the dest's own (unrefreshed) head,
-        // which already has any Form-2 blocks that live inside it. Re-inserting on top
-        // of an already-present block would duplicate it; skip when it's already there.
-        if (findLineSubsequence(lines, block.raw.split('\n')) !== -1) continue;
         let headingIdx = -1;
         if (block.anchorHeading) {
             for (let j = 0; j < lines.length; j++) {
@@ -333,7 +346,7 @@ function mergeSkillContent(srcText, dstText) {
 
     if (dstFenced.length === 0) return { content, preserved, orphans: [], headSuppressed };
 
-    const { content: withFences, orphans } = reinsertFencedBlocks(content, dstFenced);
+    const { content: withFences, orphans } = reinsertFencedBlocks(content, dstFenced, { alreadyPresent: headSuppressed });
     return { content: withFences, preserved: true, orphans, headSuppressed };
 }
 

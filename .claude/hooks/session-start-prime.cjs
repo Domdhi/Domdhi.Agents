@@ -16,11 +16,22 @@
  * Ranking (ME-4.2): importance_floored_decayed × recency_factor, with usage as a
  * TIEBREAKER only (not a primary multiplier — usage_count is a lower bound that
  * passive injection can't see, so it must not dominate ranking).
- *   - importance:         1–5 write-time score, fed into calculateDecayedConfidence
- *                         as the retention floor (importance ≤2 sinks, ≥4 resists)
- *   - decayed_confidence: via MemoryManager.calculateDecayedConfidence() (importance-aware)
+ *   - importance:         1–5 write-time score, applied as a retention-floor
+ *                         factor on top of decayed_confidence (importance ≤2
+ *                         sinks, ≥4 resists) — mirrors MemoryManager's own
+ *                         adapter logic, computed locally (see below)
+ *   - decayed_confidence: via the STANDALONE calculateDecayedConfidence() from
+ *                         _lib/memory-decay.js (importance-aware), called directly
+ *                         with activeDays omitted — NOT MemoryManager's method,
+ *                         which would resolve activeDays via a synchronous
+ *                         `git log` (see the HARD_TIMEOUT_MS note below for why
+ *                         that's deliberately kept off this hot path). Decay here
+ *                         is therefore calendar-days-based, same as the resolver's
+ *                         own no-git fallback.
  *   - recency_factor:     1 / (1 + daysSinceLastUpdated); 1.0 if missing
- *   - usage tiebreaker:   halved-on-silence raw usage, only breaks score ties
+ *   - usage tiebreaker:   halved-on-silence LIVE usage (SQLite index, MEM-7 —
+ *                         the tracked JSON's usage_count is ~always 0), only
+ *                         breaks score ties; falls back to raw_usage when unindexed
  *   - size budget:        top-N slice (N = MEMORY_PRIME_COUNT or DEFAULT_N=8, ≤MAX_N)
  *                         forces ranking down even when nothing has aged
  *   - superseded memories (invalid_at set) are never injected
@@ -32,8 +43,14 @@
  *   - MEMORY_PROFILE=minimal       → exits 0 with empty output
  *   - MEMORY_PRIME_COUNT env var   → overrides default N=8 (clamped 1..20)
  *
- * Safety: wraps everything in try/catch + 2s hard timeout. On any failure
- * exits 0 silently so a bug here can never block session start.
+ * Safety: wraps everything in try/catch + a 2s hard timeout for ASYNC hangs
+ * (e.g. a promise that never resolves). That timeout is a `setTimeout`, which
+ * cannot preempt synchronous blocking code — it only fires once the event loop
+ * is free. This module deliberately avoids any synchronous blocking call on
+ * its main path (see the `calculateDecayedConfidence` note above and the
+ * HARD_TIMEOUT_MS comment below) so the hard timeout's async-hang coverage is
+ * not a false guarantee for this path. On any failure exits 0 silently so a
+ * bug here can never block session start.
  *
  * Exit codes: always 0
  */
@@ -46,11 +63,35 @@ const CONSTANTS = require('../core/constants');
 const { resolveProjectRoot } = require('../core/_lib/project-root');
 const { memoryPaths } = require('../core/_lib/memory-paths');
 const { appendJsonl } = require('../core/_lib/jsonl-writer');
-const { halveUsageCount } = require('../core/_lib/memory-decay');
+// Referenced via the module object (not destructured) so tests can
+// vi.spyOn(memoryDecay, 'calculateDecayedConfidence') and have it take effect
+// here — a destructured const would freeze the original reference at require
+// time, invisible to a later property-level mock under plain CJS `require`.
+const memoryDecay = require('../core/_lib/memory-decay');
+const { halveUsageCount } = memoryDecay;
 
 const USAGE_HALVE_EVERY_DAYS = CONSTANTS.MEMORY_DECAY.USAGE_HALVE_EVERY_DAYS;
 const IMPORTANCE_DEFAULT = CONSTANTS.MEMORY_FILTERS.IMPORTANCE_DEFAULT;
 
+// ME-2.2 importance retention floor, computed locally rather than via
+// MemoryManager.calculateDecayedConfidence() (which this file deliberately
+// avoids — see the calculateDecayedConfidence note in the module header).
+// Mirrors memory-manager.js's clampImportance/IMPORTANCE_MIN/MAX (not exported
+// there, and that file is out of scope this pass) — a trivial 1–5 int clamp,
+// safe to keep in sync manually if the range ever changes.
+const IMPORTANCE_MIN = 1;
+const IMPORTANCE_MAX = 5;
+function clampImportance(v) {
+    const n = parseInt(v, 10);
+    if (!Number.isFinite(n)) return IMPORTANCE_DEFAULT;
+    return Math.max(IMPORTANCE_MIN, Math.min(IMPORTANCE_MAX, n));
+}
+
+// Covers ASYNC hangs only (a setTimeout can't preempt a blocked event loop, so
+// it can never interrupt synchronous work). rankConcepts() is kept free of any
+// synchronous blocking call (notably MemoryManager's git-log-backed
+// calculateDecayedConfidence — see that function's own comment) specifically
+// so this timeout's guarantee stays real for this path.
 const HARD_TIMEOUT_MS = 2000;
 const SOFT_BUDGET_MS = 500;
 const DEFAULT_N = 8;
@@ -89,8 +130,12 @@ function parseMemory(content, category, filename) {
         confidence = json.confidence;
     }
 
+    // MEM-9: no artificial floor — a never-used memory must read as 0 usage, not 1.
+    // Flooring to 1 gave every memory a uniform +USAGE_BOOST in the primary decay
+    // score regardless of real usage (this JSON value is ~always 0 anyway per F44;
+    // see rankConcepts, which prefers the live SQLite count over this baseline).
     const rawUsage = Number.isFinite(json.usage_count) ? json.usage_count : 0;
-    const usage_count = Math.max(1, rawUsage);
+    const usage_count = rawUsage;
 
     // ME-4.2: importance (1–5) is the PRIMARY ranking signal — top-level, then
     // content, default IMPORTANCE_DEFAULT. raw_usage (unfloored) is the tiebreaker input.
@@ -117,23 +162,73 @@ function parseMemory(content, category, filename) {
     };
 }
 
-function rankConcepts(concepts, manager) {
+/**
+ * @param {Array<object>} concepts - parsed memories to rank in place
+ * @param {object} manager - MemoryManager instance. Kept for call-signature
+ *   compatibility with memory-stability.js (CONTRACT NOTE below) — no longer
+ *   used to compute decay (see the calculateDecayedConfidence note in the
+ *   module header for why: manager.calculateDecayedConfidence() resolves
+ *   activeDays via a synchronous `git log`, which this hot path avoids).
+ * @param {Map<string, number>} [liveUsage] - MEM-7: live usage_count keyed by
+ *   memory id, read ONCE via manager._indexUsageMap() by the caller. The tracked
+ *   JSON's usage_count is permanently ~0 (F44 — live usage lives only in the
+ *   gitignored SQLite index), so this is the real source for the TIEBREAK ONLY
+ *   (see the PRIMARY-score note below for why it must not feed the primary score
+ *   too). Falls back to raw_usage/0 per-concept when a slug isn't in the map
+ *   (SQLite unavailable, or never indexed).
+ */
+function rankConcepts(concepts, manager, liveUsage = new Map()) {
     const now = Date.now();
 
     for (const c of concepts) {
         const importance = Number.isFinite(c.importance) ? c.importance : IMPORTANCE_DEFAULT;
+        const rawUsage = Number.isFinite(c.raw_usage) ? c.raw_usage : 0;
+        // MEM-7: prefer the live SQLite count over the ~always-0 JSON baseline —
+        // TIEBREAK input only (see below for why the primary score never sees usage at all).
+        const effectiveUsage = liveUsage.has(c.slug) ? liveUsage.get(c.slug) : rawUsage;
+
         let decayed = 0.6;
         try {
-            // Pass importance so the ME-2.2 retention floor applies — importance is
-            // the PRIMARY signal, expressed through decayed_confidence (a low-
-            // importance memory sinks, a high-importance one resists decay).
-            decayed = manager.calculateDecayedConfidence({
-                metadata: { confidence: c.confidence },
+            // importance is the PRIMARY signal, expressed through decayed_confidence
+            // (a low-importance memory sinks, a high-importance one resists decay) —
+            // applied below as a separate factor (see the standalone-function note).
+            // MEM-9/wave-5 hardening: usageCount is HARDCODED to 0 here, never
+            // rawUsage or effectiveUsage — calculateDecayedConfidence adds
+            // usageCount*USAGE_BOOST to the PRIMARY score, and this file's own
+            // contract (see the comment a few lines below, and the module header)
+            // is "usage breaks ties, never a primary factor." Wave 4 relied on
+            // rawUsage staying ~0 in practice (F44) to keep this term negligible;
+            // wave-5 code review (via a test that fed a synthetic large raw_usage)
+            // proved that's a landmine, not a guarantee — a memory with a non-zero
+            // tracked usage_count (e.g. a hand-created or legacy memory) would let
+            // usage inflate the PRIMARY score, not just the tiebreak. Hardcoding 0
+            // removes the dependency on that invariant entirely: usage reaches
+            // ranking exclusively through usageTiebreak below.
+            //
+            // Call the STANDALONE calculateDecayedConfidence (imported directly from
+            // _lib/memory-decay.js) rather than manager.calculateDecayedConfidence().
+            // The manager method resolves `activeDays` via a synchronous `git log`
+            // (createActiveDaysResolver -> getActiveDaysSince), which this file's
+            // HARD_TIMEOUT_MS setTimeout cannot preempt once the call stack is
+            // blocked inside it. `activeDays` is intentionally omitted here so the
+            // pure function falls back to calendar days (its documented behavior
+            // when the arg is absent) — the same fallback the resolver itself uses
+            // when git is unavailable, so this is a pre-existing, exercised code
+            // path, not a new decay regime.
+            //
+            // The standalone function does NOT take `importance` (it only knows
+            // confidence/category/usage/updated/activeDays) — the ME-2.2 importance
+            // retention floor is applied as a SEPARATE factor afterward, replicating
+            // manager.calculateDecayedConfidence()'s own adapter logic exactly
+            // (base * (clampedImportance / IMPORTANCE_DEFAULT), capped at 1.0).
+            const base = memoryDecay.calculateDecayedConfidence({
+                confidence: c.confidence,
                 category: c.category,
                 updated: c.updated || new Date().toISOString(),
-                usage_count: c.usage_count,
-                importance
+                usageCount: 0
             });
+            const importanceFactor = clampImportance(importance) / IMPORTANCE_DEFAULT;
+            decayed = Math.min(1.0, base * importanceFactor);
         } catch {
             decayed = c.confidence;
         }
@@ -152,10 +247,10 @@ function rankConcepts(concepts, manager) {
         // here — it only breaks ties below (it's a lower bound, must not dominate).
         c.score = decayed * recency;
         c.decayed = decayed;
-        // Tiebreaker: raw usage, halved as it goes silent (TinyLFU-style aging) so
-        // a once-popular-now-cold memory doesn't win ties forever.
-        const rawUsage = Number.isFinite(c.raw_usage) ? c.raw_usage : 0;
-        c.usageTiebreak = halveUsageCount(rawUsage, daysSinceUpdated, USAGE_HALVE_EVERY_DAYS);
+        // Tiebreaker: live usage (falling back to raw), halved as it goes silent
+        // (TinyLFU-style aging) so a once-popular-now-cold memory doesn't win ties
+        // forever.
+        c.usageTiebreak = halveUsageCount(effectiveUsage, daysSinceUpdated, USAGE_HALVE_EVERY_DAYS);
     }
 
     // Importance-floored decay × recency is primary; usage only breaks ties.
@@ -284,7 +379,12 @@ function processEvent(_parsedJson) {
 
     const MemoryManager = require('../core/memory-manager');
     const manager = new MemoryManager();
-    rankConcepts(memories, manager);
+    // MEM-7: one query for the live SQLite usage counts, threaded through so the
+    // tiebreak (and MEM-9's primary-score input) reads real usage instead of the
+    // ~always-0 tracked-JSON baseline. Degrades to an empty Map (raw_usage
+    // fallback) if SQLite is unavailable.
+    const liveUsage = manager._indexUsageMap();
+    rankConcepts(memories, manager, liveUsage);
 
     // Size budget (ME-4.2): hard top-N cap. Even on an active project where
     // nothing has aged below threshold, this forces ranking down to the budget so

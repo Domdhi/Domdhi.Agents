@@ -25,6 +25,21 @@ const {
 } = require('../scaffold');
 const { createTmpDir } = require('./_helpers/tmp-dir');
 
+// Symlink-capability probe — Windows checkouts without Developer Mode cannot
+// create symlinks; skip rather than fail there (mirrors fs-safe.test.js).
+const canSymlink = (() => {
+    const probeDir = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'symlink-probe-'));
+    try {
+        fs.writeFileSync(path.join(probeDir, 't.txt'), 'x');
+        fs.symlinkSync(path.join(probeDir, 't.txt'), path.join(probeDir, 'l.txt'));
+        return true;
+    } catch {
+        return false;
+    } finally {
+        fs.rmSync(probeDir, { recursive: true, force: true });
+    }
+})();
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -833,6 +848,61 @@ describe('runScaffold — SKILL_TEMPLATE_MANIFEST (skill-owned templates)', () =
         expect(written).not.toContain('{Project Name}');
     });
 
+});
+
+// ---------------------------------------------------------------------------
+// Symlinked docs/ ancestor refused (MINOR — scaffold.js:311 containRoot anchor)
+//
+// scaffoldDir's ancestor guard only inspects directories STRICTLY BETWEEN
+// dirname(dest) and containRoot. Before the fix, runScaffold's docs/
+// scaffoldDir call passed no containRoot, so it defaulted to destDir (docsDir)
+// itself — meaning a symlinked docs/ top-level dir was never lstat-checked
+// (it WAS the root, not strictly-between). Anchoring containRoot to `target`
+// (the project root, an ancestor of docs/) closes that gap.
+// ---------------------------------------------------------------------------
+
+describe.skipIf(!canSymlink)('runScaffold — symlinked docs/ ancestor refused (containRoot anchor)', () => {
+    /** Minimal templates/ tree so runScaffold doesn't throw TEMPLATES_MISSING. */
+    function makeMinimalTemplatesDir(tmpRoot) {
+        const templatesDir = path.join(tmpRoot, '.claude', 'templates');
+        fs.mkdirSync(templatesDir, { recursive: true });
+        fs.writeFileSync(
+            path.join(templatesDir, 'CLAUDE.md'),
+            '<!-- @@template -->\n# Docs guide\n'
+        );
+    }
+
+    it('refuses to scaffold through a symlinked docs/ directory, leaving the external target empty', () => {
+        // Arrange: project root's docs/ is a SYMLINK pointing OUTSIDE the project tree.
+        makeMinimalTemplatesDir(tmp.root);
+        const externalDir = path.join(tmp.root, 'external-outside-project');
+        fs.mkdirSync(externalDir, { recursive: true });
+        const docsLink = path.join(tmp.root, 'docs');
+        fs.symlinkSync(externalDir, docsLink, 'dir');
+
+        // Act / Assert: scaffold refuses rather than writing through the symlink.
+        expect(() => runScaffold(tmp.root, { silent: true })).toThrow(/symlinked ancestor/);
+
+        // Assert: the external target the symlink points at received NOTHING.
+        expect(fs.readdirSync(externalDir)).toEqual([]);
+        // The symlink itself must remain a symlink — refusal happens before any
+        // unlink-and-replace step ever runs against it.
+        expect(fs.lstatSync(docsLink).isSymbolicLink()).toBe(true);
+    });
+
+    it('normal (non-symlink) docs/ scaffold is unaffected by the containRoot anchor', () => {
+        // Arrange: ordinary project root, no symlinks anywhere.
+        makeMinimalTemplatesDir(tmp.root);
+
+        // Act
+        const results = runScaffold(tmp.root, { silent: true });
+
+        // Assert: docs/ scaffolded normally, file created with source content.
+        const destFile = path.join(tmp.root, 'docs', 'CLAUDE.md');
+        expect(fs.existsSync(destFile)).toBe(true);
+        expect(fs.readFileSync(destFile, 'utf8')).toBe('<!-- @@template -->\n# Docs guide\n');
+        expect(results.created).toContain(path.join('docs', 'CLAUDE.md'));
+    });
 });
 
 // ---------------------------------------------------------------------------

@@ -85,6 +85,16 @@ function safeStatSync(p) {
     }
 }
 
+function safeReadFileSync(p) {
+    try {
+        return fs.readFileSync(p, 'utf8');
+    } catch {
+        // File vanished between stat and read (concurrent pass moved it).
+        // Returns null (not '') so callers can tell "vanished" from "genuinely empty".
+        return null;
+    }
+}
+
 /**
  * Rename src→dest, tolerating the concurrent-move race.
  * @returns {boolean} true if the file was moved, false if the source was already
@@ -135,7 +145,10 @@ function organizePlans(results) {
     if (files.length === 0) return;
 
     for (const plan of files) {
-        const content = fs.readFileSync(plan.path, 'utf8');
+        const content = safeReadFileSync(plan.path);
+        // Vanished between stat-collect and read (a concurrent pass moved it) —
+        // skip just this one file, not the whole batch.
+        if (content === null) continue;
 
         // Extract story number from content
         const storyMatch = content.match(/Story\s+(\d+\.\d+)/i);
@@ -193,6 +206,21 @@ function organizePlans(results) {
     }
 }
 
+/**
+ * Locate the insertion point right after the Work Document References table's
+ * header separator row. Returns null if the section/table isn't present.
+ */
+function findWorkRefsInsertPoint(content) {
+    const workRefsIndex = content.indexOf('## Work Document References');
+    if (workRefsIndex === -1) return null;
+
+    const afterHeader = content.slice(workRefsIndex);
+    const sepMatch = afterHeader.match(/\|[-\s]+\|[-\s]+\|[-\s]+\|[-\s]+\|/);
+    if (!sepMatch) return null;
+
+    return workRefsIndex + afterHeader.indexOf(sepMatch[0]) + sepMatch[0].length;
+}
+
 function updateWorkRefs(projectDir, dateFolderName, finalName, storyNumber, topic, originalName) {
     const phaseNumber = storyNumber ? storyNumber.match(/story-(\d+)\./)?.[1] : null;
     const phaseFromFilename = originalName.match(/phase(\d+)/i)?.[1];
@@ -220,23 +248,38 @@ function updateWorkRefs(projectDir, dateFolderName, finalName, storyNumber, topi
     const todoFile = todoFilePaths[0];
     if (!todoFile || !fs.existsSync(todoFile)) return;
 
-    let todoContent = fs.readFileSync(todoFile, 'utf8');
-    const workRefsIndex = todoContent.indexOf('## Work Document References');
-    if (workRefsIndex === -1) return;
+    // Cheap early bail on the first read: no Work Refs table, or this row
+    // already present (e.g. from a prior run). safeReadFileSync (not a bare
+    // read) because the file can vanish between the existsSync check above
+    // and this read under a concurrent organize pass — same race class as
+    // organizePlans's per-plan read.
+    const todoContent = safeReadFileSync(todoFile);
+    if (todoContent === null || findWorkRefsInsertPoint(todoContent) === null || todoContent.includes(finalName)) return;
 
-    const afterHeader = todoContent.slice(workRefsIndex);
-    const sepMatch = afterHeader.match(/\|[-\s]+\|[-\s]+\|[-\s]+\|[-\s]+\|/);
-    if (!sepMatch || todoContent.includes(finalName)) return;
-
-    const insertPoint = workRefsIndex + afterHeader.indexOf(sepMatch[0]) + sepMatch[0].length;
     const displayTopic = topic || 'Implementation';
     const storyDisplay = storyNumber ? storyNumber.replace('story-', '') : `Phase ${effectivePhase}`;
     const planAbsPath = path.join(projectDir, 'docs', '.output', 'plans', dateFolderName, finalName);
     const relLink = path.relative(path.dirname(todoFile), planAbsPath).replace(/\\/g, '/');
     const newRow = `\n| ${dateFolderName} | [${finalName}](${relLink}) | ${storyDisplay} | ${displayTopic} |`;
 
-    todoContent = todoContent.slice(0, insertPoint) + newRow + todoContent.slice(insertPoint);
-    fs.writeFileSync(todoFile, todoContent);
+    // Light-touch race mitigation (lower-value secondary note, MINOR finding):
+    // this read-modify-write is otherwise unlocked, so two concurrent organize
+    // passes updating the same TODO file could both read stale content at
+    // function entry and the second write would clobber the first pass's row.
+    // Re-read immediately before writing and recompute the insert point + the
+    // finalName check against THAT fresh content (not the todoContent read
+    // above) to narrow the race window right up to the write itself — a
+    // concurrent pass that already inserted this exact row is detected and
+    // skipped instead of silently overwritten. Not a full lock (a gap remains
+    // between this read and the write), but proportionate for a MINOR/
+    // lower-value finding.
+    const freshContent = safeReadFileSync(todoFile);
+    if (freshContent === null || freshContent.includes(finalName)) return;
+    const insertPoint = findWorkRefsInsertPoint(freshContent);
+    if (insertPoint === null) return;
+
+    const updatedContent = freshContent.slice(0, insertPoint) + newRow + freshContent.slice(insertPoint);
+    fs.writeFileSync(todoFile, updatedContent);
 }
 
 // ── Screenshots ─────────────────────────────────────────────────────

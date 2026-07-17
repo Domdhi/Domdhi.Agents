@@ -140,7 +140,11 @@ function toNetworkGraph(data) {
 
   // Build nodes from concepts
   for (const c of data.concepts) {
-    const label = c.title.length > 30 ? c.title.slice(0, 27) + '...' : c.title;
+    // esc()'d for consistency with the sibling `title`/`content` fields below —
+    // vis-network renders `label` as plain text today (no `font.multi` is set
+    // anywhere in this file), so this isn't exploitable yet, but it becomes a
+    // stored-XSS sink the instant a future change sets `font: {multi: 'html'}`.
+    const label = esc(c.title.length > 30 ? c.title.slice(0, 27) + '...' : c.title);
     const size = 10 + (c.confidence * 20); // 10-30px range
     const color = CATEGORY_COLORS[c.category] || '#8b949e';
     const related = ((data.crossReferences[c.slug] || {}).related || []).length;
@@ -168,7 +172,9 @@ function toNetworkGraph(data) {
     const shortTitle = adr.title.length > 20 ? adr.title.slice(0, 17) + '...' : adr.title;
     nodes.push({
       id: adrId,
-      label: `ADR-${adr.number}: ${shortTitle}`,
+      // esc()'d for the same reason as the concept label above — consistency
+      // with the tooltip `title` field, defensive against a future font.multi flip.
+      label: `ADR-${adr.number}: ${esc(shortTitle)}`,
       title: `ADR-${adr.number}: ${esc(adr.title)}\\nStatus: ${esc(adr.status)}\\n${esc(adr.summary || '')}`,
       size: 20,
       color: {

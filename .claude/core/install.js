@@ -36,6 +36,7 @@ const path = require('path');
 // when run from an adopter project via the bin entry-point).
 
 const { matchesAnyGlob, copyFile } = require('./template-updater');
+const { safeWrite } = require('./_lib/fs-safe');
 
 // ── Do-not-ship patterns (relative to .claude/) ───────────────────────────────
 //
@@ -153,12 +154,26 @@ function* walkClaudeDir(sourceClaudeDir, base) {
  *
  * @param {string}   targetClaudeDir — absolute path to target .claude/
  * @param {string[]} conflicts       — relative paths (relative to .claude/)
+ * @param {string}   [containRoot]   — project root; enables the symlinked-ancestor guard
  */
-function writeMergeNotes(targetClaudeDir, conflicts) {
+function writeMergeNotes(targetClaudeDir, conflicts, containRoot) {
     const notesPath = path.join(targetClaudeDir, 'MERGE-NOTES.md');
     const timestamp = new Date().toISOString();
 
-    const existingHeader = fs.existsSync(notesPath)
+    // Preserve prior history ONLY from a genuine regular file. A symlinked
+    // MERGE-NOTES.md leaf must never be followed to its target — the old
+    // `fs.appendFileSync` followed the link and appended INTO an external victim
+    // (the same symlink-containment class this wave closes elsewhere). We read
+    // via lstat+isFile (never through a link), and the write goes through
+    // safeWrite, whose unlinkIfSymlink drops a leaf symlink and O_NOFOLLOW blocks
+    // a race-recreated one — so a symlinked notes file is replaced by a fresh
+    // real file, never written through.
+    let prior = '';
+    try {
+        if (fs.lstatSync(notesPath).isFile()) prior = fs.readFileSync(notesPath, 'utf8');
+    } catch { /* absent — no prior history */ }
+
+    const header = prior
         ? ''
         : '# .claude/ Merge Notes\n\n' +
           'Files that were kept from your existing installation because they ' +
@@ -172,7 +187,7 @@ function writeMergeNotes(targetClaudeDir, conflicts) {
         '\n\n';
 
     fs.mkdirSync(targetClaudeDir, { recursive: true });
-    fs.appendFileSync(notesPath, existingHeader + section, 'utf8');
+    safeWrite(notesPath, prior + header + section, 'utf8', containRoot);
 }
 
 // ── runInstall ────────────────────────────────────────────────────────────────
@@ -299,7 +314,7 @@ function runInstall(opts) {
         if (!fs.existsSync(destAbs)) {
             // ── New file: create ───────────────────────────────────────────────
             if (!dryRun) {
-                copyFile(srcAbs, destAbs);
+                copyFile(srcAbs, destAbs, target);
             }
             console.log(`  CREATE   .claude/${rel}`);
             stats.created++;
@@ -315,7 +330,7 @@ function runInstall(opts) {
 
             if (decision === 'overwrite') {
                 if (!dryRun) {
-                    copyFile(srcAbs, destAbs);
+                    copyFile(srcAbs, destAbs, target);
                 }
                 console.log(`  OVERWRITE .claude/${rel}`);
                 stats.merged++;
@@ -331,7 +346,7 @@ function runInstall(opts) {
     // ── Write MERGE-NOTES if conflicts occurred (not dry-run) ─────────────────
 
     if (!dryRun && stats.conflicts.length > 0) {
-        writeMergeNotes(targetClaudeDir, stats.conflicts);
+        writeMergeNotes(targetClaudeDir, stats.conflicts, target);
         console.log(`\n  MERGE-NOTES written → .claude/MERGE-NOTES.md (${stats.conflicts.length} conflict(s))`);
     }
 
@@ -380,7 +395,13 @@ function runInstall(opts) {
             '# CLAUDE.md\n\n' +
             'This project uses the Domdhi Agents template.\n' +
             'Run `/onboard` in Claude Code to complete project setup.\n';
-        fs.writeFileSync(targetClaudeMd, stub, 'utf8');
+        // safeWrite (not raw writeFileSync): a DANGLING `CLAUDE.md` symlink passes
+        // the `fs.existsSync` check above (existsSync follows the link → the absent
+        // target reads as false), and a raw write would then FOLLOW the link and
+        // create the stub at the external target. unlinkIfSymlink drops the link
+        // first; O_NOFOLLOW blocks a race. containRoot=target (dirname is target,
+        // so the ancestor walk is a no-op, but the leaf guard is what matters here).
+        safeWrite(targetClaudeMd, stub, 'utf8', target);
         console.log('\n  CREATE   CLAUDE.md (minimal stub — run /onboard to complete setup)');
         stats.created++;
     }
@@ -484,4 +505,4 @@ function readLineSync() {
 
 if (require.main === module) { main(); }
 
-module.exports = { runInstall, resolveConflict, DO_NOT_SHIP, parseArgs };
+module.exports = { runInstall, resolveConflict, writeMergeNotes, DO_NOT_SHIP, parseArgs };

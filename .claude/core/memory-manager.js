@@ -58,6 +58,29 @@ function clampImportance(v) {
     return Math.max(IMPORTANCE_MIN, Math.min(IMPORTANCE_MAX, n));
 }
 
+// MEM-11: collect every human-readable string VALUE from a content object,
+// recursively (nested objects + arrays), joined by spaces. This is what gets
+// FTS-indexed instead of raw JSON.stringify(content) — stringifying the whole
+// object made JSON field NAMES (`description`, `confidence`, `evidence`, …)
+// themselves searchable terms, so a query for "confidence" spuriously matched
+// every memory that merely HAS a confidence field. Value-only extraction
+// survives content shapes evolving (no hardcoded field list). Non-string
+// scalars (numbers/booleans/null) are skipped — they aren't search terms.
+// No depth/cycle guard: `value` always originates from JSON.parse of a store
+// file or an in-process JSON-derived object — author-controlled, never
+// adversarial external input, and JSON.parse cannot produce a cycle. If this
+// function is ever fed anything else, that assumption needs revisiting.
+function collectContentText(value) {
+    const out = [];
+    const walk = (v) => {
+        if (typeof v === 'string') { out.push(v); return; }
+        if (Array.isArray(v)) { for (const item of v) walk(item); return; }
+        if (v && typeof v === 'object') { for (const key of Object.keys(v)) walk(v[key]); }
+    };
+    walk(value);
+    return out.join(' ');
+}
+
 // F42: charset guard for any caller-supplied `id` that becomes a `.json`
 // filename segment (createMemory/readMemory/updateMemory/deleteMemory all join
 // it straight into `path.join(this.memoriesDir, category, filename + '.json')`).
@@ -259,6 +282,11 @@ class MemoryManager {
     ensureColumn(table, column, ddl) {
         if (!this.db) return;
         try {
+            // SECURITY: `table`/`column`/`ddl` are interpolated into raw SQL below
+            // (PRAGMA/ALTER TABLE cannot bind identifiers). They MUST remain
+            // caller-supplied HARDCODED CONSTANTS only — never derive any of them
+            // from user/agent input, or this becomes a SQL-injection sink. Every
+            // current caller passes string literals; keep it that way.
             const cols = this.db.prepare(`PRAGMA table_info(${table})`).all();
             if (cols.some((c) => c.name === column)) return; // already present — no-op
             this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
@@ -343,7 +371,9 @@ class MemoryManager {
             const ftsStmt = this.db.prepare(`
                 INSERT INTO memories_fts (id, category, content) VALUES (?, ?, ?)
             `);
-            ftsStmt.run(memory.id, memory.category, JSON.stringify(memory.content));
+            // MEM-11: index the human-readable string values only, not raw JSON —
+            // otherwise field NAMES leak into the search vocabulary.
+            ftsStmt.run(memory.id, memory.category, collectContentText(memory.content));
         } catch (e) {
             // Non-fatal — JSON is the source of truth
             console.error('SQLite index error:', e.message);
@@ -369,16 +399,41 @@ class MemoryManager {
 
 
     /**
-     * Get count of memories in a category
+     * Get the count of LIVE memories in a category.
+     *
+     * MEM-6: counts only live entries — superseded memories (invalid_at set) are
+     * dead history, and counting them let the per-category cap in createMemory be
+     * blocked by tombstones even when the true live count was well under the cap.
+     *
+     * Deliberately does NOT delegate to listMemories(): that method also queries
+     * the SQLite usage-index and computes decayed_confidence for every record —
+     * far more work than a cap check needs, AND its `listMemories` call is a
+     * scan the F39 single-pass health-check invariant counts on (createMemory's
+     * two getMemoryCount calls would otherwise inject 2 uncounted whole-category
+     * re-scans into a health-check run that writes a probe memory). This does
+     * its own minimal read — file content only enough to check `invalid_at` —
+     * so it stays outside the listMemories call-count contract entirely.
      */
     async getMemoryCount(category) {
         const dir = path.join(this.memoriesDir, category);
+        let count = 0;
         try {
             const files = await fs.readdir(dir);
-            return files.filter(f => f.endsWith('.json')).length;
+            for (const file of files) {
+                if (!file.endsWith('.json')) continue;
+                try {
+                    const raw = await fs.readFile(path.join(dir, file), 'utf-8');
+                    const memory = JSON.parse(raw);
+                    if (!memory.invalid_at) count++;
+                } catch {
+                    // unreadable/malformed store file — skip, matching
+                    // pruneStaleMemories' tolerance for the same case
+                }
+            }
         } catch {
             return 0;
         }
+        return count;
     }
 
     /**
@@ -469,6 +524,11 @@ class MemoryManager {
             workflows: 'workflow',
             'rejected-approaches': 'rejected-approach',
         };
+        // MEM-10: importance is a TOP-LEVEL field only. Clone the caller's content
+        // (never mutate their input) and strip any `importance` key so it can't
+        // drift out of sync with the promoted top-level value after a later update.
+        const storedContent = { ...content };
+        delete storedContent.importance;
         const memory = {
             id,
             type: TYPE_MAP[category] || category.slice(0, -1),
@@ -481,7 +541,7 @@ class MemoryManager {
             // top-level (mirrors usage_count) so decay/ranking read it without a
             // content round-trip; also persisted to the importance SQLite column.
             importance: clampImportance(content.importance ?? IMPORTANCE_DEFAULT),
-            content,
+            content: storedContent,
             metadata: {
                 sessions: [],
                 agents: [],
@@ -569,9 +629,25 @@ class MemoryManager {
         if (!this.categories.includes(category)) {
             return { superseded: false, error: `Invalid category: ${category}` };
         }
+        // MEM-8 (wave-4 code review): a self-supersede (oldId === newId) would
+        // pass every other check below — readMemory finds it, the "successor
+        // exists" check finds it (it's the same file) — then stamp its own
+        // invalid_at + superseded_by pointing at itself, hiding the memory behind
+        // a reference to its own now-invalid record. Refuse before any lookup.
+        if (oldId === newId) {
+            return { superseded: false, error: 'A memory cannot supersede itself' };
+        }
         const memory = await this.readMemory(category, oldId);
         if (!memory) {
             return { superseded: false, error: `Memory not found: ${category}/${oldId}` };
+        }
+        // MEM-8: the successor must actually exist, else a typo'd/deleted newId
+        // creates a dangling superseded_by pointer that hides the old memory behind
+        // a reference to nothing. readMemory only searches the SAME category — a
+        // cross-category supersede is intentionally unsupported (all real call sites
+        // supersede within one category; see memory-eval.js SEED_MEMORIES pairs).
+        if (!(await this.readMemory(category, newId))) {
+            return { superseded: false, error: `Successor memory not found: ${category}/${newId}` };
         }
 
         // Idempotent: keep the original invalid_at if already superseded.
@@ -585,6 +661,10 @@ class MemoryManager {
         await fs.writeFile(filePath, JSON.stringify(memory, null, 2));
 
         // Deindex from active FTS + stamp the db row (kept for history).
+        // MEM-5: track whether the index update actually failed so we don't tell the
+        // caller supersession fully succeeded while the memory keeps surfacing in FTS
+        // search until the next rebuild-index.
+        let indexStale = false;
         if (this.initDb()) {
             try {
                 this.db.prepare('DELETE FROM memories_fts WHERE id = ?').run(oldId);
@@ -592,10 +672,14 @@ class MemoryManager {
                     .run(invalidAt, newId, oldId);
             } catch (e) {
                 console.error('supersede: SQLite update failed (JSON already stamped):', e.message);
+                indexStale = true;
             }
         }
 
-        return { superseded: true, category, oldId, newId, invalid_at: invalidAt };
+        return {
+            superseded: true, category, oldId, newId, invalid_at: invalidAt,
+            ...(indexStale ? { indexStale: true, warning: 'SQLite index update failed; JSON is stamped but the FTS index may still surface this memory until rebuild-index runs' } : {}),
+        };
     }
 
     /**
@@ -651,6 +735,14 @@ class MemoryManager {
         }
         if (updates.metadata) {
             memory.metadata = { ...memory.metadata, ...updates.metadata };
+        }
+        // MEM-10: importance is a top-level field only. If an update carried a new
+        // importance in content (or a legacy record still holds one there), promote
+        // it to the top level and strip it from content so top-level importance can
+        // never go stale relative to content.importance (readers prefer top-level).
+        if (memory.content && memory.content.importance !== undefined) {
+            memory.importance = clampImportance(memory.content.importance);
+            delete memory.content.importance;
         }
 
         memory.updated = new Date().toISOString();
@@ -743,7 +835,15 @@ class MemoryManager {
                             // so ME-3.2 analytics can count superseded entries.
                             invalid_at: memory.invalid_at ?? null,
                             superseded_by: memory.superseded_by ?? null,
-                            decayed_confidence: this.calculateDecayedConfidence(memory)
+                            // MEM-3: decay must read the SAME live-merged usage_count
+                            // this summary reports (usage feeds decay's USAGE_BOOST).
+                            // Computing it off the stale-JSON `memory` made the row
+                            // internally inconsistent — displayed usage and the decay
+                            // that's supposed to reflect it disagreed.
+                            decayed_confidence: this.calculateDecayedConfidence({
+                                ...memory,
+                                usage_count: Math.max(memory.usage_count || 0, liveUsage.get(memory.id) ?? 0),
+                            })
                         });
                     }
                 }
@@ -800,6 +900,11 @@ class MemoryManager {
                         // Reconstruct enough of the memory shape to compute decay
                         // (importance included so the floor applies on this path too)
                         const mockMemory = {
+                            // MEM-1: category drives the per-category decay RATE in
+                            // calcDecay (decisions 0.98, constraints 0.97, …). Omitting
+                            // it silently fell back to DEFAULT_RATE (0.95), 3x
+                            // over-decaying decisions memories and mislabelling them stale.
+                            category: row.category,
                             updated: row.updated,
                             usage_count: row.usage_count || 0,
                             importance,
@@ -820,6 +925,13 @@ class MemoryManager {
                     }
                     return mapped;
                 }
+                // MEM-4: a clean zero-result FTS query is authoritative — the index
+                // exists and legitimately matched nothing. Return [] directly instead
+                // of falling through to the JSON linear scan (which defeats the index
+                // and diverges FTS-present vs FTS-absent envs on a genuine no-hit
+                // query). Only the catch below — an actual MATCH exception — should
+                // fall through to the JSON-scan fallback.
+                return [];
             } catch {
                 // FTS query failed — fall through to JSON scan
             }
@@ -837,12 +949,21 @@ class MemoryManager {
                 const memory = memSummary.full;
                 const content = JSON.stringify(memory.content).toLowerCase();
                 if (content.includes(searchTerm.toLowerCase())) {
+                    // MEM-3 sibling (class-closure): `.full` carries the ~always-0
+                    // JSON usage_count baseline, but the summary already holds the
+                    // live-merged value (max of JSON + SQLite index). Both relevance
+                    // (USAGE_MULTIPLIER) and decay (USAGE_BOOST) key off usage_count,
+                    // so read the merged value — otherwise an FTS-exception fallback
+                    // would score/decay off stale usage while the FTS path (MEM-1)
+                    // uses live usage. In a true JSON-only env the merged value equals
+                    // the JSON baseline, so this is a no-op there.
+                    const merged = { ...memory, usage_count: memSummary.usage_count };
                     results.push({
                         category,
                         id: memory.id,
-                        relevance: this.calculateRelevance(memory, searchTerm, content), // F45: reuse the stringify above
+                        relevance: this.calculateRelevance(merged, searchTerm, content), // F45: reuse the stringify above
                         confidence: memory.metadata?.confidence ?? 1.0,
-                        decayed_confidence: this.calculateDecayedConfidence(memory)
+                        decayed_confidence: this.calculateDecayedConfidence(merged)
                     });
                 }
             }
@@ -872,12 +993,17 @@ class MemoryManager {
      */
     async _recordRecall(results) {
         if (!this.db) return; // no index to record into — the JSON source stays clean
-        for (const r of results) {
-            try {
-                this.db.prepare('UPDATE memories SET usage_count = usage_count + 1 WHERE id = ?')
-                    .run(r.id);
-            } catch { /* non-fatal: a soft tiebreaker must never break search */ }
-        }
+        if (!results || results.length === 0) return;
+        // MEM-12: one batched UPDATE for all recalled ids instead of N round-trips.
+        // Placeholders are literal '?' chars (no interpolation of ids), so the IN
+        // clause is injection-safe; every id is bound via variadic run() — the shape
+        // both node:sqlite and better-sqlite3 accept.
+        const ids = results.map(r => r.id);
+        const placeholders = ids.map(() => '?').join(',');
+        try {
+            this.db.prepare(`UPDATE memories SET usage_count = usage_count + 1 WHERE id IN (${placeholders})`)
+                .run(...ids);
+        } catch { /* non-fatal: a soft tiebreaker must never break search */ }
     }
 
     /**
@@ -1138,8 +1264,11 @@ class MemoryManager {
         if (daysSinceUpdate < SCORING.RECENCY_RECENT_DAYS) score += SCORING.RECENCY_RECENT_POINTS;
         else if (daysSinceUpdate < SCORING.RECENCY_MID_DAYS) score += SCORING.RECENCY_MID_POINTS;
 
-        score += memory.usage_count * SCORING.USAGE_MULTIPLIER;
-        score += memory.metadata.confidence * SCORING.CONFIDENCE_MULTIPLIER;
+        // MEM-2: guard against a hand-authored memory missing usage_count/metadata
+        // — an undefined deref here crashed the whole JSON-scan search (no per-record
+        // try/catch). Mirrors the guarded importance access two lines below.
+        score += (memory.usage_count || 0) * SCORING.USAGE_MULTIPLIER;
+        score += (memory.metadata?.confidence ?? 1.0) * SCORING.CONFIDENCE_MULTIPLIER;
         // ME-2.2 — importance term (1–5 → +4..+20) so a higher-importance memory
         // scores strictly higher than an otherwise-identical lower-importance one.
         score += clampImportance(memory.importance ?? memory.content?.importance) * SCORING.IMPORTANCE_MULTIPLIER;

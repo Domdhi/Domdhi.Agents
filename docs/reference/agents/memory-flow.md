@@ -1,6 +1,6 @@
 # Memory Flow
 
-Quick visual reference for how memories move through the system — writes, reads, and maintenance. Companion to [`../concepts/memory.md`](../concepts/memory.md) (narrative explanation) and [`system-map.md`](system-map.md) (full inventory).
+Quick visual reference for how memories move through the system — writes, reads, and maintenance. Companion to [`concepts/memory.md`](concepts/memory.md) (narrative explanation) and [`system-map.md`](system-map.md) (full inventory).
 
 > The diagram below is Mermaid. It renders natively on GitHub, in VS Code via the built-in Markdown preview, and in most modern Markdown viewers. In the Claude Code TUI it appears as source — open the file on GitHub or in an editor preview to see it rendered.
 

@@ -146,6 +146,26 @@ describe('readConcepts', () => {
     expect(result[0].slug).toBe('valid');
   });
 
+  // Regression (MEM-13): `parseFloat(fm.confidence) || 0.6` silently rebumped
+  // a genuine confidence of 0 up to the 0.6 default, since `0 || 0.6` is 0.6.
+  it('readConcepts_zeroConfidence_returnsExactZeroNotDefault', async () => {
+    createConcept(tmp, 'patterns', 'zero-confidence', {
+      title: 'Zero Confidence',
+      confidence: 0,
+      sources: ['2026-01-01'],
+    });
+    const conceptsDir = require('node:path').join(tmp.root, 'docs', '.output', '.state', 'memory-concepts');
+
+    const result = await readConcepts({
+      conceptsDir,
+      categories: CATEGORIES,
+      activeDaysResolver: makeResolver(),
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0].confidence).toBe(0);
+  });
+
   it('readConcepts_invalidFrontmatter_entrySkipped', async () => {
     // Valid concept alongside an .md file with no frontmatter — reader must skip the bad one
     createConcept(tmp, 'patterns', 'valid', { title: 'V', confidence: 0.7, sources: ['2026-01-01'] });

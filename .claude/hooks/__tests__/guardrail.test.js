@@ -1110,4 +1110,158 @@ describe('guardrail hardening — documented bypasses now blocked', () => {
         // non-protected target is a clean pass, no blanket nudge noise.
         expect(decision('truncate -s 0 build/output.txt')).toBe('pass');
     });
+
+    // ── Finding 1: wrapper / path-prefix / bare-env delete of a protected path
+    //    reaches the non-escalatable hard block against the LIVE rules (.env /
+    //    .git are zeroAccessPaths there). These used to downgrade to a nudge
+    //    (rm-family behind a wrapper) or fully ALLOW (sudo truncate/shred). ──
+    it('finding-1 — wrapper/path/bare-env delete of a live zeroAccess path hard-blocks', () => {
+        // rm-family behind wrappers / path prefix / bare assignment.
+        expect(decision('sudo rm -rf .env')).toBe('block');
+        expect(decision('env FOO=1 rm -rf .env')).toBe('block');
+        expect(decision('FOO=bar rm -rf .env')).toBe('block');
+        expect(decision('/bin/rm -rf .env')).toBe('block');
+        expect(decision('nice -n10 rm -rf .git')).toBe('block');
+        // alternate verbs behind a wrapper (previously ALLOWED outright).
+        expect(decision('sudo truncate -s0 .env')).toBe('block');
+        expect(decision('sudo shred .env')).toBe('block');
+        expect(decision('/usr/bin/truncate -s 0 .env')).toBe('block');
+        // non-escalatable even with the marker.
+        expect(decision('sudo rm -rf .env  # guardrail:confirm')).toBe('block');
+    });
+
+    // ── Finding 1 (retry): a PATH-QUALIFIED WRAPPER (`/bin/sudo`, `/usr/bin/env`,
+    //    `/usr/bin/nice`) must be stripped just like its bare form. A single
+    //    strip→basename pass left the head at `sudo`/`env`/`nice` (the wrapper
+    //    regexes anchor on the bare name, so the path-qualified form survived the
+    //    strip and was never re-fed after basenaming), so the delete-verb regex
+    //    never matched and the zeroAccess `.env`/`.git` block was silently skipped.
+    //    normalizeSegmentHead now loops strip→basename until the head stabilizes. ──
+    it('finding-1 retry — path-qualified WRAPPER + delete verb still hard-blocks', () => {
+        // The three reported bypasses.
+        expect(decision('/bin/sudo rm -rf .env')).toBe('block');
+        expect(decision('/usr/bin/env FOO=1 rm -rf .env')).toBe('block');
+        expect(decision('/usr/bin/nice -n5 rm -rf .env')).toBe('block');
+        // Same class, other zeroAccess target + alternate verbs behind a
+        // path-qualified wrapper.
+        expect(decision('/bin/sudo rm -rf .git')).toBe('block');
+        expect(decision('/bin/sudo truncate -s0 .env')).toBe('block');
+        expect(decision('/usr/bin/env FOO=1 shred .env')).toBe('block');
+        // Path-qualified wrapper wrapping a path-qualified verb (both need peeling).
+        expect(decision('/bin/sudo /bin/rm -rf .env')).toBe('block');
+        // Stacked path-qualified wrappers reduce to the real verb.
+        expect(decision('/bin/sudo /usr/bin/nice -n5 rm -rf .env')).toBe('block');
+        // Non-escalatable even with the confirm marker.
+        expect(decision('/bin/sudo rm -rf .env  # guardrail:confirm')).toBe('block');
+        // Negative control: a path-qualified wrapper wrapping a benign verb on a
+        // non-protected path must NOT be swept into a block.
+        expect(decision('/bin/sudo rm -rf /tmp/scratch')).toBe('pass');
+    });
+
+    // ── Finding 4: force-push evasions (non-contiguous flags + refspec force) ──
+    it('M — non-contiguous force-push evasions still hard-block', () => {
+        expect(decision('git push --force')).toBe('block');            // baseline
+        expect(decision('git push -f')).toBe('block');                 // short flag
+        expect(decision('git push --quiet --force')).toBe('block');    // intervening flag after push
+        expect(decision('git -c k=v push --force')).toBe('block');     // global option before push
+        expect(decision('git -c a=b -c c=d push --force')).toBe('block');
+        expect(decision('git push origin +main')).toBe('block');       // refspec force
+        expect(decision('git push origin +HEAD:main')).toBe('block');  // refspec force (colon dst)
+        expect(decision('git  push  --force')).toBe('block');          // whitespace-evaded
+    });
+
+    it('M — force-with-lease is NOT caught by the force-push block (falls through to confirm)', () => {
+        expect(decision('git push --force-with-lease')).toBe('confirm');
+        expect(decision('git push --force-with-lease origin main')).toBe('confirm');
+        // A plain (non-force) push must not be swept up by the refspec rule.
+        expect(decision('git push origin main')).toBe('pass');
+        expect(decision('git push')).toBe('pass');
+    });
+
+    // ── full-review-260716 MINOR: +refspec force-push evaded with a preceding
+    //    git global option (the flag-based force rule was already fixed for
+    //    this; the +refspec sibling rule was not). ──
+    it('MINOR — +refspec force-push evasion via a preceding git global option', () => {
+        expect(decision('git -c k=v push origin +main')).toBe('block');
+        expect(decision('git -c k=v push origin +HEAD:main')).toBe('block');
+        // --force-with-lease must still fall through to confirm, even behind
+        // a global option — not a regression from the refspec-rule widening.
+        expect(decision('git -c k=v push --force-with-lease')).toBe('confirm');
+        expect(decision('git -c k=v push --force-with-lease origin main')).toBe('confirm');
+    });
+
+    // ── full-review-260716 MINOR: dd device-wipe rule missed /dev/urandom
+    //    (equivalent to /dev/random as a wipe source). ──
+    it('MINOR — dd device-wipe blocks /dev/urandom as well as /dev/zero and /dev/random', () => {
+        expect(decision('dd if=/dev/urandom of=/dev/sda')).toBe('block');
+        expect(decision('dd bs=1M if=/dev/urandom of=/dev/sda')).toBe('block');
+        expect(decision('dd if=/dev/zero of=/dev/sda')).toBe('block');
+        expect(decision('dd if=/dev/random of=/dev/sda')).toBe('block');
+    });
+
+    // ── Finding 5: rm long-form flags (`--recursive` / `--force`) evade the nudge ──
+    it('M — rm long-form recursive/force flags fire the nudge', () => {
+        expect(decision('rm --recursive --force src')).toBe('nudge');
+        expect(decision('rm -r --force src')).toBe('nudge');
+        expect(decision('rm --force -r src')).toBe('nudge');
+        expect(decision('rm -r -f src')).toBe('nudge');
+        // Short-form disposable-path exemptions MUST keep passing.
+        expect(decision('rm -rf /tmp/scratch')).toBe('pass');
+        expect(decision('rm -rf node_modules')).toBe('pass');
+        expect(decision('rm -rf bin/')).toBe('pass');
+    });
+});
+
+// ── Finding 2 (retry): fail CLOSED on a truncated/wedged stdin read. The REAL
+//    PreToolUse surface is the spawned process exit code — Claude Code only
+//    blocks a Bash call on exit 2. A wedged pipe / truncated JSON must BLOCK,
+//    not exit 0 (which would let the destructive command through unscanned),
+//    WHILE a legitimate empty/valid payload must still pass. ──
+describe('guardrail runClaudeHook fail-closed on stdin (spawned process)', () => {
+    const { execFileSync, spawn } = require('node:child_process');
+    const hookPath = require.resolve('../guardrail.cjs');
+    const REPO = path.resolve(path.dirname(hookPath), '..', '..');
+
+    function runHook(input) {
+        try {
+            const stdout = execFileSync('node', [hookPath], {
+                input,
+                env: { ...process.env, CLAUDE_PROJECT_DIR: REPO },
+                stdio: 'pipe',
+            });
+            return { exitCode: 0, stdout: stdout.toString(), stderr: '' };
+        } catch (err) {
+            return { exitCode: err.status, stdout: err.stdout?.toString() || '', stderr: err.stderr?.toString() || '' };
+        }
+    }
+
+    it('malformed/truncated JSON on non-empty stdin → BLOCKS (exit 2), not exit 0', () => {
+        const result = runHook('{"tool_input":{"command":"rm -rf .env"');
+        expect(result.exitCode).not.toBe(0); // never silently unscanned
+        expect(result.exitCode).toBe(2);
+        expect(result.stderr).toContain('fail-closed');
+    });
+
+    it('wedged pipe (stdin never closes) → times out and BLOCKS (exit 2)', async () => {
+        const child = spawn('node', [hookPath], {
+            env: { ...process.env, CLAUDE_PROJECT_DIR: REPO, HOOK_STDIN_TIMEOUT_MS: '150' },
+            stdio: ['pipe', 'pipe', 'pipe'],
+        });
+        child.stdin.write('{"tool_input":'); // truncated; stdin intentionally left open
+        let stderr = '';
+        child.stderr.on('data', (c) => { stderr += c; });
+        const exitCode = await new Promise((resolve) => child.on('exit', resolve));
+        expect(exitCode).toBe(2);
+        expect(stderr).toContain('fail-closed');
+    });
+
+    it('legitimate EMPTY stdin (clean end) → passes (exit 0), no regression', () => {
+        const result = runHook('');
+        expect(result.exitCode).toBe(0);
+    });
+
+    it('legitimate VALID JSON (benign command) → passes (exit 0), no regression', () => {
+        const result = runHook(JSON.stringify({ tool_input: { command: 'ls -la' } }));
+        expect(result.exitCode).toBe(0);
+    });
 });

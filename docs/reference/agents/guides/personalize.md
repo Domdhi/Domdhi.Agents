@@ -2,7 +2,7 @@
 
 `/review:personalize` gives each agent a name, a persona, and a soul-level identity — Identity, Decision Philosophy, Working Style, Quality Standards. After running it, `security-auditor` stops being a description in YAML frontmatter and starts being *Pilar, a predator auditing the fences*. The change is cosmetic until you start using the system at scale, at which point referring to agents by name ("what did Murphy catch?") becomes how you think about the team.
 
-This guide walks through it end-to-end. For the abstract command reference, see [`../reference/commands.md`](../reference/commands.md). For the zone boundaries `/review:personalize` respects when writing to agent files, see [`../reference/customization.md`](../reference/customization.md). For the inventory of agents it personalizes, see [`../concepts/agents.md`](../concepts/agents.md). And for the sibling command that handles tech-stack context rather than identity, see [`./specialize.md`](./specialize.md).
+This guide walks through it end-to-end. For the abstract command reference, see [`../commands.md`](../commands.md). For the zone boundaries `/review:personalize` respects when writing to agent files, see [`../customization.md`](../customization.md). For the inventory of agents it personalizes, see [`../concepts/agents.md`](../concepts/agents.md). And for the sibling command that handles tech-stack context rather than identity, see [`./specialize.md`](./specialize.md).
 
 ## Before You Run
 
@@ -46,7 +46,7 @@ I am the magistrate of the merge...   Identity, Decision Philosophy,
 
 `/review:personalize` writes between the closing `---` of frontmatter and either `## Project Context` (if specialize has already run) or end-of-file (if it hasn't). That's it. It does not touch `name`, `description`, `tools`, `skills`, `model`, `memory`, or the Project Context section below.
 
-The full zone map and the template-update merge strategy live in [`../reference/customization.md`](../reference/customization.md).
+The full zone map and the template-update merge strategy live in [`../customization.md`](../customization.md).
 
 ## A Concrete Walkthrough — Giving `code-reviewer` a Soul
 
@@ -136,7 +136,7 @@ wave things through because the author is in a hurry.
 
 The frontmatter also gets two updates: `nickname: Gavel` and `aliases: [reviewer, gavel, judge]`. Those aliases are what lets you address the agent conversationally without memorizing the full `code-reviewer` identifier.
 
-For full examples of what a finished soul looks like, read [`.claude/agents/qa-engineer.md`](../../.claude/agents/qa-engineer.md) (Murphy — the QA engineer whose namesake is a design principle, not a pessimist) and [`.claude/agents/security-auditor.md`](../../.claude/agents/security-auditor.md) (Pilar — the predator auditing the fences). Those two are the style references the command points doc-writer at.
+For full examples of what a finished soul looks like, read [`.claude/agents/qa-engineer.md`](../../../../.claude/agents/qa-engineer.md) (Murphy — the QA engineer whose namesake is a design principle, not a pessimist) and [`.claude/agents/security-auditor.md`](../../../../.claude/agents/security-auditor.md) (Pilar — the predator auditing the fences). Those two are the style references the command points doc-writer at.
 
 ## The Persona Library
 
@@ -191,6 +191,6 @@ If both have run and you're ready to actually use the personalized team, start a
 ## See Also
 
 - [`./specialize.md`](./specialize.md) — the sibling command that adds tech-stack context below the Soul Zone
-- [`../reference/customization.md`](../reference/customization.md) — full zone map and template-update merge strategy
+- [`../customization.md`](../customization.md) — full zone map and template-update merge strategy
 - [`../concepts/agents.md`](../concepts/agents.md) — the 11 baseline agents that come out of the box
-- [`../reference/commands.md`](../reference/commands.md) — the abstract reference for `/review:personalize` and every other command
+- [`../commands.md`](../commands.md) — the abstract reference for `/review:personalize` and every other command

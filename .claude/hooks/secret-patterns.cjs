@@ -152,6 +152,22 @@ function isPlaceholderValue(matched) {
     return PLACEHOLDER_PATTERNS.some(p => p.test(value));
 }
 
+// Known documented example/placeholder LITERALS for named-provider patterns —
+// e.g. AWS's own `AKIAIOSFODNN7EXAMPLE`, published in AWS's docs and reused
+// verbatim across countless SDK test fixtures. Unlike PLACEHOLDER_PATTERNS
+// (a shape/prefix match), this is an EXACT-value allowlist: a plausible but
+// different AWS-shaped key must still block. Consulted only in
+// `namedProvidersOnly` (test-file) mode — see scanContent — so a real secret
+// in application code is never exempted just for sharing a pattern name.
+const NAMED_PROVIDER_PLACEHOLDER_VALUES = {
+    'AWS Access Key': new Set(['AKIAIOSFODNN7EXAMPLE']),
+};
+
+function isNamedProviderPlaceholder(patternName, matched) {
+    const known = NAMED_PROVIDER_PLACEHOLDER_VALUES[patternName];
+    return !!known && known.has(matched);
+}
+
 // A connection-string / DATABASE_URL credential is a documentation example —
 // not a leaked secret — when its PASSWORD is an obvious placeholder, the whole
 // userinfo is a template (`<USER>:<PASSWORD>`, `${VAR}`, `{x}`), or there are no
@@ -206,7 +222,11 @@ const HIGH_RISK_PATHS = [
     /\.kube\/config$/,
 ];
 
-const SKIP_PATHS = [
+// HARD_SKIP_PATTERNS — never scanned, full stop. These are the scanner's own
+// source, git/package-manager internals, and lockfiles: paths where a "secret"
+// match is either the scanner's own pattern literals or noise, never a real
+// credential worth gating on.
+const HARD_SKIP_PATTERNS = [
     /secret-scanner\.cjs$/,
     /secret-patterns\.cjs$/,
     /post-read-scrubber\.cjs$/,
@@ -230,15 +250,44 @@ const SKIP_PATHS = [
     /package-lock\.json$/,
     /yarn\.lock$/,
     /pnpm-lock\.yaml$/,
-    // Test files legitimately contain fixtures (mock secrets, fake passwords for
-    // auth-flow integration tests) that match the Password/Secret Assignment
-    // patterns. A secret committed here would be a bigger problem than the
-    // scanner can solve; code review is the right gate.
+];
+
+// TEST_FILE_PATTERNS — test/spec fixtures. These are NOT hard-skipped: a real
+// provider secret (AWS/Anthropic/GitHub/Stripe/private key/etc.) pasted into a
+// test file is exactly as leaked as one in application code, so it must still
+// be caught. What test files legitimately contain is GENERIC fixture noise —
+// `password = "hunter2"`, `apiKey = "test-secret-value"` — that trips the
+// generic Password/Secret Assignment patterns as false positives. Callers use
+// `isTestFilePath` to run scanContent in `namedProvidersOnly` mode for these
+// paths (named-provider patterns still fire; only the generic-assignment
+// patterns are suppressed), rather than skipping the file wholesale.
+const TEST_FILE_PATTERNS = [
     /__test__\//,
     /__tests__\//,
     /\.test\.(ts|tsx|js|jsx|mjs|cjs)$/,
     /\.spec\.(ts|tsx|js|jsx|mjs|cjs)$/,
 ];
+
+// Backward-compatible union — existing consumers (post-read-scrubber.cjs) that
+// only need a single "skip or not" boolean keep their current behavior.
+const SKIP_PATHS = [...HARD_SKIP_PATTERNS, ...TEST_FILE_PATTERNS];
+
+// GENERIC_PATTERN_NAMES — the fixture-prone generic assignment patterns (as
+// opposed to a named-provider pattern like 'AWS Access Key' or 'Anthropic
+// Key', which has a distinctive-enough shape that a false positive in a test
+// file is vanishingly unlikely). Shared by the test-file scan mode (which
+// suppresses only these) and by `redact` (which locks down real bytes harder
+// for everything NOT in this set).
+const GENERIC_PATTERN_NAMES = new Set([
+    'Password Assignment',
+    'Secret Assignment',
+    'Password Assignment (Unquoted)',
+    'Secret Assignment (Unquoted)',
+]);
+
+function isGenericPatternName(name) {
+    return GENERIC_PATTERN_NAMES.has(name);
+}
 
 // ============================================
 // Scanner Core
@@ -249,6 +298,19 @@ function shouldSkipPath(filePath) {
     return SKIP_PATHS.some(pattern => pattern.test(normalized));
 }
 
+// Hard-skip only (scanner internals, VCS/package-manager plumbing, lockfiles).
+// Unlike shouldSkipPath, this deliberately excludes test/spec files — a caller
+// checks isTestFilePath separately to decide the named-providers-only mode.
+function isHardSkipPath(filePath) {
+    const normalized = filePath.replace(/\\/g, '/');
+    return HARD_SKIP_PATTERNS.some(pattern => pattern.test(normalized));
+}
+
+function isTestFilePath(filePath) {
+    const normalized = filePath.replace(/\\/g, '/');
+    return TEST_FILE_PATTERNS.some(pattern => pattern.test(normalized));
+}
+
 function isHighRiskFile(filePath) {
     const basename = path.basename(filePath);
     const normalized = filePath.replace(/\\/g, '/');
@@ -256,7 +318,22 @@ function isHighRiskFile(filePath) {
         || HIGH_RISK_PATHS.some(p => p.test(normalized));
 }
 
-function scanContent(content, filePath) {
+/**
+ * @param {string} content
+ * @param {string} filePath
+ * @param {{ namedProvidersOnly?: boolean }} [options] - when `namedProvidersOnly`
+ *   is true (test/spec files — see isTestFilePath), the generic Password/Secret
+ *   Assignment patterns are skipped entirely (they false-positive on fixture
+ *   noise like `password = "hunter2"`); every named-provider pattern (AWS,
+ *   Anthropic, GitHub, Stripe, private keys, etc.) still runs unchanged, except
+ *   for an exact-value match against a documented example literal (see
+ *   NAMED_PROVIDER_PLACEHOLDER_VALUES, e.g. AWS's `AKIAIOSFODNN7EXAMPLE`) —
+ *   those are exempted here too, since SDK test fixtures routinely reuse the
+ *   provider's own published example key. Optional and defaults to false —
+ *   existing callers (post-read-scrubber.cjs, commit.js) are unaffected.
+ */
+function scanContent(content, filePath, options) {
+    const { namedProvidersOnly = false } = options || {};
     const findings = [];
 
     // Coerce non-string content so a legitimate but non-string payload (a numeric
@@ -277,18 +354,25 @@ function scanContent(content, filePath) {
         });
     }
 
+    // NOTE (documented limitation, matches secret-scanner.cjs's header):
+    // matching is line-by-line against `content.split('\n')`, so a secret that
+    // is split across multiple lines/concatenated strings, or that is
+    // base64/hex-encoded (and therefore doesn't match a pattern's literal
+    // shape), will not be detected. Left as-is — not fixed here.
     const lines = content.split('\n');
     for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
 
         for (const pattern of PATTERNS) {
+            if (namedProvidersOnly && isGenericPatternName(pattern.name)) continue;
+
             const matches = line.matchAll(pattern.regex);
             for (const match of matches) {
-                if ((pattern.name === 'Password Assignment' ||
-                    pattern.name === 'Secret Assignment' ||
-                    pattern.name === 'Password Assignment (Unquoted)' ||
-                    pattern.name === 'Secret Assignment (Unquoted)') &&
-                    isPlaceholderValue(match[0])) {
+                if (isGenericPatternName(pattern.name) && isPlaceholderValue(match[0])) {
+                    continue;
+                }
+                if (namedProvidersOnly && !isGenericPatternName(pattern.name) &&
+                    isNamedProviderPlaceholder(pattern.name, match[0])) {
                     continue;
                 }
                 if ((pattern.name === 'Connection String' ||
@@ -302,7 +386,7 @@ function scanContent(content, filePath) {
                     name: pattern.name,
                     file: filePath || '<stdin>',
                     line: i + 1,
-                    match: redact(match[0]),
+                    match: redact(match[0], pattern.name),
                 });
             }
         }
@@ -311,7 +395,21 @@ function scanContent(content, filePath) {
     return findings;
 }
 
-function redact(value) {
+/**
+ * @param {string} value - the matched secret text
+ * @param {string} [patternName] - the PATTERNS entry name that matched. When
+ *   given and it's a named-provider pattern (i.e. NOT one of
+ *   GENERIC_PATTERN_NAMES), the real secret bytes are never emitted — only the
+ *   provider name and length — since a named-provider match (AWS/Anthropic/
+ *   GitHub/Stripe/private key/etc.) is a real, valuable credential where even a
+ *   partial leak (the previous first-8+last-4) is worth avoiding. Omitting
+ *   patternName (or passing a generic name) preserves the original
+ *   head+mask/head+tail behavior for backward compatibility.
+ */
+function redact(value, patternName) {
+    if (patternName && !isGenericPatternName(patternName)) {
+        return `[REDACTED:${patternName} len=${value.length}]`;
+    }
     if (value.length <= 12) return value.substring(0, 4) + '***';
     return value.substring(0, 8) + '...' + value.substring(value.length - 4);
 }
@@ -343,11 +441,7 @@ function redactSecretsInText(content) {
         const re = new RegExp(pattern.regex.source, pattern.regex.flags);
         result = result.replace(re, (match) => {
             // Same placeholder filter scanContent uses for these patterns
-            if ((pattern.name === 'Password Assignment' ||
-                 pattern.name === 'Secret Assignment' ||
-                 pattern.name === 'Password Assignment (Unquoted)' ||
-                 pattern.name === 'Secret Assignment (Unquoted)') &&
-                isPlaceholderValue(match)) {
+            if (isGenericPatternName(pattern.name) && isPlaceholderValue(match)) {
                 return match;
             }
             if ((pattern.name === 'Connection String' ||
@@ -393,23 +487,73 @@ function formatFindings(findings) {
 // Stdin reader (shared utility)
 // ============================================
 
-// F77: shared stdin plumbing — delegates to _lib/hook-input.js (no timeout, as
-// before: scanner/scrubber inputs always close stdin). Export shape unchanged
-// for the two consumers (secret-scanner.cjs, post-read-scrubber.cjs).
-const { readHookInput } = require('../core/_lib/hook-input');
-function readStdin() {
-    return readHookInput({ timeoutMs: null });
+// Wave 5 (F1): both consumers previously read stdin with NO timeout at all —
+// a wedged pipe would hang the blocking Write/Edit tool call forever. Every
+// other blocking hook was bounded at 5000ms in this same wave, but that fix
+// can't be copy-pasted here: those hooks fail OPEN on a timeout (resolve with
+// whatever partial data arrived, proceed as best-effort), which is fine for
+// advisory/logic hooks but wrong for a secret scanner — a truncated payload
+// must never be silently treated as "nothing to scan" and allowed through.
+//
+// `failClosedOnTimeout` (used only by secret-scanner.cjs's PreToolUse gate)
+// makes a timeout or stream error REJECT instead of resolving with partial
+// data, so the caller can block the write (exit 2) rather than risk scanning
+// truncated content. post-read-scrubber.cjs (a best-effort POST-hook that
+// can't block the tool call that already ran) keeps the default resolve-with-
+// partial-data behavior — same as before, just now bounded instead of
+// unbounded. 10000ms (not the 5000ms ceiling used elsewhere) because these
+// two hooks scan whole file contents, which can be larger than a typical
+// hook payload. Env override exists ONLY so tests can shrink the wait for a
+// real spawned-process timeout test without changing production behavior —
+// same pattern as MEMORY_MAX_PER_CATEGORY (static-constants-env-override-at-callsite).
+const DEFAULT_STDIN_TIMEOUT_MS = parseInt(process.env.SECRET_SCANNER_STDIN_TIMEOUT_MS, 10) || 10000;
+function readStdin({ failClosedOnTimeout = false, timeoutMs = DEFAULT_STDIN_TIMEOUT_MS } = {}) {
+    return new Promise((resolve, reject) => {
+        if (process.stdin.isTTY) { resolve(''); return; }
+
+        let data = '';
+        let settled = false;
+        const finish = (ok, value) => {
+            if (settled) return;
+            settled = true;
+            ok ? resolve(value) : reject(value);
+        };
+
+        process.stdin.setEncoding('utf8');
+        process.stdin.on('data', (chunk) => { data += chunk; });
+        process.stdin.on('end', () => finish(true, data));
+        process.stdin.on('error', (err) => {
+            if (failClosedOnTimeout) finish(false, err instanceof Error ? err : new Error(String(err)));
+            else finish(true, '');
+        });
+
+        setTimeout(() => {
+            if (failClosedOnTimeout) {
+                finish(false, new Error(`stdin read did not complete within ${timeoutMs}ms`));
+            } else {
+                finish(true, data);
+            }
+        }, timeoutMs);
+    });
 }
 
 module.exports = {
     PATTERNS,
     PLACEHOLDER_PATTERNS,
     SKIP_PATHS,
+    HARD_SKIP_PATTERNS,
+    TEST_FILE_PATTERNS,
+    GENERIC_PATTERN_NAMES,
     HIGH_RISK_BASENAMES,
     HIGH_RISK_PATHS,
     isPlaceholderValue,
     isPlaceholderConnString,
+    NAMED_PROVIDER_PLACEHOLDER_VALUES,
+    isNamedProviderPlaceholder,
+    isGenericPatternName,
     shouldSkipPath,
+    isHardSkipPath,
+    isTestFilePath,
     isHighRiskFile,
     scanContent,
     redact,

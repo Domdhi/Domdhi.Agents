@@ -50,6 +50,24 @@ const LOG_DIR = path.join(getTelemetryDir(PROJECT_ROOT), 'logs');
 const LOCK_FILE = path.join(GATE_DIR, '.gate.lock');
 const CONFIG_FILE = path.join(PROJECT_ROOT, '.claude', 'gate.config.json');
 
+// A gate lock is only broken as "stale" when it is BOTH older than this AND its
+// owning process is no longer alive. Set well above realistic suite runtimes:
+// this repo's own `npm test` runs in tens of seconds, but a large adopter suite
+// or a slow CI box can legitimately run many minutes. The old 10-minute ceiling
+// was SHORTER than some real suites — a 20-minute run got its lock stolen
+// mid-flight, then deleted its successor's lock on exit, letting a third gate
+// run concurrently against the same tree (the exact race the lock prevents).
+// 30 minutes leaves generous headroom; the liveness gate below means a
+// still-running owner is never broken regardless of age, so this ceiling only
+// bounds recovery from a truly-crashed gate.
+const STALE_LOCK_MS = 1800000; // 30 minutes
+
+// The exact `started` timestamp THIS process wrote when it acquired the lock.
+// releaseLock() compares against it so a process only ever deletes the lock it
+// STILL owns — never one another gate re-created after breaking a lock this
+// process thought it held. Null until acquired; reset to null on release.
+let ownLockStarted = null;
+
 // ── Args ────────────────────────────────────────────────────────────
 
 const args = process.argv.slice(2);
@@ -66,35 +84,116 @@ const runTests = !runE2e && (skipBuild || args.includes('--test') || args.includ
 
 // ── Lock ────────────────────────────────────────────────────────────
 
+/**
+ * Best-effort liveness probe for a lock's owning PID. Used ONLY to avoid
+ * breaking the lock of a process that is genuinely still running (a slow-but-
+ * valid suite). Deliberately conservative:
+ *   - alive  (kill(pid,0) succeeds, or EPERM = exists but not ours) → true
+ *   - dead   (ESRCH)                                                → false
+ *   - unknown (non-integer pid, unsupported platform, other error) → false
+ * Returning false on "unknown" means the caller falls back to the age threshold
+ * alone — identical to the pre-liveness behavior, just gated behind the raised
+ * ceiling. `process.kill(pid, 0)` sends no signal; it only tests existence, and
+ * is supported on POSIX and Windows in Node.
+ */
+function isProcessAlive(pid) {
+    if (!Number.isInteger(pid) || pid <= 0) return false;
+    try {
+        process.kill(pid, 0);
+        return true;
+    } catch (err) {
+        return err.code === 'EPERM';
+    }
+}
+
+// Break a lock we've already decided is abandoned (stale+dead-owner, or corrupt)
+// and retry the acquire. TOCTOU guard: two gates can independently observe the
+// SAME abandoned lock and both decide to break it. Without a re-check, the second
+// unlink lands AFTER the first breaker already installed its own fresh, LIVE lock
+// — deleting that live lock lets both gates run concurrently against the same
+// tree (the exact race releaseLock's ownership guard closes on the release side,
+// reintroduced here on the break side). So immediately before unlinking, re-read
+// the file and confirm it is STILL the same lock we inspected (pid+started). If a
+// DIFFERENT lock is there now, another gate already broke the abandoned one and
+// acquired — fall through to a fresh attempt (which will see the live lock and
+// return false) instead of deleting it. `expected` is the inspected lock, or null
+// for a corrupt/unparseable one (nothing to match — reclaim only if still corrupt).
+function breakLockAndRetry(expected) {
+    try {
+        const current = fs.readFileSync(LOCK_FILE, 'utf-8');
+        if (expected) {
+            let now;
+            try { now = JSON.parse(current); } catch { return acquireLock(); }
+            if (now.pid !== expected.pid || now.started !== expected.started) {
+                // Someone else already broke it and installed a different lock.
+                return acquireLock();
+            }
+        } else {
+            // Corrupt-lock reclaim: only proceed if the file is STILL unparseable;
+            // if it now parses, a valid lock arrived — don't clobber it.
+            try { JSON.parse(current); return acquireLock(); } catch { /* still corrupt — reclaim */ }
+        }
+        fs.unlinkSync(LOCK_FILE);
+    } catch (err) {
+        // Vanished between our re-read and unlink (or before the re-read) — another
+        // gate broke it first. Not an error; just retry the acquire.
+        if (err.code !== 'ENOENT') throw err;
+    }
+    return acquireLock();
+}
+
 function acquireLock() {
     fs.mkdirSync(GATE_DIR, { recursive: true });
     try {
+        const started = new Date().toISOString();
         const fd = fs.openSync(LOCK_FILE, fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY);
-        fs.writeSync(fd, JSON.stringify({ pid: process.pid, started: new Date().toISOString() }));
+        fs.writeSync(fd, JSON.stringify({ pid: process.pid, started }));
         fs.closeSync(fd);
+        ownLockStarted = started;
         return true;
     } catch (err) {
-        if (err.code === 'EEXIST') {
-            try {
-                const lock = JSON.parse(fs.readFileSync(LOCK_FILE, 'utf-8'));
-                const age = Date.now() - new Date(lock.started).getTime();
-                if (age > 600000) {
-                    console.log(`[GATE] Stale lock detected (${Math.round(age / 60000)}m old, PID ${lock.pid}). Breaking it.`);
-                    fs.unlinkSync(LOCK_FILE);
-                    return acquireLock();
-                }
-            } catch {
-                fs.unlinkSync(LOCK_FILE);
-                return acquireLock();
-            }
-            return false;
+        if (err.code !== 'EEXIST') throw err;
+
+        let lock;
+        try {
+            lock = JSON.parse(fs.readFileSync(LOCK_FILE, 'utf-8'));
+        } catch (readErr) {
+            // Lock vanished between the EEXIST and our read — another gate released
+            // it; just retry the O_EXCL create.
+            if (readErr.code === 'ENOENT') return acquireLock();
+            // Unreadable/corrupt lock file — no owner info to honor, so treat it as
+            // abandoned and reclaim (with the same break-race guard).
+            return breakLockAndRetry(null);
         }
-        throw err;
+
+        const age = Date.now() - new Date(lock.started).getTime();
+        // Break another gate's lock ONLY when it is past the stale ceiling AND its
+        // owning process is no longer alive. A legitimately long suite (owner still
+        // running) is never broken, no matter how old — that was the race: a run
+        // past the old ceiling got its lock stolen, then deleted its successor's
+        // lock on exit. The liveness gate closes it; the raised ceiling bounds
+        // dead-owner recovery.
+        if (age > STALE_LOCK_MS && !isProcessAlive(lock.pid)) {
+            console.log(`[GATE] Stale lock detected (${Math.round(age / 60000)}m old, PID ${lock.pid} not running). Breaking it.`);
+            return breakLockAndRetry(lock);
+        }
+        return false;
     }
 }
 
 function releaseLock() {
-    try { fs.unlinkSync(LOCK_FILE); } catch { /* already gone */ }
+    // Only delete the lock if it is STILL the one THIS process wrote. If another
+    // gate broke a lock this process thought it held (or a PID got reused) and
+    // installed its own, lock.pid/lock.started won't match ours — deleting it
+    // would strip a live gate of its lock and let a third gate run concurrently
+    // (the exact race this guard closes). Leave it for its real owner to release.
+    try {
+        const lock = JSON.parse(fs.readFileSync(LOCK_FILE, 'utf-8'));
+        if (lock.pid === process.pid && lock.started === ownLockStarted) {
+            fs.unlinkSync(LOCK_FILE);
+        }
+    } catch { /* no lock file, unreadable, or never acquired — nothing to release */ }
+    ownLockStarted = null;
 }
 
 // ── Config / Auto-Detection ─────────────────────────────────────────
@@ -199,7 +298,14 @@ function autoDetectConfig() {
         // Prefer .venv/bin/ tools when present (project-local venv pattern).
         const venvBin = path.join(PROJECT_ROOT, '.venv', 'bin');
         const hasVenv = fs.existsSync(path.join(venvBin, 'ruff'));
-        const prefix = hasVenv ? `${venvBin}/` : '';
+        // LOW (F31-analog): PROJECT_ROOT (and therefore venvBin) was previously
+        // interpolated into a shell:true command STRING (`${prefix}ruff check …`).
+        // A checkout path containing a shell metachar (e.g. `/home/dom/my repo;id/`)
+        // would execute the `;id` segment. argv-mode (shell:false) delivers each
+        // binary path as a single, non-reinterpreted argv element instead.
+        const ruffBin = hasVenv ? path.join(venvBin, 'ruff') : 'ruff';
+        const mypyBin = hasVenv ? path.join(venvBin, 'mypy') : 'mypy';
+        const pytestBin = hasVenv ? path.join(venvBin, 'pytest') : 'pytest';
         // C1 (F4-analog): only run `mypy --strict` when the project actually uses
         // mypy. Hard-requiring it on a ruff+pytest project (the common case) makes
         // the gate unreachable on a healthy repo — the Python twin of running
@@ -210,14 +316,21 @@ function autoDetectConfig() {
         try {
             declaresMypy = /\bmypy\b/.test(fs.readFileSync(path.join(PROJECT_ROOT, 'pyproject.toml'), 'utf-8'));
         } catch { /* unreadable — treat as undeclared */ }
+        // Multi-leg (`{ legs: [...] }`): the Python build chains ruff check + ruff
+        // format --check (+ optional mypy) via shell `&&` when it was a single
+        // string. Argv-mode can't chain in one spawnSync call, so `legs` is a
+        // sequence of argv-mode sub-legs run in order, stopping at the first
+        // failure — the same short-circuit ORDERING as `&&` (timeout is per-leg;
+        // see runCommand's legs branch). `runCommand` and
+        // `describeLeg` both understand this shape (see below).
         const buildLegs = [
-            `${prefix}ruff check src tests`,
-            `${prefix}ruff format --check src tests`,
+            { argv: [ruffBin, 'check', 'src', 'tests'] },
+            { argv: [ruffBin, 'format', '--check', 'src', 'tests'] },
         ];
-        if (hasMypyBin || declaresMypy) buildLegs.push(`${prefix}mypy --strict src`);
+        if (hasMypyBin || declaresMypy) buildLegs.push({ argv: [mypyBin, '--strict', 'src'] });
         return {
-            build: { command: buildLegs.join(' && '), timeout: 300000 },
-            test: { command: `${prefix}pytest`, timeout: 1200000 },
+            build: { legs: buildLegs, timeout: 300000 },
+            test: { argv: [pytestBin], timeout: 1200000 },
             stack: 'python'
         };
     }
@@ -244,6 +357,35 @@ function ensureDirs() {
 }
 
 function runCommand(cmd, cwd, timeoutMs) {
+    // Multi-leg (`{ legs: [...] }`, LOW-python-argv fix): a sequence of sub-legs
+    // (each itself a runnable string or `{ argv }`) executed in order, stopping
+    // at the first non-zero exit — the `&&` SHORT-CIRCUIT semantics a single
+    // spawnSync call can't express in argv-mode. Output/stderr are concatenated
+    // in run order so the existing line-based parsers see one combined stream,
+    // and the reported exitCode is whichever leg stopped the chain (0 only if
+    // every leg passed).
+    //
+    // TIMEOUT is PER-LEG, not an aggregate budget: `timeoutMs` is passed to each
+    // sub-leg unchanged, so an N-leg chain can run up to N×timeoutMs wall-clock
+    // where the old single `&&` shell string shared one budget. This is
+    // deliberate (each leg — ruff / format / mypy — deserves the full window;
+    // splitting it would spuriously time out a slow-but-valid mypy pass) and
+    // benign (a slow build is a slow build, not a false gate result). Only the
+    // short-circuit ORDERING matches `&&`, not the timeout accounting.
+    if (cmd && typeof cmd === 'object' && Array.isArray(cmd.legs)) {
+        let output = '';
+        let stderr = '';
+        let exitCode = 0;
+        for (const subCmd of cmd.legs) {
+            const sub = runCommand(subCmd, cwd, timeoutMs);
+            output += sub.output;
+            stderr += sub.stderr;
+            exitCode = sub.exitCode;
+            if (exitCode !== 0) break;
+        }
+        return { exitCode, output, stderr };
+    }
+
     // Use spawnSync (not execSync) so stderr is captured on SUCCESS too.
     // execSync returns only stdout on exit 0 — and many test runners print
     // their pass/fail summary to STDERR (jest's "Tests: N passed, N total",
@@ -254,11 +396,12 @@ function runCommand(cmd, cwd, timeoutMs) {
     // both streams regardless of exit status.
     //
     // `cmd` is either a shell command STRING (default — used for the node/cargo/
-    // go/python/make stacks whose commands never carry untrusted values) or an
-    // argv-mode object `{ argv: [bin, ...args] }` (F31 — used where a command
-    // element, e.g. a solution filename discovered from disk, must never be
-    // interpolated into a shell string). Argv mode runs with shell:false; each
-    // element is delivered to the child process verbatim, never reparsed.
+    // go/make stacks whose commands never carry untrusted values) or an
+    // argv-mode object `{ argv: [bin, ...args] }` (F31/LOW-python — used where a
+    // command element, e.g. a solution filename discovered from disk or a
+    // PROJECT_ROOT-derived binary path, must never be interpolated into a shell
+    // string). Argv mode runs with shell:false; each element is delivered to the
+    // child process verbatim, never reparsed.
     const isArgvMode = cmd && typeof cmd === 'object' && Array.isArray(cmd.argv);
     const result = isArgvMode
         ? spawnSync(cmd.argv[0], cmd.argv.slice(1), {
@@ -291,22 +434,27 @@ function runCommand(cmd, cwd, timeoutMs) {
 }
 
 /**
- * Human-readable display string for a build/test/lint leg config, whether it's
- * shell-mode ({ command }) or argv-mode ({ argv }). Display-only — never fed
- * back into a shell.
+ * Human-readable display string for a build/test/lint leg config: shell-mode
+ * ({ command }), argv-mode ({ argv }), or multi-leg ({ legs: [...] }, joined
+ * with ' && ' to read like the shell chain it replaces). Display-only — never
+ * fed back into a shell.
  */
 function describeLeg(leg) {
     if (!leg) return '';
+    if (Array.isArray(leg.legs)) return leg.legs.map(describeLeg).join(' && ');
     if (leg.command) return leg.command;
     if (Array.isArray(leg.argv)) return leg.argv.join(' ');
     return '';
 }
 
 /**
- * The runnable form of a leg config for runCommand(): argv-mode legs pass
- * through as { argv }, shell-mode legs pass through as the command string.
+ * The runnable form of a leg config for runCommand(): multi-leg configs pass
+ * through as { legs: [...runnable] } (each sub-leg recursively normalized),
+ * argv-mode legs pass through as { argv }, shell-mode legs pass through as the
+ * command string.
  */
 function legRunnable(leg) {
+    if (Array.isArray(leg.legs)) return { legs: leg.legs.map(legRunnable) };
     return Array.isArray(leg.argv) ? { argv: leg.argv } : leg.command;
 }
 
@@ -859,4 +1007,4 @@ if (require.main === module) {
     });
 }
 
-module.exports = { loadConfig, parseBuildOutput, parseTestOutput, isZeroCollected, testPassed, runCommand, describeLeg, legRunnable, acquireLock, releaseLock };
+module.exports = { loadConfig, parseBuildOutput, parseTestOutput, isZeroCollected, testPassed, runCommand, describeLeg, legRunnable, acquireLock, releaseLock, isProcessAlive, STALE_LOCK_MS };

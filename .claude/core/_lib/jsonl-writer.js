@@ -74,7 +74,32 @@ function appendJsonl(jsonlPath, entry, {
             const lines = fs.readFileSync(jsonlPath, 'utf8').split('\n').filter(l => l.trim());
             if (lines.length > maxLines) {
                 const trimmed = lines.slice(-tailKeep).join('\n') + '\n';
-                fs.writeFileSync(jsonlPath, trimmed, 'utf8');
+                // Write-temp + atomic rename (not a direct writeFileSync onto jsonlPath):
+                // a direct write briefly truncates the file, so any concurrent reader OR
+                // appender landing in that window could observe/produce a corrupt file
+                // (zero-length, or a partial-JSON line spliced with an in-flight append).
+                // rename() is atomic on POSIX — the file is always either the pre-rotation
+                // content or the fully-written post-rotation content, never a partial mix.
+                // This does NOT make rotation fully race-free: a concurrent appendFileSync
+                // landing between the readFileSync above and the renameSync below still
+                // loses that one line (it's absent from `trimmed`, and the append itself
+                // gets overwritten by the rename). Per this file's module docstring, JSONL
+                // writes here are already best-effort telemetry — this narrows the failure
+                // mode from "reader sees a corrupt/truncated file" to "rare single-line
+                // loss under heavy concurrent rotation," never a crash or blocked caller.
+                const tmpPath = `${jsonlPath}.tmp-${process.pid}-${Date.now()}`;
+                fs.writeFileSync(tmpPath, trimmed, 'utf8');
+                try {
+                    fs.renameSync(tmpPath, jsonlPath);
+                } catch (renameErr) {
+                    // Practically Linux/WSL-never (same-filesystem rename doesn't fail
+                    // this way), but Windows can EPERM/EBUSY on a rename target that's
+                    // open elsewhere. Don't leak the temp file — best-effort cleanup,
+                    // then re-throw so the outer catch below still logs/swallows per
+                    // this file's normal silent-on-I/O-failure contract.
+                    try { fs.unlinkSync(tmpPath); } catch { /* best-effort */ }
+                    throw renameErr;
+                }
                 count = tailKeep;
             } else {
                 count = lines.length; // cache drifted high — resync to the truth

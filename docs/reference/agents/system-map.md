@@ -2,7 +2,7 @@
 
 Complete inventory of commands, agents, skills, hooks, and core scripts — and how they wire together.
 
-This is a **reference** doc: tables, inventories, and workflow graphs, kept in sync with what's actually on disk. For the conceptual framing — what a command, agent, skill, or hook *is*, and how the three tiers compose — read the explainer docs in [`../concepts/`](../concepts/): [`commands.md`](../concepts/commands.md), [`agents.md`](../concepts/agents.md), [`skills.md`](../concepts/skills.md), [`memory.md`](../concepts/memory.md), [`hooks.md`](../concepts/hooks.md). For the rendered per-command detail (flowcharts, dispatch shape), see [`./commands.md`](./commands.md).
+This is a **reference** doc: tables, inventories, and workflow graphs, kept in sync with what's actually on disk. For the conceptual framing — what a command, agent, skill, or hook *is*, and how the three tiers compose — read the explainer docs in [`concepts/`](concepts/): [`commands.md`](concepts/commands.md), [`agents.md`](concepts/agents.md), [`skills.md`](concepts/skills.md), [`memory.md`](concepts/memory.md), [`hooks.md`](concepts/hooks.md). For the rendered per-command detail (flowcharts, dispatch shape), see [`./commands.md`](./commands.md).
 
 ---
 

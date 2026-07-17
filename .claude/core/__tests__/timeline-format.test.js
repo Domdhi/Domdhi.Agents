@@ -76,4 +76,22 @@ describe('timeline-format — title tooltip escaping (W2-4)', () => {
     expect(adrNode.title).not.toContain('<i>');
     expect(adrNode.title).toContain('&lt;i&gt;');
   });
+
+  // Wave 7 NIT: `label` wasn't esc()'d like its sibling `title`/`content` fields —
+  // not exploitable today (vis-network renders label as plain text, no font.multi
+  // set anywhere in this file), but a stored-XSS sink the instant that changes.
+  it('toNetworkGraph_escapes_concept_and_adr_node_labels', () => {
+    const data = {
+      concepts: [{ title: '<script>x</script>', category: 'patterns', confidence: 0.7, sources: [], slug: 'x' }],
+      adrs: [{ number: 3, title: '<i>hi</i>', status: 'ok', summary: '' }],
+      crossReferences: {},
+    };
+    const { nodes } = toNetworkGraph(data);
+    const conceptNode = nodes.find(n => n.id === 'x');
+    const adrNode = nodes.find(n => n.id === 'adr-3');
+    expect(conceptNode.label).not.toContain('<script>');
+    expect(conceptNode.label).toContain('&lt;script&gt;');
+    expect(adrNode.label).not.toContain('<i>');
+    expect(adrNode.label).toContain('&lt;i&gt;');
+  });
 });

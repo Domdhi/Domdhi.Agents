@@ -59,6 +59,8 @@ Glob: docs/TODO_*.md
 
 ### 2. Delegate Domain Checks (main agent → domain agents)
 
+**Self-hosted/tooling-repo guard.** Before dispatching 2a or 2c, check whether their source doc actually exists as a real (non-template-stub) file: `docs/architecture/overview.md` for 2a, `docs/product/requirements.md` for 2c (use the same `<!-- @@template -->`-stub test the hard gates use). If it doesn't exist at all — the repo shape of a self-hosted tooling workshop like this one, which has no product/architecture doc chain to drift against — SKIP that dispatch entirely rather than running the domain agent anyway. A domain agent pointed at a nonexistent doc produces a vacuous wall of "missing" findings for the whole repo, which reads as noise, not real drift signal, and drowns out genuine findings from the checks that DO apply (2b story-status, dead-reference scan, `doc-drift.js`). Note the skip in the final report ("Architecture sync: skipped — no `docs/architecture/overview.md` in this repo") instead of silently omitting the section.
+
 Launch applicable agents **in parallel** based on scope. Each agent auto-loads its skills via frontmatter.
 
 > **Read-only enforcement.** Every dispatched agent below has Write/Edit tools for other work it does — that does NOT extend to this command. Each Task prompt in 2a/2b/2c MUST include an explicit "do not edit or write any files" instruction, not just an implicit assumption from the command's own contract. This is a real gap: an agent can self-authorize a "helpful" doc edit during a check-sync dispatch, breaking the read-only contract that this command's chained resolution step (`/review:update-docs`) depends on. A drifted-but-unedited report is correct behavior; a self-healed doc is not, no matter how confident the agent is.
@@ -124,6 +126,8 @@ node .claude/core/_lib/doc-drift.js
 ```
 
 Exit 1 means drift was found — fold every reported item (legacy docs, duplicates, **and misplaced TODOs**) into the report as a drift finding (recommend reconciling via `/onboard`'s Step 6b or manual cleanup). Exit 0 means clean.
+
+**Superseded-stack banner check (recurring shape — 3-for-3 in field audits):** for every doc whose header/attribute table or status line names a tech stack, deployment target, or repo layout, check whether it describes a since-replaced state (pre-migration stack, pre-consolidation tree) **without a superseded/stale banner pointing to the current source of truth**. Three independent audits each found one (an architecture overview, a rebuild plan, a backlog's Tech Stack row) — a cold reader takes an unbannered header as current fact. Report any such doc as drift with the reconciliation "add a superseded banner → current ADR/CLAUDE.md," not a full rewrite.
 
 ### 4. Persist Output (main agent)
 

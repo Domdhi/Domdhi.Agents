@@ -30,7 +30,13 @@ const { parseYaml, stripComment } = require('../core/_lib/yaml-parser');
 const { matchesPattern, evaluate, checkPathAccess, loadRules: libLoadRules } = require('../core/_lib/guardrail-rules');
 const { buildHookResponse, checkFreezeState } = require('../core/_lib/command-blocker');
 const { emitGuardrailHit } = require('../core/_lib/hook-telemetry');
-const { splitCommandSegments } = require('../core/_lib/shell-command-split');
+const { splitCommandSegments, stripWrapperPrefix } = require('../core/_lib/shell-command-split');
+
+// 5000ms ceiling on the stdin read (blocking-hook parity). Env override exists
+// ONLY so a fail-closed timeout test can shrink the wait for a real spawned
+// process without changing production behavior — same pattern as
+// secret-scanner.cjs's SECRET_SCANNER_STDIN_TIMEOUT_MS.
+const STDIN_TIMEOUT_MS = parseInt(process.env.HOOK_STDIN_TIMEOUT_MS, 10) || 5000;
 
 // ─── Path resolution ──────────────────────────────────────────────────────────
 
@@ -235,6 +241,50 @@ function tokenizeArgs(str) {
 }
 
 /**
+ * Expose a segment's REAL verb head so the delete-verb regexes below see it no
+ * matter how the invocation is wrapped or path-qualified. Two normalizations,
+ * both required to close the finding-1 bypass class:
+ *
+ *   1. stripWrapperPrefix peels leading command wrappers (`sudo`, `env FOO=1`,
+ *      bare `FOO=bar`, `nice -n10`, `nohup`, `time`, `xargs`) so the wrapper
+ *      token is not mistaken for the head — `sudo rm -rf .env` → `rm -rf .env`.
+ *   2. the FIRST token is basename-normalized (`headTok.split(/[\\/]/).pop()`)
+ *      so a path-qualified binary matches the bare-verb regex — `/bin/rm -rf
+ *      .env` → `rm -rf .env`, `/usr/bin/truncate -s0 .env` → `truncate …`.
+ *
+ * These two steps must ALTERNATE until the head stabilizes, not run once each.
+ * A PATH-QUALIFIED WRAPPER (`/bin/sudo`, `/usr/bin/env`, `/usr/bin/nice`) is
+ * invisible to stripWrapperPrefix on the first pass — its regexes anchor on the
+ * bare wrapper name (`sudo`), not the path-qualified form — so a single
+ * strip→basename left the head at `sudo`/`env`/`nice` and the delete-verb regex
+ * never matched, silently downgrading a zeroAccessPaths hard block. Basenaming
+ * `/bin/sudo` → `sudo` only helps if that bare wrapper is then re-fed to
+ * stripWrapperPrefix; the loop does exactly that until neither step changes the
+ * head (finding 1, full-review-260716 retry).
+ *
+ * This mirrors commit-guard.cjs gitCommitSegmentTail's basename treatment (R8):
+ * both extractors consume splitCommandSegments output, so wrapper-stripping
+ * composes identically here. PURE and never throws — stripWrapperPrefix is
+ * guarded and the string ops are total (a bare token pops to itself), so the
+ * guard stays fail-closed. The loop is bounded by convergence (each iteration
+ * only ever shortens the head) plus a hard iteration cap as a belt-and-braces.
+ *
+ * @param {string} segment
+ * @returns {string}
+ */
+function normalizeSegmentHead(segment) {
+    let current = String(segment).trim();
+    for (let i = 0; i < 16; i++) {
+        const stripped = stripWrapperPrefix(current).trim();
+        const m = stripped.match(/^(\S+)([\s\S]*)$/);
+        const next = m ? m[1].split(/[\\/]/).pop() + m[2] : stripped;
+        if (next === current) return current;
+        current = next;
+    }
+    return current;
+}
+
+/**
  * Extract candidate path arguments from a delete-style bash command.
  *
  * Best-effort tokenization for `rm`, `rm -rf`, `del`, `unlink`, `Remove-Item`.
@@ -252,7 +302,11 @@ function extractDeletePaths(command) {
     if (!command || typeof command !== 'string') return [];
     const paths = [];
     for (const segment of splitCommandSegments(command)) {
-        const trimmed = segment.trim();
+        // Normalize wrappers + a path-qualified binary off the head so the verb
+        // regex sees the real command — `sudo rm`, `FOO=1 rm`, `/bin/rm` all
+        // reduce to `rm` (finding 1). Without this, a wrapper/path prefix
+        // downgraded the non-escalatable zeroAccessPaths block to a nudge.
+        const trimmed = normalizeSegmentHead(segment);
         // Bash: rm [flags] args   |   Windows cmd: del [flags] args
         // PowerShell: Remove-Item [flags] args   |   POSIX: unlink path
         const match = trimmed.match(/^(rm|del|unlink|Remove-Item)\b\s+(.*)$/i);
@@ -293,7 +347,11 @@ function extractAltDeleteTargets(command) {
     };
 
     for (const segment of splitCommandSegments(command)) {
-        const trimmed = segment.trim();
+        // Same head normalization as extractDeletePaths (finding 1): peel
+        // wrappers + basename a path-qualified binary so `sudo truncate -s0
+        // .env`, `env FOO=1 shred .env`, `/usr/bin/find … -delete` all expose
+        // their real verb. Without it, `sudo truncate/shred` fully ALLOWED.
+        const trimmed = normalizeSegmentHead(segment);
 
         // find … -delete   |   find … -exec rm|unlink|shred|truncate
         if (/^find\b/i.test(trimmed) && /(-delete\b|-exec\s+(rm|unlink|shred|truncate)\b)/i.test(trimmed)) {
@@ -515,11 +573,30 @@ function processEvent(parsedJson) {
 // ─── Hook entry point ────────────────────────────────────────────────────────
 
 async function runClaudeHook() {
-    const input = await readHookInput({ timeoutMs: null });
+    // Fail CLOSED on a wedged/truncated stdin read. A timeout or stream error
+    // here means the payload never arrived intact — allowing (exit 0) would let
+    // the destructive command this hook exists to scan proceed COMPLETELY
+    // unscanned. Block instead, matching the processEvent-level catch below and
+    // secret-scanner.cjs's posture. A clean `end` (even with empty data) still
+    // resolves, so the legitimate empty-stdin case is unaffected. (finding 2)
+    let input;
+    try {
+        input = await readHookInput({ timeoutMs: STDIN_TIMEOUT_MS, failClosedOnTimeout: true });
+    } catch (err) {
+        process.stderr.write('[guardrail] BLOCKED (fail-closed): stdin read did not complete — ' + (err && err.message) + '\n');
+        process.exit(2);
+    }
     if (!input.trim()) process.exit(0);
 
     let data;
-    try { data = JSON.parse(input); } catch { process.exit(0); }
+    try {
+        data = JSON.parse(input);
+    } catch {
+        // Fail CLOSED: non-empty stdin that will not parse is a truncated/garbled
+        // payload whose command would otherwise proceed unscanned. Block.
+        process.stderr.write('[guardrail] BLOCKED (fail-closed): could not parse stdin payload as JSON.\n');
+        process.exit(2);
+    }
 
     // n3 — fail CLOSED on an unexpected processEvent error. processEvent is
     // internally well-guarded (loadRules/evaluate/checkPathAccess all catch), so

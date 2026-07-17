@@ -2,7 +2,7 @@
 
 Per-command reference for every slash command in the `.claude/` system. Thirty-nine commands as of today, grouped into four categories matching `CLAUDE.md:49-83`: **Setup**, **Build Loop**, **Supporting**, **Review**.
 
-This is the reference. For the conceptual framing — what a command *is*, how it relates to agents and skills, the orchestration pattern every command follows — read [`../concepts/commands.md`](../concepts/commands.md). For the rendered inventory across the whole system, see [`./system-map.md`](./system-map.md).
+This is the reference. For the conceptual framing — what a command *is*, how it relates to agents and skills, the orchestration pattern every command follows — read [`concepts/commands.md`](concepts/commands.md). For the rendered inventory across the whole system, see [`./system-map.md`](./system-map.md).
 
 Each entry below gives the command's purpose, the agent(s) it dispatches, and — where available — a mermaid flowchart showing the decision shape. The commands that don't have diagrams (`/status`, `/investigate`, `/remember`, `/review:timeline`, `/create:component`) are linear enough to describe in a paragraph.
 
@@ -908,7 +908,7 @@ flowchart TD
     style DONE fill:#888,color:#fff
 ```
 
-> **`/recap` was removed** in v3. Memory now auto-compounds via the `memory-capture.cjs` Stop hook: daily-log capture (auto via Stop hook) → optional `memory-extractor.js extract` (manual Haiku, brownfield only) → `memory-manager.js create`. See [`../concepts/memory.md`](../concepts/memory.md).
+> **`/recap` was removed** in v3. Memory now auto-compounds via the `memory-capture.cjs` Stop hook: daily-log capture (auto via Stop hook) → optional `memory-extractor.js extract` (manual Haiku, brownfield only) → `memory-manager.js create`. See [`concepts/memory.md`](concepts/memory.md).
 
 ---
 
@@ -1742,10 +1742,10 @@ All mermaid diagrams in this reference use a consistent color scheme. A node's c
 
 ## See also
 
-- [`../concepts/commands.md`](../concepts/commands.md) — what commands are, the orchestration pattern, commands vs agents vs skills
-- [`../concepts/agents.md`](../concepts/agents.md) — the 11-agent inventory with model hierarchy
-- [`../concepts/skills.md`](../concepts/skills.md) — auto-load skills and the user-invocable catalog
-- [`../concepts/hooks.md`](../concepts/hooks.md) — the deterministic event layer that runs alongside commands
-- [`../concepts/memory.md`](../concepts/memory.md) — the auto-compound pipeline
+- [`concepts/commands.md`](concepts/commands.md) — what commands are, the orchestration pattern, commands vs agents vs skills
+- [`concepts/agents.md`](concepts/agents.md) — the 11-agent inventory with model hierarchy
+- [`concepts/skills.md`](concepts/skills.md) — auto-load skills and the user-invocable catalog
+- [`concepts/hooks.md`](concepts/hooks.md) — the deterministic event layer that runs alongside commands
+- [`concepts/memory.md`](concepts/memory.md) — the auto-compound pipeline
 - [`./system-map.md`](./system-map.md) — the full system inventory and workflow graphs
 - [`./customization.md`](./customization.md) — zone map for safe template sync

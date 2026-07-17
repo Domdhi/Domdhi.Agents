@@ -23,6 +23,8 @@ node .claude/core/telemetry-log.js retro
 - `code-reviewer` (via Task tool with `subagent_type: "code-reviewer"`) — the code-review pass (Step 2)
 - `doc-writer` (via Task tool with `subagent_type: "doc-writer"`) — the retrospective analysis (Step 5)
 
+> **Idle-without-delivery is expected, not anomalous — nudge immediately.** Background reviewer agents recurringly go idle without sending their report (confirmed in the field twice: 3/4 agents in one epic retro, 3/8 in a maintenance sweep). On an idle notification with no delivered findings, immediately `SendMessage` a "deliver your full findings now" nudge rather than waiting or re-dispatching — the work is done; only the delivery hop failed. If a reviewer agent *dies* (not idles), re-dispatch a fresh reviewer; never silently downgrade to an orchestrator-inline review.
+
 ## Variables
 
 INPUT: $ARGUMENTS

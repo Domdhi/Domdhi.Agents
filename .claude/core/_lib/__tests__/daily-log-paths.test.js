@@ -45,4 +45,18 @@ describe('getDailyLogPath', () => {
         const result = getDailyLogPath('2026-04-24T12:34:56.789Z', '/tmp/project');
         expect(result).toBe(path.join('/tmp/project', 'docs', '.output', '.state', 'memory-daily', '2026-04-24.md'));
     });
+
+    it('throws on a malformed date string instead of building a traversal-carrying path', () => {
+        expect(() => getDailyLogPath('../../etc/passwd', '/tmp/project')).toThrow(/invalid date/);
+    });
+
+    it('throws on a non-date string', () => {
+        expect(() => getDailyLogPath('not-a-date', '/tmp/project')).toThrow(/invalid date/);
+    });
+
+    it('accepts a string that merely fails calendar validity (shape check only, not calendar validity)', () => {
+        // The fix's regex (^\d{4}-\d{2}-\d{2}$) checks shape, not that month 13 exists.
+        const result = getDailyLogPath('2026-13-99', '/tmp/project');
+        expect(result).toBe(path.join('/tmp/project', 'docs', '.output', '.state', 'memory-daily', '2026-13-99.md'));
+    });
 });

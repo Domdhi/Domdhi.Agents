@@ -256,6 +256,81 @@ describe('organize', () => {
             expect(() => { processEvent({}); processEvent({}); }).not.toThrow();
         });
 
+        // MINOR (Wave 5E): the plan-content read was a bare fs.readFileSync inside
+        // the organize loop — a concurrent rename between stat-collect and read
+        // threw ENOENT uncaught, abandoning the whole pass (not just the vanished
+        // file). safeReadFileSync null-guards it so only that one plan is skipped.
+        it('does not throw and organizes other plans when one plan file vanishes before its read (ENOENT)', () => {
+            process.env.CLAUDE_PROJECT_DIR = tmp.root;
+            tmp.write('docs/.output/plans/a-before.md', '# Plan: a before\n\n## Summary\nBefore.');
+            tmp.write('docs/.output/plans/b-vanishes.md', '# Plan: b vanishes\n\n## Summary\nVanishes.');
+            tmp.write('docs/.output/plans/c-after.md', '# Plan: c after\n\n## Summary\nAfter.');
+
+            const vanishingPath = path.join(tmp.root, 'docs/.output/plans/b-vanishes.md');
+            const realReadFileSync = fs.readFileSync;
+            vi.spyOn(fs, 'readFileSync').mockImplementation((p, ...rest) => {
+                if (p === vanishingPath) {
+                    const enoent = Object.assign(new Error('ENOENT: gone'), { code: 'ENOENT' });
+                    throw enoent;
+                }
+                return realReadFileSync(p, ...rest);
+            });
+
+            let result;
+            expect(() => { result = processEvent({}); }).not.toThrow();
+
+            // The vanished file was never moved (its rename never runs) and is left in place.
+            expect(fs.existsSync(vanishingPath)).toBe(true);
+
+            // The other two plans (queued before AND after the vanished one) were still organized.
+            const plansDir = path.join(tmp.root, 'docs', '.output', 'plans');
+            const datedDirs = fs.readdirSync(plansDir).filter(f => /^\d{4}-\d{2}-\d{2}$/.test(f));
+            expect(datedDirs.length).toBeGreaterThan(0);
+            const movedFiles = datedDirs.flatMap(d => fs.readdirSync(path.join(plansDir, d)));
+            expect(movedFiles.some(f => f.includes('a-before'))).toBe(true);
+            expect(movedFiles.some(f => f.includes('c-after'))).toBe(true);
+            expect(movedFiles.some(f => f.includes('b-vanishes'))).toBe(false);
+
+            expect(result).not.toBeNull();
+            expect(result.feedback).toMatch(/Organized 2 item/);
+        });
+
+        // NIT (Wave 5 review F3): updateWorkRefs's early-bail read of the TODO
+        // file was still a bare fs.readFileSync even after 5E fixed the sibling
+        // read in organizePlans — a concurrent delete/rename of the TODO file
+        // between its existsSync check and this read would throw ENOENT and
+        // abort the WHOLE organize pass (not just skip the work-refs update).
+        it('does not throw and still moves the plan when the TODO file vanishes before updateWorkRefs reads it', () => {
+            process.env.CLAUDE_PROJECT_DIR = tmp.root;
+            tmp.write('docs/.output/plans/story-1.1-vanish.md', '# Plan: story 1.1\n\nStory 1.1 work.\n\n## Summary\nDoes a thing.');
+            const todoPath = tmp.write(
+                'docs/TODO_thing.md',
+                '# TODO\n\n## Work Document References\n| Date | Plan | Story | Topic |\n|------|------|-------|-------|\n'
+            );
+
+            const realReadFileSync = fs.readFileSync;
+            vi.spyOn(fs, 'readFileSync').mockImplementation((p, ...rest) => {
+                if (p === todoPath) {
+                    const enoent = Object.assign(new Error('ENOENT: gone'), { code: 'ENOENT' });
+                    throw enoent;
+                }
+                return realReadFileSync(p, ...rest);
+            });
+
+            let result;
+            expect(() => { result = processEvent({}); }).not.toThrow();
+
+            // The plan itself was still organized despite the TODO-file read failure.
+            const plansDir = path.join(tmp.root, 'docs', '.output', 'plans');
+            const datedDirs = fs.readdirSync(plansDir).filter(f => /^\d{4}-\d{2}-\d{2}$/.test(f));
+            expect(datedDirs.length).toBeGreaterThan(0);
+            const movedFiles = datedDirs.flatMap(d => fs.readdirSync(path.join(plansDir, d)));
+            expect(movedFiles.some(f => f.includes('story-1.1'))).toBe(true);
+
+            expect(result).not.toBeNull();
+            expect(result.feedback).toMatch(/Organized 1 item/);
+        });
+
         // F68 (council-260715-2244): the screenshot pass fires on EVERY Bash
         // call — it must only scan the NEWEST dated folder, never re-sweep the
         // whole accumulated archive of already-organized days.

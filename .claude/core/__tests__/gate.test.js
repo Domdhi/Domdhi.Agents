@@ -2,7 +2,7 @@
 //   - parseBuildOutput: TS/C# style, ESLint/generic, Rust prefix, mixed, empty
 //   - parseTestOutput: Vitest v1 (colon), Vitest v2 (no colon, parens), dotnet, Rust, individual failures
 //   - loadConfig: auto-detects package.json / Cargo.toml / go.mod / .sln / Makefile; explicit override
-//   - acquireLock / releaseLock: double-acquire fails, release re-enables, stale lock (>10 min) breaks
+//   - acquireLock / releaseLock: double-acquire fails, release re-enables; stale lock breaks only when past the 30-min ceiling AND its owner is dead; releaseLock only deletes a lock this process still owns (pid+started match)
 //   - MODULE: gate.js exports { loadConfig, parseBuildOutput, parseTestOutput, acquireLock, releaseLock }
 //
 // Isolation strategy for env-dependent tests (loadConfig, acquireLock, releaseLock):
@@ -12,7 +12,7 @@
 //   Solution: delete the gate.js entry from require.cache before each re-require so that
 //   Node re-executes the module with the current CLAUDE_PROJECT_DIR value.
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createRequire } from 'node:module';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -742,14 +742,19 @@ describe('gate', () => {
       // C1 (F4-analog): a ruff+pytest project that doesn't use mypy must NOT have
       // `mypy --strict` hard-wired into the build — it would make the gate
       // unreachable on a healthy repo.
+      // Also LOW (F31-analog): the build is argv-mode multi-leg, not a shell
+      // string — see loadConfig_python_argvMode_hardensAgainstShellInterpolation.
       tmp.write('pyproject.toml', '[project]\nname = "x"\n[dependency-groups]\ndev = ["pytest", "ruff"]');
       const loadConfig = freshLoadConfig();
 
       const config = loadConfig();
 
       expect(config.stack).toBe('python');
-      expect(config.build.command).toContain('ruff check');
-      expect(config.build.command).not.toContain('mypy');
+      expect(config.build.command).toBeUndefined();
+      expect(config.build.legs).toEqual([
+        { argv: ['ruff', 'check', 'src', 'tests'] },
+        { argv: ['ruff', 'format', '--check', 'src', 'tests'] },
+      ]);
     });
 
     it('loadConfig_C1_python_mypyDeclared_includesMypyLeg', () => {
@@ -759,7 +764,67 @@ describe('gate', () => {
 
       const config = loadConfig();
 
-      expect(config.build.command).toContain('mypy --strict src');
+      expect(config.build.legs).toHaveLength(3);
+      expect(config.build.legs[2]).toEqual({ argv: ['mypy', '--strict', 'src'] });
+    });
+
+    it('loadConfig_python_testLeg_isArgvMode', () => {
+      // LOW (F31-analog): pytest must run argv-mode too — `${prefix}pytest` was
+      // the same shell-interpolation hazard as the ruff/mypy legs.
+      tmp.write('pyproject.toml', '[project]\nname = "x"\n[dependency-groups]\ndev = ["pytest", "ruff"]');
+      const loadConfig = freshLoadConfig();
+
+      const config = loadConfig();
+
+      expect(config.test.command).toBeUndefined();
+      expect(config.test.argv).toEqual(['pytest']);
+    });
+
+    it('loadConfig_python_argvMode_hardensAgainstShellInterpolation', () => {
+      // LOW: gate.js ran Python legs under shell:true, interpolating PROJECT_ROOT
+      // (via the .venv/bin prefix) into the shell string. A checkout path with a
+      // shell metachar (e.g. `/home/dom/my repo;id/`) would execute the `;id`
+      // segment. This asserts the fix directly: a PROJECT_ROOT containing a
+      // space + `;` metachar must still produce argv-mode legs whose elements
+      // carry the raw venv path verbatim as ONE argv element — never
+      // concatenated into a shell string that a shell could reinterpret.
+      const hostileTmp = createTmpDir({ prefix: 'gate py hostile;id-' });
+      try {
+        hostileTmp.write('pyproject.toml', '[project]\nname = "x"\n[tool.mypy]\nstrict = true');
+        const venvBinDir = path.join(hostileTmp.root, '.venv', 'bin');
+        fs.mkdirSync(venvBinDir, { recursive: true });
+        fs.writeFileSync(path.join(venvBinDir, 'ruff'), '');
+        fs.writeFileSync(path.join(venvBinDir, 'mypy'), '');
+        fs.writeFileSync(path.join(venvBinDir, 'pytest'), '');
+
+        process.env.CLAUDE_PROJECT_DIR = hostileTmp.root;
+        delete require.cache[GATE_PATH];
+        const config = require('../gate').loadConfig();
+
+        expect(config.stack).toBe('python');
+        // No shell-command string anywhere in build/test — argv-mode only.
+        expect(config.build.command).toBeUndefined();
+        expect(config.test.command).toBeUndefined();
+
+        const expectedRuff = path.join(venvBinDir, 'ruff');
+        const expectedMypy = path.join(venvBinDir, 'mypy');
+        const expectedPytest = path.join(venvBinDir, 'pytest');
+
+        expect(config.build.legs).toEqual([
+          { argv: [expectedRuff, 'check', 'src', 'tests'] },
+          { argv: [expectedRuff, 'format', '--check', 'src', 'tests'] },
+          { argv: [expectedMypy, '--strict', 'src'] },
+        ]);
+        expect(config.test.argv).toEqual([expectedPytest]);
+
+        // The hostile path segment survives verbatim as part of a single argv
+        // element (never split into a separate token the way a shell would).
+        expect(config.build.legs[0].argv[0]).toContain(';id');
+        expect(config.build.legs[0].argv).toHaveLength(4); // [bin, 'check', 'src', 'tests'] — no extra tokens
+      } finally {
+        delete require.cache[GATE_PATH];
+        hostileTmp.cleanup();
+      }
     });
 
     it('loadConfig_cargoToml_returnsRustStack', () => {
@@ -982,31 +1047,78 @@ describe('gate', () => {
       expect(() => releaseLock()).not.toThrow();
     });
 
-    it('acquireLock_staleLock_breaksAndReturnsTrue', () => {
-      // Arrange — write a lock file with a started time >10 minutes ago
-      // GATE_DIR = docs/.output/.state/telemetry inside PROJECT_ROOT
-      const gateDir = path.join(tmp.root, 'docs', '.output', '.state', 'telemetry');
-      fs.mkdirSync(gateDir, { recursive: true });
-      const lockFile = path.join(gateDir, '.gate.lock');
-      const staleTime = new Date(Date.now() - 700000).toISOString(); // 700s > 600s threshold
-      fs.writeFileSync(lockFile, JSON.stringify({ pid: 99999, started: staleTime }));
+    // GATE_DIR = docs/.output/.state/telemetry inside PROJECT_ROOT
+    function gateDir() {
+      const dir = path.join(tmp.root, 'docs', '.output', '.state', 'telemetry');
+      fs.mkdirSync(dir, { recursive: true });
+      return dir;
+    }
+    function lockPath() { return path.join(gateDir(), '.gate.lock'); }
+    // A PID guaranteed not to be running: spawn a child that exits immediately;
+    // by the time spawnSync returns, that PID is dead. Used to exercise the
+    // stale-break path's liveness gate deterministically.
+    function deadPid() {
+      const { spawnSync } = require('node:child_process');
+      const r = spawnSync(process.execPath, ['-e', 'process.exit(0)']);
+      return r.pid;
+    }
+
+    it('acquireLock_staleLockDeadOwner_breaksAndReturnsTrue', () => {
+      // Arrange — lock older than STALE_LOCK_MS whose owner is dead
+      const staleTime = new Date(Date.now() - 2000000).toISOString(); // ~33m > 30m ceiling
+      fs.writeFileSync(lockPath(), JSON.stringify({ pid: deadPid(), started: staleTime }));
 
       const { acquireLock } = freshGate();
 
       // Act
       const result = acquireLock();
 
-      // Assert — stale lock is broken and acquire succeeds
+      // Assert — abandoned lock (old + dead owner) is broken and acquire succeeds
       expect(result).toBe(true);
     });
 
+    it('acquireLock_oldLockLiveOwner_doesNotBreak_returnsFalse', () => {
+      // Arrange — lock is OLD (past the ceiling) but its owner is STILL ALIVE.
+      // This is the legitimately-long-suite case: it must NOT be broken. Use this
+      // process's own PID as a guaranteed-live owner.
+      const oldTime = new Date(Date.now() - 2000000).toISOString(); // ~33m > 30m ceiling
+      fs.writeFileSync(lockPath(), JSON.stringify({ pid: process.pid, started: oldTime }));
+
+      const { acquireLock } = freshGate();
+
+      // Act
+      const result = acquireLock();
+
+      // Assert — live owner is never broken regardless of age
+      expect(result).toBe(false);
+      // And the owner's lock is untouched
+      const stillThere = JSON.parse(fs.readFileSync(lockPath(), 'utf-8'));
+      expect(stillThere.pid).toBe(process.pid);
+      expect(stillThere.started).toBe(oldTime);
+    });
+
+    it('acquireLock_midAgeLock_doesNotBreak_returnsFalse', () => {
+      // Arrange — lock older than the OLD 10-min ceiling but under the new 30-min
+      // one, dead owner. Proves the ceiling was actually raised: this would have
+      // broken under the old 600000ms threshold, must not now.
+      const { STALE_LOCK_MS } = require('../gate');
+      expect(STALE_LOCK_MS).toBe(1800000);
+      const midTime = new Date(Date.now() - 1000000).toISOString(); // ~16m: >10m, <30m
+      fs.writeFileSync(lockPath(), JSON.stringify({ pid: deadPid(), started: midTime }));
+
+      const { acquireLock } = freshGate();
+
+      // Act
+      const result = acquireLock();
+
+      // Assert — not yet stale under the raised ceiling
+      expect(result).toBe(false);
+    });
+
     it('acquireLock_freshLock_returnsFalse', () => {
-      // Arrange — write a fresh lock (under 10 minutes old)
-      const gateDir = path.join(tmp.root, 'docs', '.output', '.state', 'telemetry');
-      fs.mkdirSync(gateDir, { recursive: true });
-      const lockFile = path.join(gateDir, '.gate.lock');
+      // Arrange — write a fresh lock (a few seconds old)
       const freshTime = new Date(Date.now() - 5000).toISOString(); // 5s old
-      fs.writeFileSync(lockFile, JSON.stringify({ pid: process.pid + 1, started: freshTime }));
+      fs.writeFileSync(lockPath(), JSON.stringify({ pid: process.pid + 1, started: freshTime }));
 
       const { acquireLock } = freshGate();
 
@@ -1015,6 +1127,154 @@ describe('gate', () => {
 
       // Assert — active fresh lock blocks acquire
       expect(result).toBe(false);
+    });
+
+    // ─── ownership guard (the race this story closes) ───────────────────────
+    // Gate A's lock gets broken by B (a slow suite past a too-short ceiling), B
+    // installs its own lock, then A exits and its releaseLock() must NOT delete
+    // B's lock — else a third gate runs concurrently against the same tree.
+
+    it('releaseLock_foreignLock_doesNotDelete', () => {
+      // Arrange — a lock owned by ANOTHER process; this process never acquired it
+      const foreign = { pid: deadPid(), started: new Date(Date.now() - 1000).toISOString() };
+      fs.writeFileSync(lockPath(), JSON.stringify(foreign));
+
+      const { releaseLock } = freshGate(); // ownLockStarted is null in this fresh module
+
+      // Act
+      releaseLock();
+
+      // Assert — foreign lock is left intact for its real owner
+      expect(fs.existsSync(lockPath())).toBe(true);
+      const after = JSON.parse(fs.readFileSync(lockPath(), 'utf-8'));
+      expect(after.pid).toBe(foreign.pid);
+      expect(after.started).toBe(foreign.started);
+    });
+
+    it('releaseLock_lockReplacedAfterAcquire_doesNotDeleteReplacement', () => {
+      // Arrange — THIS process acquires, then its lock is broken+replaced by a new
+      // owner reusing the SAME pid but a different `started` (the PID-reuse edge
+      // the started-match guard defends). releaseLock must honor `started`, not
+      // pid alone, and leave the replacement intact.
+      const { acquireLock, releaseLock } = freshGate();
+      acquireLock();
+      const replacement = { pid: process.pid, started: new Date(Date.now() + 1000).toISOString() };
+      fs.writeFileSync(lockPath(), JSON.stringify(replacement));
+
+      // Act
+      releaseLock();
+
+      // Assert — replacement (different `started`) survives
+      expect(fs.existsSync(lockPath())).toBe(true);
+      const after = JSON.parse(fs.readFileSync(lockPath(), 'utf-8'));
+      expect(after.started).toBe(replacement.started);
+    });
+
+    it('releaseLock_ownLock_deletesFile', () => {
+      // Arrange — this process legitimately owns the lock
+      const { acquireLock, releaseLock } = freshGate();
+      acquireLock();
+      expect(fs.existsSync(lockPath())).toBe(true);
+
+      // Act
+      releaseLock();
+
+      // Assert — own lock IS removed
+      expect(fs.existsSync(lockPath())).toBe(false);
+    });
+
+    it('isProcessAlive_selfPid_true_deadPid_false', () => {
+      const { isProcessAlive } = freshGate();
+      expect(isProcessAlive(process.pid)).toBe(true);
+      expect(isProcessAlive(deadPid())).toBe(false);
+      expect(isProcessAlive(-1)).toBe(false);
+      expect(isProcessAlive('nan')).toBe(false);
+    });
+
+    // ─── stale-break race (the TOCTOU this fix closes) ──────────────────────
+    // Two gates can independently observe the SAME stale+dead lock and both
+    // decide to break it. The first breaks it and installs its own fresh, LIVE
+    // lock; the second must NOT then unlink that live lock (which would let both
+    // run concurrently against the same tree). We inject the race by swapping the
+    // on-disk lock between the inspection read and the pre-unlink re-read.
+
+    it('acquireLock_twoProcessesRaceStaleBreak_loserDoesNotDeleteFreshLock', () => {
+      // Arrange — a stale, dead-owner lock both gates would agree to break
+      const staleTime = new Date(Date.now() - 2000000).toISOString(); // ~33m
+      const stale = { pid: deadPid(), started: staleTime };
+      fs.writeFileSync(lockPath(), JSON.stringify(stale));
+
+      const { acquireLock } = freshGate();
+
+      // The winner's fresh, LIVE lock that lands in the break window (this
+      // process's own pid → guaranteed alive, different `started`).
+      const freshLive = { pid: process.pid, started: new Date().toISOString() };
+      const realRead = fs.readFileSync;
+      let lockReads = 0;
+      const spy = vi.spyOn(fs, 'readFileSync').mockImplementation((p, ...rest) => {
+        const data = realRead(p, ...rest);
+        if (typeof p === 'string' && p.endsWith('.gate.lock')) {
+          lockReads += 1;
+          // After OUR inspection read (which returns the stale content captured
+          // above), the winner breaks the stale lock and installs its live one —
+          // so our pre-unlink re-read sees a DIFFERENT lock.
+          if (lockReads === 1) fs.writeFileSync(lockPath(), JSON.stringify(freshLive));
+        }
+        return data;
+      });
+
+      // Act
+      let result;
+      try {
+        result = acquireLock();
+      } finally {
+        spy.mockRestore();
+      }
+
+      // Assert — we lost the break race and must be blocked, NOT holding a lock we
+      // stole by deleting the winner's live one.
+      expect(result).toBe(false);
+      expect(fs.existsSync(lockPath())).toBe(true);
+      const after = JSON.parse(fs.readFileSync(lockPath(), 'utf-8'));
+      expect(after.pid).toBe(freshLive.pid);
+      expect(after.started).toBe(freshLive.started);
+    });
+
+    it('acquireLock_staleBreakUnlinkENOENT_doesNotThrow_reacquires', () => {
+      // Arrange — a stale, dead-owner lock. Simulate another gate breaking it in
+      // the window between our matching re-read and our unlink, so our own unlink
+      // hits ENOENT. That must be treated as "someone else broke it", not crash.
+      const staleTime = new Date(Date.now() - 2000000).toISOString(); // ~33m
+      const stale = { pid: deadPid(), started: staleTime };
+      fs.writeFileSync(lockPath(), JSON.stringify(stale));
+
+      const { acquireLock } = freshGate();
+
+      const realRead = fs.readFileSync;
+      let lockReads = 0;
+      const spy = vi.spyOn(fs, 'readFileSync').mockImplementation((p, ...rest) => {
+        if (typeof p === 'string' && p.endsWith('.gate.lock')) {
+          lockReads += 1;
+          // Re-read (#2) still MATCHES the stale lock (so we proceed to unlink),
+          // but the file vanishes right after — the next unlink will ENOENT.
+          if (lockReads === 2) { fs.unlinkSync(lockPath()); return JSON.stringify(stale); }
+          if (lockReads === 1) return JSON.stringify(stale);
+        }
+        return realRead(p, ...rest);
+      });
+
+      // Act
+      let result;
+      try {
+        result = (() => acquireLock())();
+      } finally {
+        spy.mockRestore();
+      }
+
+      // Assert — no throw; the vanished lock lets us cleanly reacquire.
+      expect(result).toBe(true);
+      const after = JSON.parse(fs.readFileSync(lockPath(), 'utf-8'));
+      expect(after.pid).toBe(process.pid);
     });
   });
 
@@ -1074,6 +1334,48 @@ describe('gate', () => {
     });
   });
 
+  describe('runCommand — multi-leg (LOW python argv fix)', () => {
+    const { runCommand } = require('../gate');
+
+    it('runs every leg and reports exitCode 0 when all legs pass', () => {
+      const r = runCommand({
+        legs: [
+          { argv: ['node', '-e', 'console.log("leg1")'] },
+          { argv: ['node', '-e', 'console.log("leg2")'] },
+        ],
+      }, process.cwd(), 30000);
+
+      expect(r.exitCode).toBe(0);
+      expect(r.output).toContain('leg1');
+      expect(r.output).toContain('leg2');
+    });
+
+    it('stops at the first failing leg and does not run the rest (&& short-circuit)', () => {
+      const r = runCommand({
+        legs: [
+          { argv: ['node', '-e', 'console.log("leg1"); process.exit(1)'] },
+          { argv: ['node', '-e', 'console.log("leg2-should-not-run")'] },
+        ],
+      }, process.cwd(), 30000);
+
+      expect(r.exitCode).toBe(1);
+      expect(r.output).toContain('leg1');
+      expect(r.output).not.toContain('leg2-should-not-run');
+    });
+
+    it('concatenates stdout/stderr across legs in run order for the shared parsers', () => {
+      const r = runCommand({
+        legs: [
+          { argv: ['node', '-e', 'console.error("err1")'] },
+          { argv: ['node', '-e', 'console.error("err2")'] },
+        ],
+      }, process.cwd(), 30000);
+
+      expect(r.exitCode).toBe(0);
+      expect(r.stderr.indexOf('err1')).toBeLessThan(r.stderr.indexOf('err2'));
+    });
+  });
+
   describe('describeLeg / legRunnable (F31 display + dispatch helpers)', () => {
     const { describeLeg, legRunnable } = require('../gate');
 
@@ -1091,6 +1393,34 @@ describe('gate', () => {
 
     it('legRunnable passes argv-mode legs through as { argv } (for shell:false dispatch)', () => {
       expect(legRunnable({ argv: ['dotnet', 'test', 'x.sln'], timeout: 1000 })).toEqual({ argv: ['dotnet', 'test', 'x.sln'] });
+    });
+
+    it('describeLeg renders a multi-leg config joined with " && " (reads like the shell chain it replaces)', () => {
+      const leg = {
+        legs: [
+          { argv: ['ruff', 'check', 'src', 'tests'] },
+          { argv: ['ruff', 'format', '--check', 'src', 'tests'] },
+          { argv: ['mypy', '--strict', 'src'] },
+        ],
+        timeout: 300000,
+      };
+      expect(describeLeg(leg)).toBe('ruff check src tests && ruff format --check src tests && mypy --strict src');
+    });
+
+    it('legRunnable normalizes a multi-leg config to { legs: [...runnable] } for runCommand dispatch', () => {
+      const leg = {
+        legs: [
+          { argv: ['ruff', 'check', 'src', 'tests'] },
+          { command: 'echo hi' },
+        ],
+        timeout: 300000,
+      };
+      expect(legRunnable(leg)).toEqual({
+        legs: [
+          { argv: ['ruff', 'check', 'src', 'tests'] },
+          'echo hi',
+        ],
+      });
     });
   });
 });

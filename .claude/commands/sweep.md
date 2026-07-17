@@ -55,6 +55,7 @@ node .claude/core/telemetry-log.js sweep
 - **Defrag (Phase 6) relieves the hard cap, not necessarily the soft warning.** `memory-guard.cjs` warns at ≥`MEMORY_NEAR_LIMIT_PCT` (~80%) of the cap. A handful of merges clears the *hard cap* (writes work again) but may not clear the warning — that needs a deeper consolidation pass. Phase 7 success = "hard cap relieved + new memories landed," NOT "lint score fully restored."
 - **Squash-merge branch check.** `git merge-base --is-ancestor` is fooled by squash-merges (a content-merged commit looks unique by hash). Use `git cherry -v origin/main HEAD` to detect already-upstream commits before branching or cherry-picking.
 - **Generated/vendored code.** Tell every reviewer to skip generated artifacts (lockfiles, `dist/`, `*.min.*`, migration scaffolding, snapshots) — sanity-check *intent* only, don't review generated line volume.
+- **Idle-without-delivery is expected, not anomalous — nudge immediately.** Background reviewer/drift agents recurringly go idle without sending their report (confirmed in the field twice: 3/4 agents in one epic retro, 3/8 in a sweep). When an agent's idle notification arrives with no findings message and no delivered summary, immediately `SendMessage` it a "deliver your full findings now to main" nudge — do not wait, do not re-dispatch a fresh agent first (the work is done; only the delivery hop failed). Budget for one nudge round in every phase that fans out background agents.
 
 ## Variables
 

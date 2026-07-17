@@ -86,7 +86,8 @@ async function readConcepts({ conceptsDir, categories, activeDaysResolver }) {
     const concepts = [];
 
     for (const { slug, category, content, fm } of await scanConceptFiles({ conceptsDir, categories })) {
-        const confidence = parseFloat(fm.confidence) || 0.6;
+        const parsedConfidence = parseFloat(fm.confidence);
+        const confidence = Number.isFinite(parsedConfidence) ? parsedConfidence : 0.6;
         const updated = fm.updated || new Date().toISOString();
         const sources = fm.sources || [];
         const usageCount = parseInt(fm.usage_count) || 0;

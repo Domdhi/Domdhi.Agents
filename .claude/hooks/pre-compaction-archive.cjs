@@ -211,7 +211,13 @@ async function main() {
         // Continue with defaults
     }
 
-    processEvent(data);
+    try {
+        processEvent(data);
+    } catch {
+        // PreCompact hooks cannot block compaction — a snapshot failure
+        // (buildSnapshot, mkdirSync, writeFileSync) must never surface as an
+        // uncaught exception. Best-effort capture only; exit 0 unconditionally.
+    }
     process.exit(0);
 }
 
@@ -222,6 +228,15 @@ if (require.main === module) {
     process.on('exit', () => {
         try { emitHookEvent(_hookToken, 'success'); } catch { /* never fail on telemetry */ }
     });
+
+    // Backstop for anything that escapes the try/catch in main() (e.g. an
+    // async rejection after processEvent's synchronous scope has exited) —
+    // mirrors session-start-prime.cjs's top-level guard. This hook's
+    // documented contract is "Exit codes: 0 = always"; without these handlers
+    // a thrown error here would print a stack trace and exit non-zero instead.
+    process.on('uncaughtException', () => process.exit(0));
+    process.on('unhandledRejection', () => process.exit(0));
+
     main();
 }
 

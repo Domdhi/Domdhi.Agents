@@ -135,7 +135,7 @@ function runUpdate(targetPath, options) {
     console.log(`  Target : ${targetPath}`);
     console.log('');
 
-    const stats    = { copied: 0, merged: 0, skipped: 0, warned: 0, errors: 0 };
+    const stats    = { copied: 0, merged: 0, skipped: 0, warned: 0, mergeWarned: 0, errors: 0 };
     const warnings = [];
 
     // Per-project skill exclusions — the target declares template skills it does
@@ -185,13 +185,36 @@ function runUpdate(targetPath, options) {
             if (options.merge && isSkillMd && fs.existsSync(destAbs) &&
                 hasProjectAdditions(fs.readFileSync(destAbs, 'utf8'))) {
                 if (options.dryRun) {
-                    console.log(`  MERGE    .claude/${rel} — would merge (preserve project additions)`);
+                    // Dry-run skips the real mergeSkillFile call, so r.headSuppressed /
+                    // r.orphans are never computed here — the head-suppression + orphan
+                    // WARN a live run would emit below cannot be previewed. Flag that so
+                    // an operator previewing risk before committing isn't misled by silence.
+                    console.log(`  MERGE    .claude/${rel} — would merge (preserve project additions; head-suppression/orphan warnings not previewable in --dry-run)`);
                     stats.merged++;
                 } else {
                     tryAction(`.claude/${rel}`, () => {
                         const r = mergeSkillFile(srcAbs, destAbs, targetPath);
                         console.log(`  MERGE    .claude/${rel} — ${r.detail}`);
                         stats.merged++;
+                        // A suppressed head refresh or an orphaned project-addition block
+                        // means the merge didn't fully apply cleanly — r.detail already
+                        // carries the WARNING text, but without this it's buried inside a
+                        // MERGE line and invisible to stats.warned / the fleet rollup.
+                        if (r.headSuppressed || (r.orphans && r.orphans.length)) {
+                            const msg = `.claude/${rel} — ${r.detail}`;
+                            console.log(`  WARN     ${msg}`);
+                            warnings.push(msg);
+                            stats.warned++;
+                            // Tracked separately from the generic `warned` counter (Wave 6
+                            // review NIT): the other 3 WARN sources in this file (settings
+                            // merge skip, project-exception zone, mixed-without-merge) are
+                            // pre-existing/expected states an operator doesn't need to act
+                            // on — folding them into fleet.js's rollup digest alongside a
+                            // genuinely actionable "this skill's head refresh froze" signal
+                            // would make "N warned" impossible to triage at a glance. Only
+                            // THIS site (a merge that didn't fully apply cleanly) counts here.
+                            stats.mergeWarned++;
+                        }
                     }, stats);
                 }
                 continue;
@@ -217,7 +240,7 @@ function runUpdate(targetPath, options) {
             //   they carry per-machine state the template must never touch.
             if (options.merge && rel === 'settings.json') {
                 tryAction(`.claude/${rel}`, () => {
-                    const r = mergeSettingsFile(srcAbs, destAbs, { dryRun: options.dryRun });
+                    const r = mergeSettingsFile(srcAbs, destAbs, { dryRun: options.dryRun }, targetPath);
                     if (r.action === 'unchanged') {
                         console.log(`  SKIP     .claude/${rel} (settings merge — ${r.detail})`);
                         stats.skipped++;
@@ -372,6 +395,7 @@ function runUpdate(targetPath, options) {
     console.log(`  Merged  : ${stats.merged}`);
     console.log(`  Skipped : ${stats.skipped}`);
     console.log(`  Warned  : ${stats.warned}`);
+    if (stats.mergeWarned > 0) console.log(`  MergeWarned : ${stats.mergeWarned}  ← fleet-actionable (head-refresh suppressed / orphaned block)`);
     if (stats.errors > 0) console.log(`  Errors  : ${stats.errors}  ← check output above`);
     if (warnings.length > 0) {
         console.log('\nWarnings:');

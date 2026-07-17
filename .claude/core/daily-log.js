@@ -26,6 +26,31 @@ const path = require('path');
 const { getDailyDir } = require('./_lib/daily-log-paths');
 const { resolveProjectRoot } = require('./_lib/project-root');
 
+/**
+ * Build a compact commit-specific daily log entry string. Pure — no fs I/O,
+ * no `this`, no hidden `Date.now()` — `timeLabel` is supplied by the caller
+ * so callers with independent `new Date()` snapshots stay byte-identical.
+ *
+ * @param {string} hash - Short commit hash (7+ chars)
+ * @param {string} subject - Commit subject line
+ * @param {number} filesChanged - Number of files changed
+ * @param {number} [insertions] - Total lines inserted (optional)
+ * @param {number} [deletions] - Total lines deleted (optional)
+ * @param {string} timeLabel - Pre-computed HH:MM label
+ * @returns {string} The formatted entry text
+ */
+function formatCommitEntry(hash, subject, filesChanged, insertions, deletions, timeLabel) {
+    const hasDiffstat = Number.isFinite(insertions) && Number.isFinite(deletions);
+    const diffstatLine = hasDiffstat ? `\n**Diffstat:** +${insertions} -${deletions}` : '';
+
+    return `## ${timeLabel} — post-commit
+
+**Commit:** \`${hash}\` — ${subject}
+**Files changed:** ${filesChanged}${diffstatLine}
+
+`;
+}
+
 class DailyLog {
     constructor(projectRoot) {
         // F12: route the fallback through resolveProjectRoot() (CLAUDE_PROJECT_DIR
@@ -238,15 +263,7 @@ ${note}
         const dateStr = now.toISOString().slice(0, 10);
         const timeLabel = now.toISOString().slice(11, 16);
 
-        const hasDiffstat = Number.isFinite(insertions) && Number.isFinite(deletions);
-        const diffstatLine = hasDiffstat ? `\n**Diffstat:** +${insertions} -${deletions}` : '';
-
-        const entry = `## ${timeLabel} — post-commit
-
-**Commit:** \`${hash}\` — ${subject}
-**Files changed:** ${filesChanged}${diffstatLine}
-
-`;
+        const entry = formatCommitEntry(hash, subject, filesChanged, insertions, deletions, timeLabel);
 
         fs.mkdirSync(this.dailyDir, { recursive: true });
         const logPath = path.join(this.dailyDir, `${dateStr}.md`);
@@ -297,5 +314,7 @@ Output:   docs/.output/.state/memory-daily/{YYYY-MM-DD}.md (appended)
 Pipeline: daily-log.js → docs/.output/.state/memory-daily/{YYYY-MM-DD}.md (captured) → memory-extractor.js extract (manual) → memory-manager.js create`);
     }
 }
+
+DailyLog.formatCommitEntry = formatCommitEntry;
 
 module.exports = DailyLog;

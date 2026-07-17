@@ -29,6 +29,12 @@ const { loadRules, checkPathAccess } = require('../core/_lib/guardrail-rules');
 const { buildHookResponse, checkFreezeState } = require('../core/_lib/command-blocker');
 const { startHookTiming, emitHookEvent } = require('../core/_lib/hook-telemetry');
 
+// 5000ms ceiling on the stdin read (blocking-hook parity). Env override exists
+// ONLY so a fail-closed timeout test can shrink the wait for a real spawned
+// process without changing production behavior — same pattern as
+// secret-scanner.cjs's SECRET_SCANNER_STDIN_TIMEOUT_MS.
+const STDIN_TIMEOUT_MS = parseInt(process.env.HOOK_STDIN_TIMEOUT_MS, 10) || 5000;
+
 // Tools whose tool_input includes a file path the guardrail should gate.
 // Write / Edit / MultiEdit all use `tool_input.file_path`.
 // NotebookEdit uses `tool_input.notebook_path` — see getTargetPath below.
@@ -138,11 +144,34 @@ async function runClaudeHook() {
     let outcome = 'success';
 
     try {
-        const input = await readHookInput({ timeoutMs: null });
+        // Fail CLOSED on a wedged/truncated stdin read or an unparseable non-empty
+        // payload. Either means the Write/Edit target never arrived intact — the
+        // graceful outer catch below (exit 0) would let it through with NO path-tier
+        // enforcement, silently permitting what could be a zeroAccessPaths write.
+        // Block instead, matching secret-scanner.cjs and the two Bash guards. A
+        // clean `end` (even empty) still resolves, so a legitimate empty-stdin
+        // invocation is unaffected. These blocks emit + exit BEFORE the outer catch
+        // so the rejection is not reclassified as a graceful failure. (finding 2)
+        let input;
+        try {
+            input = await readHookInput({ timeoutMs: STDIN_TIMEOUT_MS, failClosedOnTimeout: true });
+        } catch (err) {
+            outcome = 'blocked';
+            process.stderr.write('[path-guardrail] BLOCKED (fail-closed): stdin read did not complete — ' + (err && err.message) + '\n');
+            try { emitHookEvent(t, outcome); } catch { /* never crash on telemetry */ }
+            process.exit(2);
+        }
         if (!input.trim()) return;
 
         let data;
-        try { data = JSON.parse(input); } catch { return; }
+        try {
+            data = JSON.parse(input);
+        } catch {
+            outcome = 'blocked';
+            process.stderr.write('[path-guardrail] BLOCKED (fail-closed): could not parse stdin payload as JSON.\n');
+            try { emitHookEvent(t, outcome); } catch { /* never crash on telemetry */ }
+            process.exit(2);
+        }
 
         const result = processEvent(data);
         if (result && result.block) {

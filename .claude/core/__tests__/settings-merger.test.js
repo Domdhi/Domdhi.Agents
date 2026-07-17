@@ -20,6 +20,21 @@ const updater = require('../template-updater');
 const { runUpdate } = updater;
 const { createTmpDir } = require('./_helpers/tmp-dir');
 
+// Symlink-capability probe — Windows checkouts without Developer Mode cannot
+// create symlinks; skip those tests rather than fail (mirrors fs-safe.test.js).
+const canSymlink = (() => {
+    const probeDir = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'settings-symlink-probe-'));
+    try {
+        fs.writeFileSync(path.join(probeDir, 't.txt'), 'x');
+        fs.symlinkSync(path.join(probeDir, 't.txt'), path.join(probeDir, 'l.txt'));
+        return true;
+    } catch {
+        return false;
+    } finally {
+        fs.rmSync(probeDir, { recursive: true, force: true });
+    }
+})();
+
 // ── Fixtures ───────────────────────────────────────────────────────────────────
 
 /** Minimal template settings.json with all relevant sections */
@@ -249,6 +264,155 @@ describe('mergeSettingsFile — project-owned keys preserved', () => {
     });
 });
 
+// ── Adopter-authored hook preservation (the Mfa.Hub ef-nobuild-guard case) ────
+
+describe('mergeSettingsFile — adopter-authored hook registrations survive', () => {
+    /** Adopter settings: template hooks + one custom guard appended in the same matcher group */
+    const adopterWithCustomHook = () => ({
+        ...ADOPTER_SETTINGS,
+        hooks: {
+            PreToolUse: [
+                {
+                    matcher: 'Write',
+                    hooks: [
+                        { type: 'command', command: 'node "$CLAUDE_PROJECT_DIR/.claude/hooks/secret-scanner.cjs"' },
+                        { type: 'command', command: 'node "$CLAUDE_PROJECT_DIR/.claude/hooks/ef-nobuild-guard.cjs"' },
+                    ],
+                },
+            ],
+        },
+    });
+
+    const writeFixture = (adopterSettings) => {
+        const srcPath  = tmp.write('src/settings.json', JSON.stringify(TEMPLATE_SETTINGS, null, 2) + '\n');
+        tmp.write('src/hooks/secret-scanner.cjs', '// template hook');
+        tmp.write('src/hooks/session-start-prime.cjs', '// template hook');
+        tmp.write('src/hooks/memory-capture.cjs', '// template hook');
+        const destPath = tmp.write('dest/settings.json', JSON.stringify(adopterSettings, null, 2) + '\n');
+        return { srcPath, destPath };
+    };
+
+    it('preserves a custom hook whose script exists in the adopter hooks/ dir, in the same matcher group', () => {
+        const { srcPath, destPath } = writeFixture(adopterWithCustomHook());
+        tmp.write('dest/hooks/ef-nobuild-guard.cjs', '// adopter-authored guard');
+
+        const result = mergeSettingsFile(srcPath, destPath);
+
+        const out = JSON.parse(fs.readFileSync(destPath, 'utf8'));
+        const writeGroup = out.hooks.PreToolUse.find(g => g.matcher === 'Write');
+        const cmds = writeGroup.hooks.map(h => h.command);
+        expect(cmds.some(c => c.includes('secret-scanner.cjs'))).toBe(true);
+        expect(cmds.some(c => c.includes('ef-nobuild-guard.cjs'))).toBe(true);
+        // Template hooks from other events still landed
+        expect(out.hooks.SessionStart).toBeDefined();
+        expect(out.hooks.Stop).toBeDefined();
+        expect(result.detail).toContain('ef-nobuild-guard.cjs');
+    });
+
+    it('creates a new matcher group when the template has no group for it', () => {
+        const adopter = adopterWithCustomHook();
+        adopter.hooks.PostToolUse = [
+            { matcher: 'Edit', hooks: [{ type: 'command', command: 'node "$CLAUDE_PROJECT_DIR/.claude/hooks/my-edit-audit.cjs"' }] },
+        ];
+        const { srcPath, destPath } = writeFixture(adopter);
+        tmp.write('dest/hooks/ef-nobuild-guard.cjs', '// adopter-authored guard');
+        tmp.write('dest/hooks/my-edit-audit.cjs', '// adopter-authored audit');
+
+        mergeSettingsFile(srcPath, destPath);
+
+        const out = JSON.parse(fs.readFileSync(destPath, 'utf8'));
+        const editGroup = out.hooks.PostToolUse.find(g => g.matcher === 'Edit');
+        expect(editGroup).toBeDefined();
+        expect(editGroup.hooks[0].command).toContain('my-edit-audit.cjs');
+    });
+
+    it('drops a fossil registration whose script file no longer exists anywhere', () => {
+        const { srcPath, destPath } = writeFixture(adopterWithCustomHook());
+        // NOTE: dest/hooks/ef-nobuild-guard.cjs deliberately NOT written
+
+        const result = mergeSettingsFile(srcPath, destPath);
+
+        const out = JSON.parse(fs.readFileSync(destPath, 'utf8'));
+        expect(JSON.stringify(out.hooks)).not.toContain('ef-nobuild-guard.cjs');
+        expect(result.detail).not.toContain('ef-nobuild-guard.cjs');
+    });
+
+    it('does NOT resurrect a template hook the template moved/removed (template stays authoritative)', () => {
+        // Adopter registered memory-capture under an extra matcher; the template
+        // ships memory-capture (src/hooks) registered only under Stop. The adopter's
+        // extra registration must follow the template layout, not be re-inserted.
+        const adopter = adopterWithCustomHook();
+        adopter.hooks.PostToolUse = [
+            { matcher: 'Bash', hooks: [{ type: 'command', command: 'node "$CLAUDE_PROJECT_DIR/.claude/hooks/memory-capture.cjs"' }] },
+        ];
+        const { srcPath, destPath } = writeFixture(adopter);
+        tmp.write('dest/hooks/ef-nobuild-guard.cjs', '// adopter-authored guard');
+        tmp.write('dest/hooks/memory-capture.cjs', '// synced template hook');
+
+        mergeSettingsFile(srcPath, destPath);
+
+        const out = JSON.parse(fs.readFileSync(destPath, 'utf8'));
+        expect(out.hooks.PostToolUse).toBeUndefined();
+        // …while its template-owned Stop registration is intact
+        const stopCmds = out.hooks.Stop.flatMap(g => g.hooks).map(h => h.command);
+        expect(stopCmds.join('')).toContain('memory-capture.cjs');
+    });
+
+    it('preserves an inline custom command (no hooks/ script reference)', () => {
+        const adopter = adopterWithCustomHook();
+        adopter.hooks.Stop = [
+            {
+                matcher: '',
+                hooks: [
+                    { type: 'command', command: 'node "$CLAUDE_PROJECT_DIR/.claude/hooks/memory-capture.cjs"' },
+                    { type: 'command', command: 'pwsh -File tools/notify-teams.ps1' },
+                ],
+            },
+        ];
+        const { srcPath, destPath } = writeFixture(adopter);
+        tmp.write('dest/hooks/ef-nobuild-guard.cjs', '// adopter-authored guard');
+
+        mergeSettingsFile(srcPath, destPath);
+
+        const out = JSON.parse(fs.readFileSync(destPath, 'utf8'));
+        const stopGroup = out.hooks.Stop.find(g => (g.matcher ?? '') === '');
+        const cmds = stopGroup.hooks.map(h => h.command);
+        expect(cmds).toContain('pwsh -File tools/notify-teams.ps1');
+        // memory-capture appears exactly once (template copy, no duplicate)
+        expect(cmds.filter(c => c.includes('memory-capture.cjs'))).toHaveLength(1);
+    });
+
+    it('is idempotent: a second merge with a preserved hook returns unchanged', () => {
+        const { srcPath, destPath } = writeFixture(adopterWithCustomHook());
+        tmp.write('dest/hooks/ef-nobuild-guard.cjs', '// adopter-authored guard');
+
+        mergeSettingsFile(srcPath, destPath);
+        const afterFirst = fs.readFileSync(destPath, 'utf8');
+
+        const result = mergeSettingsFile(srcPath, destPath);
+        expect(result.action).toBe('unchanged');
+        expect(fs.readFileSync(destPath, 'utf8')).toBe(afterFirst);
+    });
+
+    it('integration via runUpdate --merge: custom hook survives a real sync pass', () => {
+        process.env.CLAUDE_PROJECT_DIR = path.join(tmp.root, 'src');
+        tmp.write('src/.claude/settings.json', JSON.stringify(TEMPLATE_SETTINGS, null, 2) + '\n');
+        tmp.write('src/.claude/hooks/secret-scanner.cjs', '// template hook');
+        tmp.mkdir('target/.claude');
+        tmp.write('target/.claude/settings.json', JSON.stringify(adopterWithCustomHook(), null, 2) + '\n');
+        tmp.write('target/.claude/hooks/ef-nobuild-guard.cjs', '// adopter-authored guard');
+
+        const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
+        runUpdate(path.join(tmp.root, 'target'), { merge: true });
+        spy.mockRestore();
+        delete process.env.CLAUDE_PROJECT_DIR;
+
+        const out = JSON.parse(fs.readFileSync(path.join(tmp.root, 'target/.claude/settings.json'), 'utf8'));
+        const cmds = out.hooks.PreToolUse.flatMap(g => g.hooks).map(h => h.command);
+        expect(cmds.some(c => c.includes('ef-nobuild-guard.cjs'))).toBe(true);
+    });
+});
+
 // ── --dry-run ─────────────────────────────────────────────────────────────────
 
 describe('mergeSettingsFile — --dry-run', () => {
@@ -350,6 +514,75 @@ describe('mergeSettingsFile — malformed dest JSON', () => {
 
         // File must be unchanged — do not corrupt
         expect(fs.readFileSync(destPath, 'utf8')).toBe(badContent);
+    });
+});
+
+// ── Symlink-safe writes (2B — MAJOR: writes go through safeWrite) ──────────────
+
+describe('mergeSettingsFile — containRoot is threaded without changing output', () => {
+    it('fresh-install with containRoot writes the template verbatim as a real file', () => {
+        const srcContent = JSON.stringify(TEMPLATE_SETTINGS, null, 2) + '\n';
+        const srcPath    = tmp.write('src/settings.json', srcContent);
+        const containRoot = tmp.mkdir('fresh');
+        const destPath   = path.join(containRoot, 'settings.json');
+
+        const result = mergeSettingsFile(srcPath, destPath, {}, containRoot);
+
+        expect(result.action).toBe('copied');
+        expect(fs.lstatSync(destPath).isSymbolicLink()).toBe(false);
+        expect(fs.readFileSync(destPath, 'utf8')).toBe(srcContent);
+    });
+
+    it('merge output is byte-identical whether or not containRoot is passed', () => {
+        const srcPath        = tmp.write('src/settings.json', JSON.stringify(TEMPLATE_SETTINGS, null, 2) + '\n');
+        const adopterContent = JSON.stringify(ADOPTER_SETTINGS, null, 2) + '\n';
+        const destA = tmp.write('a/settings.json', adopterContent);
+        const destB = tmp.write('b/settings.json', adopterContent);
+
+        mergeSettingsFile(srcPath, destA);                                // no containRoot (legacy default)
+        mergeSettingsFile(srcPath, destB, {}, path.join(tmp.root, 'b'));  // containRoot threaded
+
+        expect(fs.readFileSync(destB, 'utf8')).toBe(fs.readFileSync(destA, 'utf8'));
+    });
+});
+
+describe.skipIf(!canSymlink)('mergeSettingsFile — symlink-safe writes (2B)', () => {
+    it('does NOT follow a symlinked settings.json LEAF — external target unchanged, link replaced by a real file', () => {
+        const srcPath = tmp.write('src/settings.json', JSON.stringify(TEMPLATE_SETTINGS, null, 2) + '\n');
+        // A victim file OUTSIDE the adopter root, holding valid-JSON (but foreign) content.
+        const externalContent = JSON.stringify({ permissions: { allow: ['Bash(external)'] }, externalMarker: 'UNTOUCHED' }, null, 2) + '\n';
+        const victim = tmp.write('external/victim.json', externalContent);
+        // The adopter's settings.json is a symlink pointing at that external victim.
+        const containRoot = tmp.mkdir('adopter');
+        const destPath = path.join(containRoot, 'settings.json');
+        fs.symlinkSync(victim, destPath);
+
+        const result = mergeSettingsFile(srcPath, destPath, {}, containRoot);
+
+        // The external target is byte-for-byte unchanged — the write did NOT follow the link.
+        expect(fs.readFileSync(victim, 'utf8')).toBe(externalContent);
+        // The dest is now a regular file (link replaced), carrying the merged output.
+        expect(fs.lstatSync(destPath).isSymbolicLink()).toBe(false);
+        const out = JSON.parse(fs.readFileSync(destPath, 'utf8'));
+        expect(out.hooks.SessionStart).toBeDefined();
+        expect(result.action).toBe('merged');
+    });
+
+    it('refuses to write settings.json through a symlinked ANCESTOR dir up to containRoot', () => {
+        const srcPath = tmp.write('src/settings.json', JSON.stringify(TEMPLATE_SETTINGS, null, 2) + '\n');
+        // An external directory the attacker wants writes redirected into, seeded with a victim.
+        const externalDir = tmp.mkdir('external-claude');
+        const victim = tmp.write('external-claude/victim.txt', 'VICTIM-CONTENT');
+        // Adopter root whose `.claude` is a symlink to that external directory.
+        const containRoot = tmp.mkdir('adopter');
+        fs.symlinkSync(externalDir, path.join(containRoot, '.claude'), 'dir');
+        const destPath = path.join(containRoot, '.claude', 'settings.json');
+
+        expect(() => mergeSettingsFile(srcPath, destPath, {}, containRoot)).toThrow(/symlinked ancestor/);
+
+        // The external victim is untouched and no settings.json leaked through the link.
+        expect(fs.readFileSync(victim, 'utf8')).toBe('VICTIM-CONTENT');
+        expect(fs.existsSync(path.join(externalDir, 'settings.json'))).toBe(false);
     });
 });
 

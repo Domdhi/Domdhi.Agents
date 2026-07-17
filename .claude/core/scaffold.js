@@ -371,8 +371,12 @@ function runScaffold(projectDir, opts) {
 
     const results = { created: [], skipped: [], directories: [] };
 
-    // Scaffold docs/ from templates (exclude root/ — those go to project root)
-    scaffoldDir(templatesDir, docsDir, ['root'], results, force, target, substitutions);
+    // Scaffold docs/ from templates (exclude root/ — those go to project root).
+    // containRoot is anchored to `target` (project root, an ANCESTOR of docsDir),
+    // not docsDir itself — assertNoSymlinkedAncestor only checks directories
+    // STRICTLY BETWEEN dirname(dest) and containRoot, so containRoot===destDir
+    // would leave a symlinked docs/ itself unchecked.
+    scaffoldDir(templatesDir, docsDir, ['root'], results, force, target, substitutions, target);
 
     // Seed docs/ from skill-owned templates (SKILL_TEMPLATE_MANIFEST).
     // Graceful degradation: an entry whose source asset doesn't exist yet is

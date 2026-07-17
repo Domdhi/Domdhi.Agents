@@ -8,7 +8,7 @@
 //   - findKeyDecisions() → scans docs/ ONLY for TODO*.md; ## Key Decisions table (header+separator required)
 //   - All writes go to docs/.output/.state/memory-daily/{YYYY-MM-DD}.md via appendFileSync (same-date = same file)
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createRequire } from 'node:module';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -460,6 +460,57 @@ describe('DailyLog', () => {
       expect(content).toContain(`\`${hash}\``);
       expect(content).toContain('feat: real commit for test');
       expect(content).toContain('**Diffstat:** +1 -0');
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // formatCommitEntry() — shared formatter (Wave 5G de-dup with memory-capture.cjs)
+  // ---------------------------------------------------------------------------
+  describe('formatCommitEntry (shared formatter)', () => {
+    it('formatCommitEntry_isExportedAsStaticPropertyOfDailyLog', () => {
+      expect(typeof DailyLog.formatCommitEntry).toBe('function');
+    });
+
+    it('formatCommitEntry_pureFunction_noThisNoFsNoHiddenDate', () => {
+      // Act — called with no `this` binding at all, proving it's a plain function
+      const fn = DailyLog.formatCommitEntry;
+      const result = fn('abc1234', 'feat: pure', 2, 5, 1, '14:30');
+
+      // Assert
+      expect(result).toContain('## 14:30 — post-commit');
+      expect(result).toContain('`abc1234`');
+      expect(result).toContain('feat: pure');
+      expect(result).toContain('**Files changed:** 2');
+      expect(result).toContain('**Diffstat:** +5 -1');
+    });
+
+    it('formatCommitEntry_withoutDiffstat_omitsDiffstatLine', () => {
+      const result = DailyLog.formatCommitEntry('abc1234', 'feat: x', 1, undefined, undefined, '09:00');
+      expect(result).not.toContain('**Diffstat:**');
+    });
+
+    it('formatCommitEntry_and_captureCommit_produceByteIdenticalEntryText', () => {
+      // Arrange — pin Date so captureCommit's internally-computed timeLabel
+      // matches the timeLabel we pass directly to formatCommitEntry.
+      const fixedNow = new Date('2026-07-16T14:30:00.000Z');
+      vi.useFakeTimers();
+      vi.setSystemTime(fixedNow);
+
+      try {
+        const log = new DailyLog();
+        const timeLabel = fixedNow.toISOString().slice(11, 16);
+
+        // Act
+        const { logPath } = log.captureCommit('abc1234', 'feat: shared formatter', 3, 42, 7);
+        const writtenContent = fs.readFileSync(logPath, 'utf8');
+        const expected = DailyLog.formatCommitEntry('abc1234', 'feat: shared formatter', 3, 42, 7, timeLabel);
+
+        // Assert — captureCommit's written entry is byte-identical to
+        // formatCommitEntry's standalone output for the same inputs.
+        expect(writtenContent).toBe(expected);
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 

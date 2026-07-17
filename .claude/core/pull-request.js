@@ -253,6 +253,15 @@ function runCreate(opts, remote) {
     console.error('[pr] create requires --title "<subject>".');
     process.exit(1);
   }
+  // A title starting with `-` (e.g. `--title "-fix: thing"`) reaches gh/az as a
+  // standalone argv element following `--title` — no shell exposure (this is an
+  // execFileSync-style argv array, not a shell string), but gh/az's own CLI
+  // arg parser could still misread it as a flag rather than the title value.
+  // Reject rather than silently mangle a real PR title.
+  if (title.startsWith('-')) {
+    console.error(`[pr] --title must not start with "-" (got: ${JSON.stringify(title)}) — gh/az may misparse it as a flag.`);
+    process.exit(1);
+  }
 
   // Pre-flight FIRST (its branch check is the most fundamental precondition and is
   // network-free — it runs before any fetch). Skipped under dry-run so a dry-run

@@ -24,6 +24,7 @@ const { spawn, execSync } = require('child_process');
 const { isAtLeast } = require('../core/profile');
 const { readHookInput } = require('../core/_lib/hook-input');
 const { spawnDailyLogCapture } = require('../core/_lib/hook-spawners');
+const DailyLog = require('../core/daily-log');
 
 const DEDUP_MINUTES = 30;
 
@@ -183,21 +184,19 @@ function handleBashPostToolUse(input) {
         // Leave insertions/deletions undefined — captureCommit will omit the line
     }
 
-    // Use DailyLog.captureCommit if available, otherwise append directly
+    // Use DailyLog.captureCommit if available, otherwise append directly via the
+    // shared formatter. Both branches build the entry text through
+    // DailyLog.formatCommitEntry, so the two paths can never drift in format —
+    // this fallback exists only for when the DailyLog class/fs operations
+    // themselves are unavailable (e.g. permissions, bad path), not to
+    // independently reproduce the string template.
     try {
-        const DailyLog = require('../core/daily-log');
         const log = new DailyLog(projectDir);
         log.captureCommit(hash, subject, filesChanged, insertions, deletions);
     } catch {
-        // Fallback path — keep format in sync with DailyLog.captureCommit() in core/daily-log.js.
-        // Direct append preserves behavior when daily-log.js is unavailable; if the primary
-        // captureCommit() output format changes, update this block to match so the two paths
-        // don't silently drift.
         const now = new Date();
         const timeLabel = now.toISOString().slice(11, 16);
-        const diffstatLine = (Number.isFinite(insertions) && Number.isFinite(deletions))
-            ? `\n**Diffstat:** +${insertions} -${deletions}` : '';
-        const entry = `## ${timeLabel} — post-commit\n\n**Commit:** \`${hash}\` — ${subject}\n**Files changed:** ${filesChanged}${diffstatLine}\n\n`;
+        const entry = DailyLog.formatCommitEntry(hash, subject, filesChanged, insertions, deletions, timeLabel);
         const dailyDir = path.join(projectDir, 'docs', '.output', '.state', 'memory-daily');
         fs.mkdirSync(dailyDir, { recursive: true });
         fs.appendFileSync(dailyLogPath, entry, 'utf8');

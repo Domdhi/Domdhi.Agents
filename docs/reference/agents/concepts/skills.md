@@ -65,7 +65,7 @@ Don't add a skill for:
 - **Rules that only apply to one agent and never change.** Just put them in the agent's persona.
 - **Knowledge that's already covered by an existing skill.** Check the catalog above first — there are 21 skills, and most territory is already mapped.
 
-Use the [`skill-authoring`](../../.claude/skills/skill-authoring/SKILL.md) skill when authoring a new one. It applies TDD to skill creation: write a failing baseline test before writing the skill, then iterate until the test passes. This keeps new skills grounded in a concrete scenario rather than floating in abstraction.
+Use the [`skill-authoring`](../../../../.claude/skills/skill-authoring/SKILL.md) skill when authoring a new one. It applies TDD to skill creation: write a failing baseline test before writing the skill, then iterate until the test passes. This keeps new skills grounded in a concrete scenario rather than floating in abstraction.
 
 ---
 

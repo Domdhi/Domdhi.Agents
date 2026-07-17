@@ -12,7 +12,7 @@ const require = createRequire(import.meta.url);
 const fs = require('node:fs');
 const path = require('node:path');
 const { createTmpDir } = require('../../__tests__/_helpers/tmp-dir');
-const { parseAgentSections, mergeFrontmatter, mergeAgentFile, extractFieldBlock, stripExcludedSkills } = require('../agent-merger');
+const { parseAgentSections, mergeFrontmatter, mergeAgentFile, extractFieldBlock, extractSkillsList, stripExcludedSkills } = require('../agent-merger');
 
 let tmp;
 
@@ -860,6 +860,110 @@ describe('stripExcludedSkills', () => {
         expect(out).toContain('\r\n');
         expect(out).not.toContain('drop-me');
         expect(out).toContain('- a');
+    });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// extractSkillsList — flow-style YAML (regression: `skills: [a, b]` silently
+// parsed as empty by the block-sequence-only original implementation)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('extractSkillsList flow-style', () => {
+    it('parses a flow-style skills list', () => {
+        const lines = ['name: x', 'skills: [foo, bar]', 'model: sonnet'];
+        const result = extractSkillsList(lines);
+        expect(result).toEqual({ start: 1, end: 2, items: ['foo', 'bar'], flow: true });
+    });
+
+    it('strips quotes and whitespace from flow-style items', () => {
+        const lines = ['skills: [ "foo" ,  \'bar\' , baz ]'];
+        expect(extractSkillsList(lines).items).toEqual(['foo', 'bar', 'baz']);
+    });
+
+    it('parses an empty flow-style list as zero items', () => {
+        const lines = ['skills: []'];
+        const result = extractSkillsList(lines);
+        expect(result.items).toEqual([]);
+        expect(result.flow).toBe(true);
+    });
+
+    it('still parses block-sequence style with flow: false', () => {
+        const lines = ['skills:', '  - foo', '  - bar', 'model: sonnet'];
+        const result = extractSkillsList(lines);
+        expect(result).toEqual({ start: 0, end: 3, items: ['foo', 'bar'], flow: false });
+    });
+
+    // Wave 6 review finding: a trailing inline comment must not defeat the flow
+    // match — without the `(#.*)?` tolerance, this line fell through to the
+    // block-sequence parser, which found no `- item` lines and returned
+    // `{items: [], flow: false}` (not null) — stripExcludedSkills then deleted
+    // the WHOLE skills line on any exclusion call, silently dropping the real list.
+    it('parses a flow-style list with a trailing inline comment', () => {
+        const lines = ['skills: [foo, bar]  # why these two'];
+        const result = extractSkillsList(lines);
+        expect(result).toEqual({ start: 0, end: 1, items: ['foo', 'bar'], flow: true });
+    });
+
+    // Trailing comment still works even with brackets embedded in the comment
+    // text itself (regex backtracking on `.*` handles this correctly).
+    it('parses a flow-style list with brackets inside the trailing comment', () => {
+        const lines = ['skills: [foo, bar]  # see skills[core] for details'];
+        const result = extractSkillsList(lines);
+        expect(result).toEqual({ start: 0, end: 1, items: ['foo', 'bar'], flow: true });
+    });
+
+    // Wave 7 review finding: a flow-style list wrapped across two lines
+    // (`skills: [foo,` / `  bar]`) opens with `[` but never closes on the same
+    // line — the full single-line flowMatch regex fails, and without an
+    // explicit guard this fell through to the block-sequence scanner, which
+    // found no `- item` lines and returned a false-empty `{items: [],
+    // flow: false}` instead of null. stripExcludedSkills then trusted that as
+    // authoritative and deleted the `skills: [foo,` line outright, leaving the
+    // orphaned `  bar]` line behind — actual file corruption. Multi-line
+    // flow-style is unsupported by design; the correct failure mode is null
+    // (hands off), not a silently wrong empty list.
+    it('returns null for an unclosed multi-line flow-style list instead of a false-empty result', () => {
+        const lines = ['skills: [foo,', '  bar]'];
+        expect(extractSkillsList(lines)).toBeNull();
+    });
+});
+
+describe('stripExcludedSkills — flow-style skills list', () => {
+    it('drops an excluded item from a flow-style list, keeps the rest', () => {
+        const c = '---\nname: ux\nskills: [ux-design, tailwind-css-patterns, brand-guidelines]\n---\n# UX\n';
+        const out = stripExcludedSkills(c, new Set(['tailwind-css-patterns']));
+        expect(out).toContain('skills: [ux-design, brand-guidelines]');
+        expect(out).not.toContain('tailwind-css-patterns');
+    });
+
+    it('removes the whole flow-style skills line when every item is excluded', () => {
+        const c = '---\nname: y\nskills: [tailwind-css-patterns, design-taste-frontend]\nmemory: project\n---\n# Y\n';
+        const out = stripExcludedSkills(c, new Set(['tailwind-css-patterns', 'design-taste-frontend']));
+        expect(out).not.toContain('skills:');
+        expect(out).toContain('memory: project');
+    });
+
+    // Wave 7 review finding: an unclosed multi-line flow-style list must be
+    // left completely untouched (not deleted, not corrupted) since
+    // extractSkillsList can't safely parse it and now returns null.
+    it('leaves an unclosed multi-line flow-style skills list untouched', () => {
+        const c = 'name: x\nskills: [foo,\n  bar]\nother: y\n';
+        const out = stripExcludedSkills(c, new Set(['foo']));
+        expect(out).toBe(c);
+    });
+});
+
+describe('mergeFrontmatter — flow-style skills union', () => {
+    it('unions a bespoke skill into a flow-style dst list, rewriting the single line', () => {
+        const src = 'name: architect\nskills: [architecture]';
+        const dst = 'name: architect\nskills: [architecture, cloudflare]';
+        const result = mergeFrontmatter(src, dst, {
+            canonicalSkills: new Set(['architecture']),
+            targetSkills: new Set(['architecture', 'cloudflare']),
+        });
+        expect(result).toContain('skills: [architecture, cloudflare]');
+        // Must not append a stray block-sequence line after a flow-style key (invalid YAML).
+        expect(result).not.toMatch(/\n\s*-\s*cloudflare/);
     });
 });
 

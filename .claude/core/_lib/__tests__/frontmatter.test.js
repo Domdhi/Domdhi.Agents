@@ -95,6 +95,39 @@ describe('parseFrontmatter (default flat mode)', () => {
     expect(result.title).toBe('Spaced Value');
   });
 
+  // Regression (sec-m1): __proto__/constructor/prototype keys must never be
+  // assigned — mirrors the UNSAFE_KEYS guard already present in yaml-parser.js.
+  it('parseFrontmatter_protoKeyScalar_isSkippedAndPrototypeNotPolluted', () => {
+    const md = ['---', '__proto__: polluted', 'title: Safe', '---', 'body'].join('\n');
+    const result = parseFrontmatter(md);
+    expect(({}).polluted).toBeUndefined();
+    expect(Object.prototype.polluted).toBeUndefined();
+    expect(result).not.toHaveProperty('__proto__', 'polluted');
+    expect(result.title).toBe('Safe');
+  });
+
+  it('parseFrontmatter_constructorAndPrototypeKeys_areSkipped', () => {
+    const md = ['---', 'constructor: bad', 'prototype: bad', 'title: Safe', '---'].join('\n');
+    const result = parseFrontmatter(md);
+    expect(result.title).toBe('Safe');
+    expect(Object.keys(result)).toEqual(['title']);
+  });
+
+  it('parseFrontmatter_protoKeyAsListHeader_isSkippedAndPrototypeNotPolluted', () => {
+    const md = [
+      '---',
+      '__proto__:',
+      '  - polluted',
+      'tags:',
+      '  - real',
+      '---',
+    ].join('\n');
+    const result = parseFrontmatter(md, { listFields: ['__proto__', 'tags'] });
+    expect(({}).polluted).toBeUndefined();
+    expect(result).not.toHaveProperty('__proto__');
+    expect(result.tags).toEqual(['real']);
+  });
+
 });
 
 // ─── Body-returning mode ─────────────────────────────────────────────────────

@@ -19,6 +19,7 @@ const {
     splitAtMarker,
     mergeSkillContent,
     mergeSkillFile,
+    stripAdopterOwned,
 } = require('../skill-merger');
 
 let tmp;
@@ -186,6 +187,84 @@ describe('mergeSkillContent', () => {
         // a second merge must keep exactly one copy, not clobber or duplicate it.
         const r2 = mergeSkillContent(src, r.content);
         expect(r2.content.split('project strategy variant').length - 1).toBe(1);
+    });
+
+    it('preserves BOTH blocks when two distinct anchored fences have byte-identical content (regression)', () => {
+        // Bug: reinsertFencedBlocks used to pre-check idempotency via a content-wide
+        // search for `block.raw` before inserting each block. Two DIFFERENT blocks
+        // (different anchor headings) with byte-identical raw text collided: once
+        // the first block was inserted under its heading, the second block's search
+        // found that just-inserted copy and was skipped as "already present" — its
+        // own insertion under its OWN heading never happened, silently dropping it.
+        const block = [
+            '<!-- @@project-additions:start -->',
+            'shared identical text',
+            '<!-- @@project-additions:end -->',
+        ].join('\n');
+        const src = [
+            '# Skill', '',
+            '## Foo', '',
+            'generic foo body', '',
+            '## Bar', '',
+            'generic bar body', '',
+        ].join('\n');
+        const dst = [
+            '# Skill', '',
+            '## Foo', '',
+            'generic foo body', '',
+            block, '',
+            '## Bar', '',
+            'generic bar body', '',
+            block, '',
+        ].join('\n');
+
+        const r = mergeSkillContent(src, dst);
+        // Both occurrences must survive — one under ## Foo, one under ## Bar.
+        expect(r.content.split('shared identical text').length - 1).toBe(2);
+        const fooIdx = r.content.indexOf('## Foo');
+        const barIdx = r.content.indexOf('## Bar');
+        const firstBlockIdx = r.content.indexOf('shared identical text');
+        const secondBlockIdx = r.content.indexOf('shared identical text', firstBlockIdx + 1);
+        expect(firstBlockIdx).toBeGreaterThan(fooIdx);
+        expect(firstBlockIdx).toBeLessThan(barIdx);
+        expect(secondBlockIdx).toBeGreaterThan(barIdx);
+    });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// stripAdopterOwned — sibling of reinsertFencedBlocks, also uses
+// findLineSubsequence per-block. Wave 6 review flagged this as verified-but-
+// untested: unlike reinsertFencedBlocks, this function does NOT need identity
+// between a logical block and its physical occurrence — each loop iteration
+// searches the ALREADY-MUTATED `lines` array (prior occurrences spliced out),
+// so two byte-identical blocks correctly resolve to two distinct occurrences,
+// removed one at a time. This test proves that claim rather than just asserting it.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('stripAdopterOwned', () => {
+    it('strips BOTH occurrences of two distinct anchored fences with byte-identical content', () => {
+        const block = [
+            '<!-- @@project-additions:start -->',
+            'shared identical text',
+            '<!-- @@project-additions:end -->',
+        ].join('\n');
+        const text = [
+            '# Skill', '',
+            '## Foo', '',
+            'generic foo body', '',
+            block, '',
+            '## Bar', '',
+            'generic bar body', '',
+            block, '',
+        ].join('\n');
+
+        const stripped = stripAdopterOwned(text);
+
+        expect(stripped).not.toContain('shared identical text');
+        expect(stripped).toContain('## Foo');
+        expect(stripped).toContain('## Bar');
+        expect(stripped).toContain('generic foo body');
+        expect(stripped).toContain('generic bar body');
     });
 });
 

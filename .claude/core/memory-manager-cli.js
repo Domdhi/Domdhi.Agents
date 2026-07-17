@@ -311,6 +311,12 @@ async function main() {
             const result = await manager.supersede(category, oldId, newId);
             if (result.superseded) {
                 console.log(`🗞️  Superseded: ${category}/${oldId} → ${newId} (invalid_at ${result.invalid_at})`);
+                // MEM-5: supersede() can succeed on the JSON write (source of truth)
+                // while the SQLite FTS index update fails — surface that so an
+                // operator doesn't read a flat "success" as fully consistent.
+                if (result.indexStale) {
+                    console.warn(`⚠️  ${result.warning}`);
+                }
             } else {
                 console.error(`❌ Supersede failed: ${result.error}`);
                 process.exit(1);

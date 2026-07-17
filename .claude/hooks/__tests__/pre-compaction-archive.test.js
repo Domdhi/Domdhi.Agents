@@ -9,6 +9,8 @@
 
 import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest';
 import { createRequire } from 'node:module';
+import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -386,5 +388,102 @@ describe('processEvent_noExtractorSpawn', () => {
         processEvent({ trigger: 'test' });
         // Even under strict profile, the compaction hook does not spawn the extractor.
         expect(spawnMock).not.toHaveBeenCalled();
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Fail-open hardening (R6) — hook mode, end-to-end (spawned process)
+//
+// The MAJOR gap this wave fixes: `main()` called `processEvent(data)` with no
+// try/catch and installed no uncaughtException/unhandledRejection handler, so
+// a write error (permission, disk full, ENOTDIR) crashed the process with a
+// stack trace and a non-zero exit instead of honoring the hook's documented
+// contract: "Exit codes: 0 = always (PreCompact hooks cannot block
+// compaction)". These tests run the REAL file (not the in-process mocked
+// module above) as a subprocess and force a genuine fs error — the exit code
+// IS the contract, not whether a JS function happened not to throw in-process.
+// Mirrors secret-scanner.test.js's "runClaudeHook (spawned process)" pattern.
+// ---------------------------------------------------------------------------
+
+describe('runClaudeHook (spawned process, fail-open)', () => {
+    const hookPath = path.resolve(
+        fileURLToPath(import.meta.url),
+        '..', '..', 'pre-compaction-archive.cjs'
+    );
+
+    function runHook(event, envRoot) {
+        try {
+            const stdout = execFileSync('node', [hookPath], {
+                input: JSON.stringify(event),
+                env: { ...process.env, CLAUDE_PROJECT_DIR: envRoot },
+                stdio: 'pipe',
+            });
+            return { exitCode: 0, stdout: stdout.toString(), stderr: '' };
+        } catch (err) {
+            return {
+                exitCode: err.status,
+                stdout: err.stdout?.toString() || '',
+                stderr: err.stderr?.toString() || '',
+            };
+        }
+    }
+
+    it('hookMode_sessionsPathBlockedByAFile_stillExits0', () => {
+        // Force a REAL fs.mkdirSync throw: pre-create docs/.output/.state/sessions
+        // as a regular FILE (not a directory). processEvent's
+        // `fs.mkdirSync(sessionsDir, { recursive: true })` then fails with
+        // ENOTDIR (a path component that must be a directory is a file) — an
+        // authentic, unmocked failure in the exact unguarded call site the
+        // finding named, not a simulated one.
+        const sandbox = createTmpDir({ prefix: 'pre-compaction-hookmode-' });
+        try {
+            sandbox.write('docs/.output/.state/sessions', '');
+
+            const result = runHook({ trigger: 'auto-compact' }, sandbox.root);
+
+            expect(result.exitCode).toBe(0);
+        } finally {
+            sandbox.cleanup();
+        }
+    });
+
+    it('hookMode_healthyRun_stillWritesSnapshotAndExits0', () => {
+        // Companion happy-path check at the same subprocess layer: the fix must
+        // not have changed successful-run behavior — snapshot still lands on
+        // disk and the process still exits 0.
+        const sandbox = createTmpDir({ prefix: 'pre-compaction-hookmode-' });
+        try {
+            const result = runHook({ trigger: 'manual' }, sandbox.root);
+
+            expect(result.exitCode).toBe(0);
+            const sessionsDir = path.join(sandbox.root, 'docs', '.output', '.state', 'sessions');
+            expect(fs.existsSync(sessionsDir)).toBe(true);
+            const dateDirs = fs.readdirSync(sessionsDir);
+            expect(dateDirs.length).toBeGreaterThan(0);
+        } finally {
+            sandbox.cleanup();
+        }
+    });
+
+    it('hookMode_malformedStdinJson_stillExits0', () => {
+        // Belt-and-suspenders: garbage stdin must not escape as an uncaught
+        // exception either (JSON.parse is already caught in main(), but this
+        // confirms the whole pipeline honors exit-0 end to end).
+        const sandbox = createTmpDir({ prefix: 'pre-compaction-hookmode-' });
+        try {
+            let exitCode = 0;
+            try {
+                execFileSync('node', [hookPath], {
+                    input: '{not valid json',
+                    env: { ...process.env, CLAUDE_PROJECT_DIR: sandbox.root },
+                    stdio: 'pipe',
+                });
+            } catch (err) {
+                exitCode = err.status;
+            }
+            expect(exitCode).toBe(0);
+        } finally {
+            sandbox.cleanup();
+        }
     });
 });

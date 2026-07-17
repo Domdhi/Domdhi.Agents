@@ -101,8 +101,8 @@ function processEvent(parsedJson) {
 }
 
 async function run() {
-    // Historical behavior: no stdin timeout — rely on 'end'/'error' event firing.
-    const input = await readHookInput({ timeoutMs: null });
+    // Bounded ceiling — a wedged pipe resolves with partial data instead of hanging.
+    const input = await readHookInput({ timeoutMs: 5000 });
     if (!input) process.exit(0);
 
     let data;

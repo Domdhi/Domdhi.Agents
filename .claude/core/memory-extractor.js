@@ -38,6 +38,7 @@ const {
 } = require('./_lib/model-runner');
 const { resolveProjectRoot } = require('./_lib/project-root');
 const { memoryPaths } = require('./_lib/memory-paths');
+const { redactSecretsForWrite } = require('./secret-safe-write');
 
 const MAX_ENTRIES_PER_RUN = 10;
 
@@ -240,7 +241,12 @@ class MemoryExtractor {
             learnings
         };
 
-        await fsPromises.writeFile(filePath, JSON.stringify(payload, null, 2), 'utf-8');
+        // The `learnings` are model-derived free text — route the serialized
+        // output through the secret-scanner before this RAW write (which bypasses
+        // both the PreToolUse hook and, for gitignored .state/, commit.js's scan).
+        // Redact-and-warn, never throw (class-consistency with the curator write).
+        const json = redactSecretsForWrite(JSON.stringify(payload, null, 2), filePath);
+        await fsPromises.writeFile(filePath, json, 'utf-8');
         return filePath;
     }
 

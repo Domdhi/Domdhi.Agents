@@ -69,4 +69,4 @@ If the task doesn't match any of these, the main agent does it directly. Dispatc
 
 ---
 
-See also: [`./skills.md`](./skills.md) for the skill catalog, [`./commands.md`](./commands.md) for how commands dispatch agents, [`../reference/system-map.md`](../reference/system-map.md) for the full system inventory.
+See also: [`./skills.md`](./skills.md) for the skill catalog, [`./commands.md`](./commands.md) for how commands dispatch agents, [`../system-map.md`](../system-map.md) for the full system inventory.

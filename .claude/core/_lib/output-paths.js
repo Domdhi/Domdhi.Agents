@@ -88,13 +88,20 @@ function slugify(raw) {
  * dropped), then slugify()s each surviving segment (kills anything outside the
  * filename-safe charset — slugify alone is not enough here since it allows
  * `.`, so a literal '..' segment would otherwise survive untouched).
+ *
+ * F16 follow-up: slugify() strips characters outside its charset, which can
+ * RESURRECT a traversal segment that the pre-slugify filter already passed —
+ * e.g. `"..%"` isn't literally `..` before slugify, but slugify drops the `%`
+ * and yields `".."` after. So segments must be re-checked for all-dots (and
+ * emptiness) AFTER slugify too, not just before.
  */
 function sanitizeKindPath(kind) {
     const segments = String(kind == null ? '' : kind)
         .split(/[\\/]+/)
         .map((seg) => seg.trim())
         .filter((seg) => seg !== '' && seg !== '.' && seg !== '..')
-        .map((seg) => slugify(seg));
+        .map((seg) => slugify(seg))
+        .filter((seg) => seg !== '' && !/^\.+$/.test(seg));
     return segments.length ? segments.join('/') : 'untitled';
 }
 

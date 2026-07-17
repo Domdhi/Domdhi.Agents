@@ -75,11 +75,38 @@
 block_patterns:
 
   # --- Git: Force push (overwrites remote history, cannot be undone) ---
-  # Regex (not plain string) with a negative lookahead so `--force-with-lease`
-  # is EXCLUDED here and falls through to its confirm rule below (hooks-m1). The
-  # `\s+` between tokens keeps double-spaced / tab-separated variants blocked.
-  - /git\s+push\s+--force(?!-with-lease)/   # force push (excludes safer --force-with-lease)
-  - git push -f                             # short force flag
+  # Regex (not plain string). A negative lookahead keeps `--force-with-lease`
+  # EXCLUDED so it falls through to its confirm rule below (hooks-m1). The rule
+  # tolerates INTERVENING TOKENS between `git` and `push` — the old contiguous
+  # `git push --force` was trivially evaded by a global option before `push`
+  # (`git -c k=v push --force`) or another flag after it (`git push --quiet
+  # --force`). `(?:\s+\S+)*?` LAZILY consumes leading git global options (any
+  # token — value-taking `-c k=v` included). It replaces an earlier nested-
+  # optional `(?:\s+-\S+(?:\s+\S+)?)*` that had catastrophic-backtracking
+  # ambiguity (ReDoS: ~483ms at 36 all-dash tokens, unbounded) — since this hook
+  # runs on EVERY Bash command, that was a live DoS + fail-open risk. `\S+` is
+  # unambiguous and the lazy `*?` stops at the first `push`, so runtime is linear.
+  # After `push`, `[^;&|\n]*` tolerates intervening flags before the force flag
+  # but is BOUNDED to a single command — an unbounded `.*` mis-attributed a
+  # chained command's flag to push (`git push origin main && rm --force /tmp/x`
+  # hard-blocked as a "force push"). The alternation also catches the short
+  # `-f`/combined `-vf` cluster. (M — non-contiguous force-push evasion; ReDoS-safe)
+  - /git\b(?:\s+\S+)*?\s+push\b[^;&|\n]*(?:--force(?!-with-lease)\b|\s-\w*f\b)/
+  - git push -f                             # short force flag (belt-and-suspenders; also covered above)
+  # Refspec force push (`git push origin +main`, `+HEAD:main`): a leading `+` on
+  # a refspec forces the update with NO flag at all — the flag-based rule above
+  # never sees it. Match a `+`-prefixed refspec token after `git push`, BOUNDED to
+  # the same command (`[^;&|\n]*`). The ref must START with a letter/`_`/`/`
+  # (`[A-Za-z_/]`) — a leading DIGIT is excluded so a benign trailing note like
+  # `git push origin main   deploy +1` doesn't false-block, and (deliberately) a
+  # literal `#` is kept OUT of the regex because the rule-file comment stripper
+  # truncates any `#`, which would invalidate the pattern and drop the whole tier.
+  # Tolerates the same intervening git global options as the force-flag rule
+  # above (`git -c k=v push origin +main` used to evade — the flag rule only
+  # sees `--force`/`-f`, not a bare `+refspec`, so this sibling rule needed
+  # the identical `(?:\s+\S+)*?` lazy-global-option prefix). (M — +refspec
+  # global-option evasion)
+  - /git\b(?:\s+\S+)*?\s+push\b[^;&|\n]*\s\+[A-Za-z_/][^\s:]*(?::[^\s:]+)?(?:\s|$)/
 
   # --- Database: Schema destruction ---
   # Anchored regexes prevent false positives on echo/grep commands that
@@ -90,8 +117,10 @@ block_patterns:
   # --- Disk / OS: Low-level format commands ---
   - format c:                          # Windows disk format
   - mkfs                               # Linux filesystem format (any variant: mkfs.ext4, etc.)
-  - dd if=/dev/zero                    # zero-wipe a block device
-  - /dd if=\/dev\/random/              # random-wipe a block device
+  # `dd` device-wipe: match `dd` + an `if=/dev/zero|random` ARGUMENT in any order,
+  # not the contiguous `dd if=/dev/zero` literal — `dd bs=1M if=/dev/zero of=/dev/sda`
+  # (option before if=) evaded the old literal. Bounded to one command. (M — reordered-token evasion)
+  - /\bdd\b[^;&|\n]*\bif=\/dev\/(?:zero|u?random)\b/   # zero/random/urandom-wipe a block device (any arg order)
   - fdisk                              # interactive partition editor (destructive if scripted)
   - diskpart                           # Windows partition manager (destructive if scripted)
 
@@ -156,9 +185,20 @@ nudge_patterns:
   # anchors the exemption to a real `git` INVOCATION (start / after whitespace or
   # `;`/`&`/`|`/`(`), so `legit rm` and `X=git rm` (a var-assignment prefix on a
   # real rm) still fire — only a standalone `git rm` is exempt. (sweep A3)
-  # (Dom 2026-06-03; first-arg-bound 2026-06-05; moved confirm→nudge + git-rm-exempt 2026-06-06; boundary-anchored 2026-06-06)
-  - /(?<!(?:^|[\s;&|(])git )rm\s+-[a-z]*[rf][a-z]*\s+(?!["']?(\.?\/?tmp\/|\/tmp|\$\{?T|mktemp|node_modules|\/var\/folders\/|\.sandbox|\.?\/?bin\/|\.?\/?obj\/|\.?\/?dist\/|\.?\/?coverage\/|\.?\/?TestResults\/))/
-  - /del \/s \/q/                      # Windows: silent recursive delete (cmd.exe)
+  # The flag matcher accepts BOTH the short cluster (`-rf`, `-r`, `-fr`) AND the
+  # GNU long forms `--recursive` / `--force`, so `rm --recursive --force <path>`
+  # and mixed `rm -r --force` / `rm --force -r` no longer evade the nudge (M —
+  # long-form flag evasion). The first-arg disposable-path exemption lookahead
+  # still follows the flag token, so short-form exemptions (`rm -rf /tmp/…`) are
+  # unaffected; long-form + a disposable path may still nudge (acceptable).
+  # (Dom 2026-06-03; first-arg-bound 2026-06-05; moved confirm→nudge + git-rm-exempt 2026-06-06; boundary-anchored 2026-06-06; long-form flags 2026-07-16)
+  - /(?<!(?:^|[\s;&|(])git )rm\s+(?:-[a-z]*[rf][a-z]*|--(?:recursive|force))\s+(?!["']?(\.?\/?tmp\/|\/tmp|\$\{?T|mktemp|node_modules|\/var\/folders\/|\.sandbox|\.?\/?bin\/|\.?\/?obj\/|\.?\/?dist\/|\.?\/?coverage\/|\.?\/?TestResults\/))/
+  # Windows silent recursive delete (cmd.exe) — either flag order (`del /s /q`
+  # or `del /q /s`), bounded to one command. NOTE: matchesPattern only recognizes
+  # the `/expr/` regex form (no trailing flags) and applies case-insensitivity
+  # itself — a trailing `/i` would make this parse as neither regex nor substring
+  # and silently never match, so it is intentionally omitted. (M — reversed-flag evasion)
+  - /\bdel\b[^;&|\n]*(?:\/s\b[^;&|\n]*\/q\b|\/q\b[^;&|\n]*\/s\b)/
   # PowerShell recursive force remove. `.*` (not `.+`) so the canonical single-space
   # `Remove-Item foo -Recurse -Force` matches, and a second alternation covers the
   # reverse flag order `-Force … -Recurse`. (sweep A2)
@@ -169,11 +209,13 @@ nudge_patterns:
   # resets — `--soft`, `--mixed`/default, `git reset HEAD~1`, `git reset -- <file>`
   # (unstaging) — are safe & reversible (they never touch the working tree), so
   # they are NOT nudged; nudging them was pure friction. (narrowed 2026-06-21)
-  - git reset --hard                   # discards all uncommitted changes → stash first
-  - git checkout -- .                  # bulk-resets tracked files → stash first
-  - git clean -f                       # deletes untracked files → `git clean -n` (dry-run) first
-  - git clean -fd                      # also removes untracked directories → dry-run first
-  - git clean -fX                      # removes gitignored files → dry-run first
+  # Regex (not contiguous literals) so an intervening git global option or an
+  # interposed flag doesn't evade — `git -c x reset --hard`, `git reset -q --hard`,
+  # `git clean -q -fd` all slipped past the old plain-string rules. Each is bounded
+  # to one command (`[^;&|\n]*`). (M — non-contiguous evasion of the sibling nudges)
+  - /git\b[^;&|\n]*\breset\b[^;&|\n]*--hard\b/          # discards all uncommitted changes → stash first
+  - /git\b[^;&|\n]*\bcheckout\b[^;&|\n]*\s--\s+\./      # bulk-resets tracked files (checkout -- .) → stash first
+  - /git\b[^;&|\n]*\bclean\b[^;&|\n]*(?:\s-\w*f\w*\b|--force\b)/  # -f/-fd/-fX/--force untracked delete → `git clean -n` first
 
   # --- Git: History rewriting (moved from confirm 2026-06-06) ---
   # Reflog-recoverable, but back up the branch first (git branch backup/<name>)
@@ -222,7 +264,11 @@ confirm_patterns:
   # --- Git: Remote branch/tag operations (outward-facing — touch the remote) ---
   - git push origin --delete           # deletes a remote branch or tag
   - /git push .+:refs\/tags\//         # deletes a remote tag
-  - /git\s+push\s+.*--force-with-lease/ # safer force push, but still rewrites remote (reachable now the block rule excludes it — hooks-m1)
+  # Tolerates the same intervening git global options as the block-tier force
+  # rule (`git -c k=v push --force-with-lease` used to fall through to a bare
+  # pass — no confirm at all — since `git\s+push\s+` required the two tokens
+  # contiguous). (M — global-option evasion, sibling of the force-push fix)
+  - /git\b(?:\s+\S+)*?\s+push\b[^;&|\n]*--force-with-lease/ # safer force push, but still rewrites remote (reachable now the block rule excludes it — hooks-m1)
 
   # --- Package management: publish (irreversible — public registry) ---
   - npm publish                        # publishing to npm registry (irreversible)

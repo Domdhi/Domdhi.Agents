@@ -114,8 +114,11 @@ const SIMPLE_WRAPPER = /^(?:sudo|nohup|time|command|exec|doas|builtin)\b\s+/;
  *
  * Recognized wrappers:
  *   sudo, nohup, time, command, exec, doas, builtin  — bare token
- *   env  VAR=value…                                  — plus any assignment words
- *   nice [-n N] | [-nN] | [-N]                        — plus an optional niceness
+ *   env  [OPTION…] [VAR=value…]                       — env's own flags AND assignments
+ *   VAR=value…                                       — bare inline assignments (no `env`)
+ *   nice [-n N] | [-nN] | [-N] | [--adjustment N] | [flags…]
+ *   timeout [OPT…] DURATION                           — flags + the duration positional
+ *   stdbuf  [-i/-o/-e …]                              — its buffering option flags
  *   xargs [-flags…]                                   — plus its option flags
  *
  * @param {string} segment
@@ -135,10 +138,40 @@ function stripWrapperPrefix(segment) {
         let m = head.match(SIMPLE_WRAPPER);
         if (m) { s = head.slice(m[0].length); changed = true; continue; }
 
-        // env  [VAR=value …]  — consume the `env` token then any assignment words.
+        // env  [OPTION…] [VAR=value …]  — consume `env` then any MIX of its own
+        // option flags and NAME=value assignment words, so a flag-decorated
+        // `env -i rm .env` / `env -u PATH rm .env` / `env --ignore-environment rm .env`
+        // still exposes the real command head. (MAJOR-2: the old handler skipped
+        // ONLY assignment words, so env's flags decorated a destructive verb past
+        // the zeroAccess `.env` hard block.) Value-taking flags with a SEPARATE
+        // value (`-u NAME`, `-C DIR`, `--unset NAME`, `--chdir DIR`) are matched
+        // before the no-value catch-all so their value isn't mistaken for the head.
         m = head.match(/^env\b\s+/);
         if (m) {
             let rest = head.slice(m[0].length);
+            let a, consumed = true;
+            while (consumed) {
+                consumed = false;
+                if ((a = rest.match(/^[A-Za-z_][A-Za-z0-9_]*=\S*\s+/)) ||          // NAME=value
+                    (a = rest.match(/^(?:-u|-C|--unset|--chdir)\s+\S+\s+/)) ||     // flag + separate value
+                    (a = rest.match(/^-\S*\s+/))) {                                // -i, -0, -, --ignore-environment, --unset=X, -iv…
+                    rest = rest.slice(a[0].length); consumed = true;
+                }
+            }
+            s = rest; changed = true; continue;
+        }
+
+        // Bare inline env assignments (NO `env` keyword): `FOO=bar rm -rf .env`,
+        // `A=1 B=2 git commit …`. Bash treats leading NAME=value tokens as a
+        // per-command environment prefix, so the REAL command head is the first
+        // token that is NOT an assignment. Consume every leading assignment word.
+        // This closes the bare-assignment prefix bypass shared by both guards:
+        // `FOO=bar git commit` skipped commit.js's scan, `FOO=bar rm -rf .env`
+        // downgraded the zeroAccessPaths hard block to an escalatable nudge.
+        // (A leading `=` — no name — never matches, so a lone `x=` segment from a
+        //  `$(` split is left intact.)
+        if (/^[A-Za-z_][A-Za-z0-9_]*=\S*\s+/.test(head)) {
+            let rest = head;
             let a;
             while ((a = rest.match(/^[A-Za-z_][A-Za-z0-9_]*=\S*\s+/))) {
                 rest = rest.slice(a[0].length);
@@ -146,12 +179,45 @@ function stripWrapperPrefix(segment) {
             s = rest; changed = true; continue;
         }
 
-        // nice  [-n N] | [-nN] | [-N]  — consume `nice` then an optional niceness.
+        // nice  [-n N] | [-nN] | [-N] | [--adjustment N] | any leading flags — the
+        // value-taking `-n N` / `--adjustment N` (separate value) is matched first
+        // so its number isn't left as the head; everything else is a no-value flag.
+        // (MAJOR-2 same-class: `nice --adjustment=10 rm .env` bypassed the block.)
         m = head.match(/^nice\b\s+/);
         if (m) {
             let rest = head.slice(m[0].length);
-            const n = rest.match(/^-n\s+\d+\s+/) || rest.match(/^-n\d+\s+/) || rest.match(/^-\d+\s+/);
-            if (n) rest = rest.slice(n[0].length);
+            let n;
+            while ((n = rest.match(/^(?:-n|--adjustment)\s+-?\d+\s+/) || rest.match(/^-\S*\s+/))) {
+                rest = rest.slice(n[0].length);
+            }
+            s = rest; changed = true; continue;
+        }
+
+        // timeout  [OPT…] DURATION  — a genuine command wrapper: strip `timeout`,
+        // its option flags (value-taking `-s SIG` / `-k DUR` first), then the ONE
+        // mandatory DURATION positional (`5`, `5s`, `1m`, `0.5`), exposing the
+        // wrapped command. (MAJOR-2 same-class: `timeout 5 rm .env` bypassed.)
+        m = head.match(/^timeout\b\s+/);
+        if (m) {
+            let rest = head.slice(m[0].length);
+            let f;
+            while ((f = rest.match(/^(?:-s|-k|--signal|--kill-after)\s+\S+\s+/) || rest.match(/^-\S*\s+/))) {
+                rest = rest.slice(f[0].length);
+            }
+            const d = rest.match(/^[\d.]+[smhd]?\s+/);
+            if (d) rest = rest.slice(d[0].length);
+            s = rest; changed = true; continue;
+        }
+
+        // stdbuf  [-i/-o/-e …]  — strip `stdbuf` and its buffering options
+        // (separate `-o L` matched before the attached `-oL` catch-all).
+        m = head.match(/^stdbuf\b\s+/);
+        if (m) {
+            let rest = head.slice(m[0].length);
+            let f;
+            while ((f = rest.match(/^(?:-i|-o|-e)\s+\S+\s+/) || rest.match(/^-\S*\s+/))) {
+                rest = rest.slice(f[0].length);
+            }
             s = rest; changed = true; continue;
         }
 

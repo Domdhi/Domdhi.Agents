@@ -19,6 +19,18 @@
 const DEFAULT_LIST_FIELDS = ['sources', 'tags', 'aliases', 'cssclasses'];
 
 /**
+ * Keys refused during parsing as defense-in-depth against prototype pollution.
+ * In THIS parser every assigned value is a plain string onto a plain object
+ * literal, so `result.__proto__ = "someString"` is a spec no-op and
+ * `constructor`/`prototype` land as ordinary own properties, not prototype-chain
+ * mutations — there's no live exploit via this file's flat string-value shape.
+ * The guard mirrors _lib/yaml-parser.js (sec-m1), which builds nested objects
+ * and IS genuinely at risk, kept here for consistency and cheap insurance
+ * against a future change to this parser's value shape.
+ */
+const UNSAFE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+
+/**
  * Parse YAML frontmatter from a markdown string.
  *
  * @param {string} content              Markdown text beginning with `---\n...\n---`
@@ -49,6 +61,15 @@ function parseFrontmatter(content, { listFields = DEFAULT_LIST_FIELDS, returnBod
         // List field start: `fieldname:` with no value on same line
         const listStart = line.match(/^([\w-]+):$/);
         if (listStart && listSet.has(listStart[1])) {
+            if (UNSAFE_KEYS.has(listStart[1])) {
+                // Currently unreachable: listSet only ever contains
+                // DEFAULT_LIST_FIELDS (sources/tags/aliases/cssclasses) or a
+                // caller-supplied listFields override, neither of which any
+                // current caller sets to an unsafe key. Kept as defense-in-depth
+                // in case listFields is ever extended to a caller-controlled key.
+                currentList = null;
+                continue;
+            }
             currentList = listStart[1];
             lists[currentList] = [];
             continue;
@@ -66,6 +87,7 @@ function parseFrontmatter(content, { listFields = DEFAULT_LIST_FIELDS, returnBod
         }
 
         const kv = line.match(/^([\w-]+):\s*(.*)$/);
+        if (kv && UNSAFE_KEYS.has(kv[1])) continue; // Refuse a prototype-polluting key. (sec-m1)
         if (kv) result[kv[1]] = kv[2].trim();
     }
 

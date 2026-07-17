@@ -30,6 +30,7 @@ const {
     extractTokenCounts,
 } = require('./_lib/model-runner');
 const { appendJsonl } = require('./_lib/jsonl-writer');
+const { redactSecretsForWrite } = require('./secret-safe-write');
 const { getTelemetryDir, getJsonlPath } = require('./_lib/telemetry-paths');
 const { resolveProjectRoot } = require('./_lib/project-root');
 const { memoryPaths } = require('./_lib/memory-paths');
@@ -316,7 +317,11 @@ Rules:
                 type: 'memory_benchmark',
                 daily_log_date: entry.date,
                 entry_heading: this.entryHeading(entry),
-                expected_concept: expectedSlug,
+                // expected_concept is the model-returned slug — redact before it
+                // lands in the persisted jsonl (class-consistency with the curator/
+                // extractor writes; findRank above already used the raw slug, so
+                // benchmark accuracy is unaffected).
+                expected_concept: expectedSlug ? redactSecretsForWrite(expectedSlug, this.jsonlPath, null) : expectedSlug,
                 retrieved_top5: top5Ids,
                 retrieval_rank: rank,
                 hit

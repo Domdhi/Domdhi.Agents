@@ -1,11 +1,16 @@
 #!/usr/bin/env node
 
 /**
- * Post-Tool-Use Secret Scrubber + Redactor
+ * Post-Tool-Use Secret Scrubber + Warner (Bash: also a Redactor)
  *
- * PostToolUse hook for `Read` AND `Bash`. Scans tool output for secrets and
- * REDACTS them from Claude's view via `hookSpecificOutput.updatedToolOutput`,
- * in addition to writing a stderr warning.
+ * PostToolUse hook for `Read` AND `Bash`. Scans tool output for secrets.
+ * On Bash, redaction via `hookSpecificOutput.updatedToolOutput` IS honored by
+ * Claude Code today, so a finding actually rewrites what the model sees. On
+ * Read, the same redaction JSON is emitted but Claude Code does NOT currently
+ * honor `updatedToolOutput` for that tool — see the "Empirical verification"
+ * note below — so Read behaves as a stderr-warning-only safety net; the
+ * redaction codepath is kept for forward-compat and starts working the moment
+ * upstream honors the field, with no code change here.
  *
  * Historical note: this file was originally `post-read-scrubber.cjs` covering
  * only `Read` and only warning (no redaction). Expanded 2026-05-10 (R7 from
@@ -16,10 +21,12 @@
  *
  * Behavior:
  *   - Read event with secret in content → emit redaction JSON to stdout AND
- *     stderr warning. Original content is replaced in Claude's context with
- *     `<REDACTED:PatternName>` markers.
- *   - Bash event with secret in stdout → emit redaction JSON to stdout. No
- *     stderr warning for Bash because there's no useful filepath to cite.
+ *     stderr warning. The redaction JSON is not currently honored by Claude
+ *     Code for Read (see above), so in practice this is a warning only — the
+ *     original content still reaches the model.
+ *   - Bash event with secret in stdout → emit redaction JSON to stdout, which
+ *     Claude Code honors. No stderr warning for Bash because there's no
+ *     useful filepath to cite.
  *   - Clean content → no output, no rewrite.
  *
  * Pattern library shared with secret-scanner.cjs via secret-patterns.cjs.
@@ -69,8 +76,7 @@ const {
  *
  * stdout and stderr are concatenated (newline-joined, empty pieces dropped) so
  * a secret split across both streams — or present in only one — is caught by
- * one scan pass; the caller applies the same capForScan treatment to the
- * combined text as it did to stdout alone.
+ * one full-length scan pass over the combined text.
  *
  * @param {object} parsedJson - Hook event payload
  * @returns {string} Extracted text, or '' if none found
@@ -97,35 +103,24 @@ function extractOutput(parsedJson) {
 }
 
 /**
- * F70: cap how much Bash stdout gets the 55-regex sweep. This hook fires on
- * EVERY Bash call, and build/install/test logs are effectively unbounded —
- * measured ~6.1ms per 1000 lines, i.e. >1s of synchronous hook latency on a
- * 200k-line log. Secrets in command output cluster near config/echo/env lines
- * at the start or the error/summary lines at the end, not the noisy middle,
- * so scan the head + tail and skip the middle. Redaction (rare, only on a
- * finding) still runs over the FULL output, so a mid-log secret that also
- * appears in head/tail context is still fully redacted.
+ * F70/F9 history: this hook previously capped Bash stdout to a head+tail 64 KB
+ * window before the 55-regex sweep (measured ~6.1ms per 1000 lines, i.e.
+ * ~1.25s of synchronous hook latency on a 200k-line log — see
+ * `docs/work/todo/TODO_codereview-260715-remediation.md`). That cap silently
+ * dropped coverage of the middle of the log: a secret ONLY there produced no
+ * finding, no warning, and no redaction (260716 full-review MED finding,
+ * `docs/.output/findings/reviews/260716-1406-full-review/sec-secrets.md` SEC-4).
  *
- * Read output is deliberately NOT capped: the harness already bounds Read to
- * ~2000 lines, and Read warnings cite file:line so fidelity matters there.
+ * Secret detection is the security-critical function of this hook, so
+ * correctness now wins over that latency heuristic: the scan always covers
+ * the FULL tool output, for both Read and Bash. The early exit that already
+ * existed — `findings.length === 0` → return before the (already
+ * full-length) redaction pass — is the cost mitigation for the common clean
+ * case; there is no cap left to reintroduce a blind spot. If a future
+ * demonstrated latency regression on very large Bash logs justifies a cap
+ * again, it must be paired with a documented and tested mid-log coverage gap,
+ * not a silent one.
  */
-// (Sized in UTF-16 code units via String.length/slice, not true bytes — the
-// cap is a latency heuristic, so ±multi-byte drift is deliberately fine.)
-const BASH_SCAN_HEAD_BYTES = 64 * 1024;
-const BASH_SCAN_TAIL_BYTES = 64 * 1024;
-
-/**
- * Return the scan-eligible slice of a Bash output: whole string when small,
- * head + tail (joined with a newline so no synthetic cross-boundary line can
- * form) when it exceeds the cap.
- *
- * @param {string} text
- * @returns {string}
- */
-function capForScan(text) {
-    if (text.length <= BASH_SCAN_HEAD_BYTES + BASH_SCAN_TAIL_BYTES) return text;
-    return text.slice(0, BASH_SCAN_HEAD_BYTES) + '\n' + text.slice(-BASH_SCAN_TAIL_BYTES);
-}
 
 /**
  * Determine the tool kind for a payload. Prefer explicit `tool_name`; fall
@@ -177,9 +172,9 @@ function processEvent(parsedJson) {
     const toolOutput = extractOutput(parsedJson);
     if (!toolOutput) return null;
 
-    // F70: Bash stdout is scanned head+tail only past the cap (see capForScan).
-    const scanTarget = toolKind === 'Bash' ? capForScan(toolOutput) : toolOutput;
-    const findings = scanContent(scanTarget, fileContext);
+    // Full-length scan for both Read and Bash (no head/tail cap — see the
+    // F70/F9 history comment above `inferToolKind` for why).
+    const findings = scanContent(toolOutput, fileContext);
     if (findings.length === 0) return null;
 
     // Build the redacted version. This may be byte-identical to the original
@@ -251,4 +246,4 @@ if (require.main === module) {
     main();
 }
 
-module.exports = { processEvent, extractOutput, inferToolKind, capForScan, BASH_SCAN_HEAD_BYTES, BASH_SCAN_TAIL_BYTES };
+module.exports = { processEvent, extractOutput, inferToolKind };

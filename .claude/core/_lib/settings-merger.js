@@ -3,9 +3,20 @@
  *
  * Ownership split (under --merge):
  *   Template OWNS (overwrite from the workshop's settings.json):
- *     - hooks           — the entire hooks block; adding/changing hooks is the
+ *     - hooks           — the hooks block; adding/changing hooks is the
  *                         primary reason this merger exists (v4.82 shipped several
- *                         new hooks that were silently absent in adopter settings)
+ *                         new hooks that were silently absent in adopter settings).
+ *                         EXCEPTION — adopter-authored hook entries survive: an entry
+ *                         whose command references a script that exists in the
+ *                         ADOPTER's hooks/ dir but is NOT a template hook (e.g.
+ *                         Mfa.Hub's ef-nobuild-guard.cjs) is re-inserted into the
+ *                         merged block under the same event + matcher. Entries whose
+ *                         referenced script is missing on both sides are fossil
+ *                         registrations and are dropped with the old block. Inline
+ *                         commands (no hooks/<file> reference) are preserved unless
+ *                         the template ships the identical command. Ordering caveat:
+ *                         preserved entries are appended after the template's entries
+ *                         in their matcher group.
  *     - plansDirectory  — the default plans output path
  *     - statusLine      — boilerplate wiring that points at the template-owned
  *                         core/statusline.sh script (like hooks, it's a pointer at
@@ -32,6 +43,8 @@
 'use strict';
 
 const fs = require('fs');
+const path = require('path');
+const { safeWrite } = require('./fs-safe');
 
 // ── Ownership Policy ──────────────────────────────────────────────────────────
 
@@ -60,6 +73,89 @@ const PROJECT_OWNED_KEYS = [
     'env',
 ];
 
+// ── Adopter-hook preservation helpers ─────────────────────────────────────────
+
+/**
+ * Extract the hook script filename referenced by a hook command string, e.g.
+ * 'node "$CLAUDE_PROJECT_DIR/.claude/hooks/ef-nobuild-guard.cjs"' → 'ef-nobuild-guard.cjs'.
+ * Returns null for inline commands that don't reference a hooks/ script.
+ */
+function extractHookScript(command) {
+    if (typeof command !== 'string') return null;
+    const m = command.match(/hooks[\/\\]([A-Za-z0-9._-]+)/);
+    return m ? m[1] : null;
+}
+
+/** Filenames in the hooks/ dir sibling to a settings.json path (empty set if absent). */
+function listHookFiles(settingsAbs) {
+    try {
+        return new Set(fs.readdirSync(path.join(path.dirname(settingsAbs), 'hooks')));
+    } catch {
+        return new Set();
+    }
+}
+
+/** Walk every {type,command} entry in a hooks section: cb(event, group, entry). */
+function forEachHookEntry(hooksSection, cb) {
+    if (!hooksSection || typeof hooksSection !== 'object') return;
+    for (const [event, groups] of Object.entries(hooksSection)) {
+        if (!Array.isArray(groups)) continue;
+        for (const group of groups) {
+            if (!group || !Array.isArray(group.hooks)) continue;
+            for (const entry of group.hooks) cb(event, group, entry);
+        }
+    }
+}
+
+/**
+ * Re-insert the adopter's own hook registrations into a merged (template-copied)
+ * hooks section. An entry is adopter-authored — and preserved — when its command
+ * references a script that exists in the ADOPTER's hooks/ dir and is not a
+ * template hook (by template hooks/ listing or template-section reference).
+ * Script-referencing entries whose file is gone are fossils → dropped. Inline
+ * commands are preserved unless the template ships the identical command string.
+ * Mutates mergedHooks; returns the list of preserved names for reporting.
+ */
+function preserveAdopterHooks(mergedHooks, destHooks, srcHooks, srcAbs, destAbs) {
+    const templateFiles = listHookFiles(srcAbs);
+    const destFiles = listHookFiles(destAbs);
+    const templateCmds = new Set();
+    const templateRefs = new Set();
+    forEachHookEntry(srcHooks, (event, group, entry) => {
+        if (!entry || typeof entry.command !== 'string') return;
+        templateCmds.add(entry.command);
+        const ref = extractHookScript(entry.command);
+        if (ref) templateRefs.add(ref);
+    });
+
+    const norm = (m) => (m === undefined || m === null) ? '' : String(m);
+    const preserved = [];
+    forEachHookEntry(destHooks, (event, group, entry) => {
+        const cmd = entry && entry.command;
+        if (typeof cmd !== 'string') return;
+        const ref = extractHookScript(cmd);
+        const keep = ref
+            ? (!templateFiles.has(ref) && !templateRefs.has(ref) && destFiles.has(ref))
+            : !templateCmds.has(cmd);
+        if (!keep) return;
+
+        if (!Array.isArray(mergedHooks[event])) mergedHooks[event] = [];
+        let target = mergedHooks[event].find(g => g && norm(g.matcher) === norm(group.matcher));
+        if (!target) {
+            target = Object.prototype.hasOwnProperty.call(group, 'matcher')
+                ? { matcher: group.matcher, hooks: [] }
+                : { hooks: [] };
+            mergedHooks[event].push(target);
+        }
+        if (!Array.isArray(target.hooks)) target.hooks = [];
+        if (!target.hooks.some(e => e && e.command === cmd)) {
+            target.hooks.push(entry);
+            preserved.push(ref || cmd);
+        }
+    });
+    return preserved;
+}
+
 // ── Merge Logic ───────────────────────────────────────────────────────────────
 
 /**
@@ -75,12 +171,18 @@ const PROJECT_OWNED_KEYS = [
  *   - Idempotent: running twice on unchanged inputs returns action='unchanged'.
  *   - Respects options.dryRun — logs what WOULD happen but writes nothing.
  *
+ * Writes go through fs-safe's `safeWrite` so a symlinked `settings.json` leaf (or a
+ * symlinked ancestor dir up to `containRoot`) is never followed out of the adopter
+ * tree — matching how copyFile threads containRoot elsewhere in template-updater.
+ *
  * @param {string} srcAbs   — absolute path to the template settings.json
  * @param {string} destAbs  — absolute path to the target settings.json
  * @param {{ dryRun?: boolean }} [options]
+ * @param {string} [containRoot] — destination project root; enables the
+ *                                 symlinked-ancestor guard (optional, backward-compatible)
  * @returns {{ action: string, detail: string }}
  */
-function mergeSettingsFile(srcAbs, destAbs, options) {
+function mergeSettingsFile(srcAbs, destAbs, options, containRoot) {
     options = options || {};
 
     // ── Read template (src) ───────────────────────────────────────────────────
@@ -100,7 +202,7 @@ function mergeSettingsFile(srcAbs, destAbs, options) {
         }
         const out = JSON.stringify(srcObj, null, 2) + '\n';
         fs.mkdirSync(require('path').dirname(destAbs), { recursive: true });
-        fs.writeFileSync(destAbs, out, 'utf8');
+        safeWrite(destAbs, out, 'utf8', containRoot);
         return { action: 'copied', detail: 'copied (fresh install — dest missing)' };
     }
 
@@ -136,6 +238,16 @@ function mergeSettingsFile(srcAbs, destAbs, options) {
         // whatever the adopter has (safe: we do not delete adopter keys).
     }
 
+    // hooks exception: re-insert the adopter's OWN hook registrations (e.g. a
+    // project-authored PreToolUse guard) into the freshly template-copied block —
+    // deep-clone first so srcObj is never mutated.
+    let preservedHooks = [];
+    if (Object.prototype.hasOwnProperty.call(srcObj, 'hooks') &&
+        destObj.hooks && typeof destObj.hooks === 'object') {
+        merged.hooks = JSON.parse(JSON.stringify(srcObj.hooks));
+        preservedHooks = preserveAdopterHooks(merged.hooks, destObj.hooks, srcObj.hooks, srcAbs, destAbs);
+    }
+
     // For project-owned keys that are absent in dest, fall back to template value.
     // This handles the first-run case where an adopter's old settings.json predates
     // a key the template now ships as a default.
@@ -159,26 +271,30 @@ function mergeSettingsFile(srcAbs, destAbs, options) {
 
     // ── Dry-run ───────────────────────────────────────────────────────────────
 
+    const preservedNote = preservedHooks.length > 0
+        ? `; preserved ${preservedHooks.length} adopter hook(s): ${preservedHooks.join(', ')}`
+        : '';
+
     if (options.dryRun) {
         const changed = TEMPLATE_OWNED_KEYS.filter(k =>
-            JSON.stringify(destObj[k]) !== JSON.stringify(srcObj[k])
+            JSON.stringify(destObj[k]) !== JSON.stringify(merged[k])
         );
         const detail = changed.length > 0
-            ? `would update: ${changed.join(', ')}`
-            : 'would merge (project-owned keys added from template)';
+            ? `would update: ${changed.join(', ')}${preservedNote}`
+            : `would merge (project-owned keys added from template)${preservedNote}`;
         return { action: 'merged', detail };
     }
 
     // ── Write ─────────────────────────────────────────────────────────────────
 
-    fs.writeFileSync(destAbs, out, 'utf8');
+    safeWrite(destAbs, out, 'utf8', containRoot);
 
     const updatedKeys = TEMPLATE_OWNED_KEYS.filter(k =>
-        JSON.stringify(destObj[k]) !== JSON.stringify(srcObj[k])
+        JSON.stringify(destObj[k]) !== JSON.stringify(merged[k])
     );
     const detail = updatedKeys.length > 0
-        ? `merged (updated: ${updatedKeys.join(', ')})`
-        : 'merged (no template-owned key changes; project-owned keys preserved)';
+        ? `merged (updated: ${updatedKeys.join(', ')}${preservedNote})`
+        : `merged (no template-owned key changes; project-owned keys preserved${preservedNote})`;
 
     return { action: 'merged', detail };
 }
@@ -188,4 +304,6 @@ module.exports = {
     // Expose policy constants so tests can verify they are correct
     TEMPLATE_OWNED_KEYS,
     PROJECT_OWNED_KEYS,
+    // Exposed for unit tests
+    extractHookScript,
 };

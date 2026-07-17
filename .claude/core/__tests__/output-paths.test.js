@@ -146,6 +146,82 @@ describe('output-paths — open-taxonomy path-traversal guard (F16)', () => {
   });
 });
 
+describe('output-paths — sanitizeKindPath post-slugify re-validation (F16 follow-up)', () => {
+  // slugify() strips chars outside its charset, which can RESURRECT a
+  // traversal segment the pre-slugify filter already passed — e.g. "..%"
+  // isn't literally ".." until AFTER slugify drops the "%". Verify the
+  // post-slugify guard catches every such shape and nothing escapes the root.
+
+  function assertConfined(p) {
+    expect(p.startsWith('docs/.output/')).toBe(true);
+    expect(p).not.toMatch(/(^|\/)\.\.(\/|$)/); // no literal '..' path segment
+    const abs = path.resolve(tmp, p);
+    expect(abs.startsWith(path.join(tmp, 'docs', '.output') + path.sep)).toBe(true);
+  }
+
+  it('a single "..%" segment reduces to ".." post-slugify and is dropped entirely (falls back to untitled)', () => {
+    const p = op.outputPath('..%', { slug: 'evil', cwd: tmp });
+    assertConfined(p);
+    expect(p).toMatch(
+      new RegExp(`^docs/\\.output/untitled/${MONTH.source}/${STAMP.source}-evil\\.md$`)
+    );
+  });
+
+  it('a single "..!" segment also reduces to ".." post-slugify and is dropped (falls back to untitled)', () => {
+    const p = op.outputPath('..!', { slug: 'evil', cwd: tmp });
+    assertConfined(p);
+    expect(p).toMatch(
+      new RegExp(`^docs/\\.output/untitled/${MONTH.source}/${STAMP.source}-evil\\.md$`)
+    );
+  });
+
+  it('".%2e" slugifies to a benign, non-traversal segment and is kept as-is', () => {
+    const p = op.outputPath('.%2e', { slug: 'evil', cwd: tmp });
+    assertConfined(p);
+    expect(p).toMatch(
+      new RegExp(`^docs/\\.output/\\.-2e/${MONTH.source}/${STAMP.source}-evil\\.md$`)
+    );
+  });
+
+  it('an embedded "..%" segment ("a/..%/b") is dropped, leaving the benign segments joined ("a/b")', () => {
+    const p = op.outputPath('a/..%/b', { slug: 'evil', cwd: tmp });
+    assertConfined(p);
+    expect(p).toMatch(
+      new RegExp(`^docs/\\.output/a/b/${MONTH.source}/${STAMP.source}-evil\\.md$`)
+    );
+  });
+
+  it('repeated "..%" segments ("..%/..%/..%/..%/pwned") all drop, leaving only the trailing benign segment', () => {
+    const p = op.outputPath('..%/..%/..%/..%/pwned', { slug: 'evil', cwd: tmp });
+    assertConfined(p);
+    expect(p).toMatch(
+      new RegExp(`^docs/\\.output/pwned/${MONTH.source}/${STAMP.source}-evil\\.md$`)
+    );
+  });
+
+  it('the original F16 literal-".." fixtures still resolve unchanged (no regression)', () => {
+    const p1 = op.outputPath('../x', { slug: 'evil', cwd: tmp });
+    assertConfined(p1);
+    expect(p1).toMatch(new RegExp(`^docs/\\.output/x/${MONTH.source}/${STAMP.source}-evil\\.md$`));
+
+    const p2 = op.outputPath('..\\..\\y', { slug: 'evil', cwd: tmp });
+    assertConfined(p2);
+    expect(p2).toMatch(new RegExp(`^docs/\\.output/y/${MONTH.source}/${STAMP.source}-evil\\.md$`));
+
+    const p3 = op.outputPath('/etc/passwd', { slug: 'evil', cwd: tmp });
+    assertConfined(p3);
+    expect(p3).toMatch(new RegExp(`^docs/\\.output/etc/passwd/${MONTH.source}/${STAMP.source}-evil\\.md$`));
+  });
+
+  it('benign unregistered kinds are unaffected by the post-slugify filter', () => {
+    const p1 = op.outputPath('reviews', { slug: 'x', cwd: tmp });
+    expect(p1).toMatch(new RegExp(`^docs/\\.output/reviews/${MONTH.source}/${STAMP.source}-x\\.md$`));
+
+    const p2 = op.outputPath('a/b/c', { slug: 'x', cwd: tmp });
+    expect(p2).toMatch(new RegExp(`^docs/\\.output/a/b/c/${MONTH.source}/${STAMP.source}-x\\.md$`));
+  });
+});
+
 describe('output-paths — latest()', () => {
   function seed(rel, names) {
     const dir = path.join(tmp, rel);

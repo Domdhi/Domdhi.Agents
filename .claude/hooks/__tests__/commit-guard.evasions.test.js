@@ -64,6 +64,19 @@ describe('commit-guard evasions — additional wrapper/keyword/chain forms BLOCK
     'GIT.EXE commit -m "x"',
     'C:\\Git\\bin\\git.exe commit -m "x"',
     'sudo /usr/bin/git commit -m "x"',   // absolute path behind a wrapper
+    // M — BARE env-assignment prefix (no `env` keyword). `env FOO=bar git commit`
+    // was already caught; the bare form slipped past the splitter, skipping
+    // commit.js's pre-commit secret scan + trailer.
+    'FOO=bar git commit -m "secret"',
+    'A=1 B=2 git commit -m "secret"',
+    'FOO=bar git commit -mhello',          // bare assignment + attached-value form
+    'sudo FOO=1 git commit -m "x"',        // bare assignment nested under a wrapper
+    // M — `-F` file flag no longer short-circuits a co-present inline `-m`. git
+    // appends the inline message and the commit still skips commit.js's scan.
+    'git commit -F docs/.output/.state/.commit-msg -m "secret"',
+    'git commit -m "secret" -F docs/.output/.state/.commit-msg',
+    'git commit -F f --message="secret"',
+    'FOO=bar git commit -F f -m "secret"', // bare env + -F + inline -m
   ];
 
   for (const cmd of mustBlock) {
@@ -93,6 +106,10 @@ describe('commit-guard evasions — benign look-alikes still PASS', () => {
     // M2 — global option before a file-based/editor commit stays an escape hatch.
     'git -c user.name=x commit -F docs/.output/.state/.commit-msg',
     'git -c user.name=x commit --amend',
+    // M — the `-F` escape hatch stays valid when NO inline -m rides alongside,
+    // including behind a bare env-assignment prefix.
+    'FOO=bar git commit -F docs/.output/.state/.commit-msg',
+    'FOO=bar git commit --amend',
     // M1 — a continuation that rejoins into a plain editor commit still passes.
     'git commit \\\n--amend',
     // F7 (260716 code review) — the basename match must stay strict equality,

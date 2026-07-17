@@ -175,22 +175,55 @@ function extractFieldBlock(lines, key) {
 }
 
 /**
- * Extract the YAML list block for a `skills:` (block-sequence) field: the index of
- * the `skills:` line, the index just past its `- item` lines, and the item names.
+ * Extract the YAML list for a `skills:` field, supporting both forms template
+ * agent files may use:
+ *   block-sequence:  skills:\n  - foo\n  - bar
+ *   flow-style:      skills: [foo, bar]   (all on the `skills:` line itself)
+ *
+ * Flow-style is parsed directly (split-on-comma + trim + strip quotes) rather than
+ * via a full YAML parser — this is template-authored frontmatter in a controlled
+ * context, not untrusted arbitrary YAML, so that would be overkill. Chosen over
+ * documenting block-sequence as the only supported form because every write-back
+ * path in this file (stripExcludedSkills, mergeFrontmatter's bespoke-union) already
+ * always re-serializes as block-sequence regardless of the source style, so there's
+ * no round-trip-format concern to preserve.
  *
  * @param {string[]} lines
- * @returns {{ start: number, end: number, items: string[] }|null}
+ * @returns {{ start: number, end: number, items: string[], flow: boolean }|null}
  */
 function extractSkillsList(lines) {
     const start = lines.findIndex(l => /^skills\s*:/.test(l));
     if (start === -1) return null;
+    // Trailing inline comment must not defeat the match — without it, a line like
+    // `skills: [foo, bar]  # why` falls through to the block-sequence parser below,
+    // which finds no `- item` lines and returns `{items: [], flow: false}` (not
+    // null, since `start` was found) — stripExcludedSkills then deletes the WHOLE
+    // skills line on any exclusion call, silently dropping a real list (Wave 6
+    // review finding).
+    const flowMatch = lines[start].match(/^skills\s*:\s*\[(.*)\]\s*(#.*)?$/);
+    if (flowMatch) {
+        const items = flowMatch[1]
+            .split(',')
+            .map(s => s.trim().replace(/^['"]|['"]$/g, ''))
+            .filter(s => s.length > 0);
+        return { start, end: start + 1, items, flow: true };
+    }
+    // The line opens a flow-style list (`skills: [`) but has no matching `]`
+    // on the same line — e.g. wrapped across lines as `skills: [foo,` /
+    // `  bar]`. Multi-line flow-style is unsupported (out of scope — no live
+    // agent file uses it); falling through to the block-sequence scanner below
+    // would find no `- item` lines and return a false-empty `{items: [],
+    // flow: false}`, which stripExcludedSkills would then trust and delete the
+    // whole line outright, corrupting the file. Fail safe instead: return null
+    // so callers leave the line untouched.
+    if (/^skills\s*:\s*\[/.test(lines[start])) return null;
     let end = start + 1;
     const items = [];
     while (end < lines.length && /^\s*-\s+/.test(lines[end])) {
         items.push(lines[end].replace(/^\s*-\s+/, '').trim());
         end++;
     }
-    return { start, end, items };
+    return { start, end, items, flow: false };
 }
 
 /**
@@ -225,8 +258,13 @@ function stripExcludedSkills(content, excludedSet) {
         if (kept.length === 0) {
             lines.splice(sk.start, sk.end - sk.start);
         } else if (kept.length !== sk.items.length) {
-            const indent = (lines[sk.start + 1].match(/^(\s*)-/) || [, '  '])[1];
-            lines.splice(sk.start + 1, sk.end - (sk.start + 1), ...kept.map(s => `${indent}- ${s}`));
+            if (sk.flow) {
+                // The whole list lives on one line — rewrite that line in place.
+                lines.splice(sk.start, sk.end - sk.start, `skills: [${kept.join(', ')}]`);
+            } else {
+                const indent = (lines[sk.start + 1].match(/^(\s*)-/) || [, '  '])[1];
+                lines.splice(sk.start + 1, sk.end - (sk.start + 1), ...kept.map(s => `${indent}- ${s}`));
+            }
         }
     }
 
@@ -330,7 +368,13 @@ function mergeFrontmatter(srcFm, dstFm, opts) {
                 !opts.canonicalSkills.has(s) &&
                 opts.targetSkills.has(s) &&
                 !existing.includes(s));
-            if (bespoke.length > 0 && resSkills) {
+            if (bespoke.length > 0 && resSkills && resSkills.flow) {
+                // Flow-style: rewrite the single line with the union — appending
+                // block-sequence lines after it would produce invalid YAML (a flow
+                // scalar followed by block-sequence items on the same key).
+                result.splice(resSkills.start, resSkills.end - resSkills.start,
+                    `skills: [${[...resSkills.items, ...bespoke].join(', ')}]`);
+            } else if (bespoke.length > 0 && resSkills) {
                 // Append into the existing list, matching its item indentation.
                 const sample = result[resSkills.start + 1] || '  - ';
                 const indent = (sample.match(/^(\s*)-/) || [, '  '])[1];

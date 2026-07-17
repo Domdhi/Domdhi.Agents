@@ -128,4 +128,74 @@ describe('processEvent', () => {
   it('BLOCKS amend WITH an inline message', () => {
     expect(processEvent(evt('git commit --amend -m "x"'))).toMatchObject({ block: true });
   });
+
+  it('BLOCKS a -F file flag co-present with an inline -m (the -F allow-path must not swallow -m)', () => {
+    // git accepts BOTH: it appends the inline message and the commit still
+    // skips commit.js's pre-commit secret scan — so -F alone is no longer an
+    // unconditional pass; it only passes when NO inline message rides with it.
+    expect(processEvent(evt('git commit -F f -m "secret"'))).toMatchObject({ block: true });
+    expect(processEvent(evt('git commit -m "secret" -F f'))).toMatchObject({ block: true });
+    expect(processEvent(evt('git commit -F f --message="secret"'))).toMatchObject({ block: true });
+    // -F with no inline message is still the sanctioned file-based escape hatch.
+    expect(processEvent(evt('git commit -F docs/.output/.state/.commit-msg'))).toBeNull();
+  });
+
+  it('BLOCKS a bare env-assignment prefix on an inline commit (no `env` keyword)', () => {
+    expect(processEvent(evt('FOO=bar git commit -m "secret"'))).toMatchObject({ block: true });
+    expect(processEvent(evt('A=1 B=2 git commit -m "secret"'))).toMatchObject({ block: true });
+    // ...but the bare-assignment prefix on a file-based commit still passes.
+    expect(processEvent(evt('FOO=bar git commit -F docs/.output/.state/.commit-msg'))).toBeNull();
+  });
+});
+
+// ── Finding 2 (retry): fail CLOSED on a truncated/wedged stdin read. Claude Code
+//    only blocks a Bash call on exit 2; a wedged pipe / truncated JSON must BLOCK
+//    (never exit 0, which would let an inline `git commit -m` skip commit.js's
+//    pre-commit secret scan), WHILE a legitimate empty/valid payload still passes. ──
+describe('commit-guard main fail-closed on stdin (spawned process)', () => {
+  const nodePath = require('node:path');
+  const { execFileSync, spawn } = require('node:child_process');
+  const hookPath = require.resolve('../commit-guard.cjs');
+  const REPO = nodePath.resolve(nodePath.dirname(hookPath), '..', '..');
+
+  function runHook(input) {
+    try {
+      const stdout = execFileSync('node', [hookPath], {
+        input,
+        env: { ...process.env, CLAUDE_PROJECT_DIR: REPO },
+        stdio: 'pipe',
+      });
+      return { exitCode: 0, stdout: stdout.toString(), stderr: '' };
+    } catch (err) {
+      return { exitCode: err.status, stdout: err.stdout?.toString() || '', stderr: err.stderr?.toString() || '' };
+    }
+  }
+
+  it('malformed/truncated JSON on non-empty stdin → BLOCKS (exit 2), not exit 0', () => {
+    const result = runHook('{"tool_input":{"command":"git commit -m \\"x\\""');
+    expect(result.exitCode).not.toBe(0);
+    expect(result.exitCode).toBe(2);
+    expect(result.stderr).toContain('fail-closed');
+  });
+
+  it('wedged pipe (stdin never closes) → times out and BLOCKS (exit 2)', async () => {
+    const child = spawn('node', [hookPath], {
+      env: { ...process.env, CLAUDE_PROJECT_DIR: REPO, HOOK_STDIN_TIMEOUT_MS: '150' },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    child.stdin.write('{"tool_input":'); // truncated; stdin intentionally left open
+    let stderr = '';
+    child.stderr.on('data', (c) => { stderr += c; });
+    const exitCode = await new Promise((resolve) => child.on('exit', resolve));
+    expect(exitCode).toBe(2);
+    expect(stderr).toContain('fail-closed');
+  });
+
+  it('legitimate EMPTY stdin (clean end) → passes (exit 0), no regression', () => {
+    expect(runHook('').exitCode).toBe(0);
+  });
+
+  it('legitimate VALID JSON (non-commit command) → passes (exit 0), no regression', () => {
+    expect(runHook(JSON.stringify({ tool_input: { command: 'ls -la' } })).exitCode).toBe(0);
+  });
 });

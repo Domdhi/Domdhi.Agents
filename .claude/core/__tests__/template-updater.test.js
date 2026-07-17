@@ -1033,6 +1033,57 @@ describe('runUpdate skill --merge preserves project additions', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// runUpdate skill --merge — a suppressed head refresh / orphaned block must WARN
+// (full-review-260716 wave 6A, Finding 1: it used to log a clean-looking MERGE line
+// and never touch stats.warned, so the fleet rollup couldn't see it happened.)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('runUpdate skill --merge surfaces a suppressed head refresh as a WARN', () => {
+  let originalProjectDir;
+  beforeEach(() => { originalProjectDir = process.env.CLAUDE_PROJECT_DIR; });
+  afterEach(() => {
+    if (originalProjectDir === undefined) delete process.env.CLAUDE_PROJECT_DIR;
+    else process.env.CLAUDE_PROJECT_DIR = originalProjectDir;
+  });
+
+  const MARKER = '<!-- @@project-additions -->';
+  // Two headings in the source body — enough for the rewrite heuristic's
+  // collisionCount >= 2 bar when the dest's tail repeats both of them.
+  const SRC_SKILL = `---\nname: tailwind-css-patterns\n---\n\n# Tailwind\n\n## Section A\n\nbody v2\n\n## Section B\n\nbody v2\n`;
+
+  it('logs a WARN line, counts stats.warned, and lists the message in Warnings', () => {
+    tmp.mkdir('src/.claude');
+    tmp.mkdir('target/.claude');
+    tmp.write('src/.claude/skills/tailwind-css-patterns/SKILL.md', SRC_SKILL);
+    process.env.CLAUDE_PROJECT_DIR = path.join(tmp.root, 'src');
+
+    // The dest's marker TAIL re-uses both of the source's headings ("## Section A"
+    // and "## Section B") — the rewrite heuristic reads this as a full-file rewrite
+    // (not a genuine new addition) and suppresses the head refresh entirely.
+    const destRel = 'target/.claude/skills/tailwind-css-patterns/SKILL.md';
+    tmp.write(destRel,
+      `---\nname: tailwind-css-patterns\n---\n\n# Tailwind\n\n## Section A\n\nbody v1\n\n${MARKER}\n\n## Section A\n\nrewritten\n\n## Section B\n\nrewritten\n`);
+
+    const logs = [];
+    const spy = vi.spyOn(console, 'log').mockImplementation((...args) => logs.push(args.join(' ')));
+    runUpdate(path.join(tmp.root, 'target'), { merge: true });
+    spy.mockRestore();
+
+    const out = logs.join('\n');
+    expect(out).toMatch(/WARN\s+.*head refresh SUPPRESSED/);
+    expect(out).toMatch(/Warned\s*:\s*1/);
+    expect(out).toMatch(/\nWarnings:\n/);
+    expect(out).toMatch(/! .*head refresh SUPPRESSED/);
+
+    // The head genuinely was NOT refreshed — "body v1" (dest's own head) survives,
+    // "body v2" (the source's refreshed head) does not appear.
+    const written = fs.readFileSync(path.join(tmp.root, destRel), 'utf8');
+    expect(written).toContain('body v1');
+    expect(written).not.toContain('body v2');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // listSkillDirs — counts symlinked skill dirs (the bespoke-skill-preservation fix)
 // ─────────────────────────────────────────────────────────────────────────────
 

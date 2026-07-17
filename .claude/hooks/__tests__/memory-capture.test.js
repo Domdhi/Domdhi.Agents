@@ -463,6 +463,59 @@ describe('handleBashPostToolUse_dedup', () => {
 });
 
 // ---------------------------------------------------------------------------
+// handleBashPostToolUse — fallback branch uses the shared formatCommitEntry
+// (Wave 5G de-dup: memory-capture's fallback must never hand-reproduce
+// DailyLog.captureCommit's string format)
+// ---------------------------------------------------------------------------
+
+describe('handleBashPostToolUse_fallbackFormatting', () => {
+    it('handleBashPostToolUse_captureCommitThrows_fallbackWritesFormatCommitEntryOutput', () => {
+        // Arrange — force the primary DailyLog.captureCommit path to throw so
+        // handleBashPostToolUse falls into the catch-branch direct-append path.
+        const DailyLog = require('../../core/daily-log');
+        const captureCommitSpy = vi
+            .spyOn(DailyLog.prototype, 'captureCommit')
+            .mockImplementation(() => {
+                throw new Error('simulated captureCommit failure');
+            });
+
+        const fixedNow = new Date('2026-07-16T09:15:00.000Z');
+        const fixedDateStr = fixedNow.toISOString().slice(0, 10);
+        vi.useFakeTimers();
+        vi.setSystemTime(fixedNow);
+
+        execSyncMock.mockReturnValue('5\t3\tfile.js\n');
+        const dailyDir = path.join(setupTmp.root, 'docs', '.output', '.state', 'memory-daily');
+        // Use the FIXED (faked) date, not the file-level `today` constant — the
+        // hook computes its write path from `new Date()` too, which is faked.
+        const logPath = path.join(dailyDir, `${fixedDateStr}.md`);
+
+        try {
+            const event = {
+                tool_name: 'Bash',
+                tool_input: { command: 'git commit -m "feat: fallback path"' },
+                tool_output: { stdout: '[main fedcba1] feat: fallback path\n 1 file changed, 5 insertions(+), 3 deletions(-)' }
+            };
+
+            // Act
+            handleBashPostToolUse(event);
+
+            // Assert — the fallback's written entry is byte-identical to what
+            // DailyLog.formatCommitEntry produces for the same inputs, proving
+            // the two paths cannot drift (same function, not a visual copy).
+            const timeLabel = fixedNow.toISOString().slice(11, 16);
+            const expected = DailyLog.formatCommitEntry('fedcba1', 'feat: fallback path', 1, 5, 3, timeLabel);
+            const writtenContent = fs.readFileSync(logPath, 'utf8');
+            expect(writtenContent).toBe(expected);
+        } finally {
+            captureCommitSpy.mockRestore();
+            vi.useRealTimers();
+            fs.rmSync(logPath, { force: true });
+        }
+    });
+});
+
+// ---------------------------------------------------------------------------
 // handleBashPostToolUse — missing tool_output edge cases
 // ---------------------------------------------------------------------------
 

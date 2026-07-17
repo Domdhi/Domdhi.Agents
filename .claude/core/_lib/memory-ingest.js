@@ -169,11 +169,16 @@ async function ingestAgentMemory(sourcePath, { dryRun = false, readMemory, creat
             originalName: (frontmatter.name || '').trim(),
         };
 
-        const created = await createMemory(category, id, content);
-        if (created === null) {
-            report.errors.push({ file, reason: 'category full (per-category cap reached)' });
-        } else {
-            report.ingested++;
+        try {
+            const created = await createMemory(category, id, content);
+            if (created === null) {
+                report.errors.push({ file, reason: 'category full (per-category cap reached)' });
+            } else {
+                report.ingested++;
+            }
+        } catch (err) {
+            report.errors.push({ file, reason: `createMemory threw: ${err.message}` });
+            continue;
         }
     }
 

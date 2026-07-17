@@ -31,6 +31,12 @@
 const { readHookInput } = require('../core/_lib/hook-input');
 const { splitCommandSegments, stripWrapperPrefix } = require('../core/_lib/shell-command-split');
 
+// 5000ms ceiling on the stdin read (blocking-hook parity). Env override exists
+// ONLY so a fail-closed timeout test can shrink the wait for a real spawned
+// process without changing production behavior — same pattern as
+// secret-scanner.cjs's SECRET_SCANNER_STDIN_TIMEOUT_MS.
+const STDIN_TIMEOUT_MS = parseInt(process.env.HOOK_STDIN_TIMEOUT_MS, 10) || 5000;
+
 /**
  * The slice of the command following the first `git commit` token — but only
  * when `git commit` is at a COMMAND position (start of string, or immediately
@@ -167,7 +173,11 @@ function processEvent(data) {
       const tail = gitCommitSegmentTail(seg);
       if (tail === null) continue; // this segment is not a `git commit` head
 
-      if (hasFileFlag(tail)) continue;   // git commit -F <file> — already safe
+      // git commit -F <file> — already safe, BUT only when no inline `-m` rides
+      // alongside it. `git commit -F f -m "<secret>"` supplies BOTH; git appends
+      // the inline message and the commit still skips commit.js's pre-commit
+      // secret scan, so the file flag must not short-circuit the -m check.
+      if (hasFileFlag(tail) && !hasInlineMessageFlag(tail)) continue;
       if (hasAmendFlag(tail) && !hasInlineMessageFlag(tail)) continue; // amend w/o -m
       if (!hasInlineMessageFlag(tail)) continue; // plain `git commit` → editor, fine
 
@@ -186,16 +196,35 @@ function processEvent(data) {
 }
 
 async function main() {
-  const input = await readHookInput({ timeoutMs: null });
+  // Fail CLOSED on a wedged/truncated stdin read. A timeout or stream error
+  // means the payload never arrived intact; exiting 0 would let an inline
+  // `git commit -m` through that skips commit.js's pre-commit secret scan.
+  // Block instead — same rationale as the processEvent catch below and
+  // secret-scanner.cjs. A clean `end` (even empty) still resolves, so a
+  // legitimate empty-stdin invocation is unaffected. (finding 2)
+  let input;
+  try {
+    input = await readHookInput({ timeoutMs: STDIN_TIMEOUT_MS, failClosedOnTimeout: true });
+  } catch (err) {
+    process.stderr.write('[commit-guard] BLOCKED (fail-closed): stdin read did not complete — ' + (err && err.message) + '\n');
+    process.exit(2);
+  }
   if (!input.trim()) process.exit(0);
 
   let data;
-  try { data = JSON.parse(input); } catch { process.exit(0); }
+  try {
+    data = JSON.parse(input);
+  } catch {
+    // Fail CLOSED: non-empty stdin that will not parse is a truncated/garbled
+    // payload; allowing it would silently skip commit.js's pre-commit secret
+    // scan on whatever inline commit it carried. Block.
+    process.stderr.write('[commit-guard] BLOCKED (fail-closed): could not parse stdin payload as JSON.\n');
+    process.exit(2);
+  }
 
   // Fail-closed: processEvent already catches internally, but an unexpected
   // throw here must BLOCK (exit 2), never silently pass through an inline commit
-  // that would skip commit.js's pre-commit secret scan. Malformed hook INPUT
-  // (the JSON.parse above) still exits 0 — that is not a command decision.
+  // that would skip commit.js's pre-commit secret scan.
   let result;
   try {
     result = processEvent(data);

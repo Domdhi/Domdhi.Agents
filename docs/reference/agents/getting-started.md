@@ -100,7 +100,7 @@ Each sub-command runs in turn. They're chained — you don't re-invoke them manu
 | Architecture | `docs/architecture/overview.md` | Tech stack, ADRs, system design — the "how" |
 | Backlog | `docs/work/backlog.md` | Epics broken into user stories with acceptance criteria |
 
-Each document may trigger a short follow-up interview of its own — `/create:project-requirements` often asks you to clarify functional-vs-non-functional distinctions, `/create:project-architecture` may ask you to commit to tech choices you left vague. Answer those the same way: honest and specific. The full list of setup commands lives in [`reference/commands.md`](reference/commands.md).
+Each document may trigger a short follow-up interview of its own — `/create:project-requirements` often asks you to clarify functional-vs-non-functional distinctions, `/create:project-architecture` may ask you to commit to tech choices you left vague. Answer those the same way: honest and specific. The full list of setup commands lives in [`reference/commands.md`](commands.md).
 
 After the backlog is written, `/review:check-readiness` runs automatically. It verifies the planning docs are complete, internally consistent, and cross-referenced. A PASS means the pipeline is coherent. A CONCERNS or FAIL means something needs a second pass — the command shows you what and asks whether to fix now or proceed with warnings.
 
@@ -115,7 +115,7 @@ Specialize reads `architecture/overview.md` and:
 - Seeds the memory system with ADRs and architectural patterns at confidence 0.9
 - Audits the skill inventory for relevance and flags framework gaps for you to fill later
 
-For Lane, specialize produces a `cli-designer.md` and a `sqlite-architect.md` agent, appends Node/TypeScript/SQLite context to the eleven baseline agents, and seeds six memory entries from the architecture's ADRs. The command shows you the full report before moving on. If it surfaces skill gaps you care about, note them — you can create them later via [`/create:component`](reference/commands.md) or defer.
+For Lane, specialize produces a `cli-designer.md` and a `sqlite-architect.md` agent, appends Node/TypeScript/SQLite context to the eleven baseline agents, and seeds six memory entries from the architecture's ADRs. The command shows you the full report before moving on. If it surfaces skill gaps you care about, note them — you can create them later via [`/create:component`](commands.md) or defer.
 
 ### Wrap-up — Project Context and the First Commit
 
@@ -140,11 +140,11 @@ You now have a project that Claude Code understands on its own terms. The next s
 
 Three reasonable next moves, in rough order of most to least structural:
 
-1. **`/do {first-story-id}`** — implement the first story from `backlog.md`. `/do` reads the story's acceptance criteria, plans the work, routes to the right agent (Main Agent direct if small, delegate to `general-purpose` if not), runs the build/test gate, and commits. This is the daily loop. See [`reference/commands.md`](reference/commands.md) for the full command reference.
+1. **`/do {first-story-id}`** — implement the first story from `backlog.md`. `/do` reads the story's acceptance criteria, plans the work, routes to the right agent (Main Agent direct if small, delegate to `general-purpose` if not), runs the build/test gate, and commits. This is the daily loop. See [`reference/commands.md`](commands.md) for the full command reference.
 2. **`/review:personalize`** (optional) — give the eleven baseline agents names and soul-level identities. After running, `code-reviewer` stops being a description in YAML and starts being *Gavel, the magistrate of the merge queue*. Cosmetic until you work at scale, at which point referring to agents by name becomes how you think about the team. Walkthrough in [`guides/personalize.md`](guides/personalize.md).
 3. **`/end`** — save session context to a per-run file under `docs/.output/handoffs/` before closing the terminal. The handoff is what `/prime` reads next session. No more "where was I."
 
-If you want to extend the system itself — a custom command for your team's workflow, a skill for your domain — see [`guides/contributing.md`](guides/contributing.md). For a wider map of what already exists, [`reference/system-map.md`](reference/system-map.md) inventories every agent, command, skill, and hook.
+If you want to extend the system itself — a custom command for your team's workflow, a skill for your domain — see [`guides/contributing.md`](guides/contributing.md). For a wider map of what already exists, [`reference/system-map.md`](system-map.md) inventories every agent, command, skill, and hook.
 
 ## See Also
 
@@ -152,5 +152,5 @@ If you want to extend the system itself — a custom command for your team's wor
 - [`guides/personalize.md`](guides/personalize.md) — the `/review:personalize` walkthrough, with the zone map that keeps specialize and personalize non-overlapping
 - [`guides/contributing.md`](guides/contributing.md) — adding a new agent, command, or skill without breaking the three-tier architecture
 - [`concepts/memory.md`](concepts/memory.md) — how the memory system compounds across sessions
-- [`reference/commands.md`](reference/commands.md) — canonical reference for every slash command
-- [`reference/system-map.md`](reference/system-map.md) — full inventory of agents, commands, skills, and hooks
+- [`reference/commands.md`](commands.md) — canonical reference for every slash command
+- [`reference/system-map.md`](system-map.md) — full inventory of agents, commands, skills, and hooks

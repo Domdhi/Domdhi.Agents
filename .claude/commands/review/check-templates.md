@@ -110,6 +110,21 @@ It scans the template fileset (`.claude/`, `tools/`, `docs/reference/`, `docs/en
 
 Exit code is 0 when clean or WARN-only, 1 on any ERROR. Same operating standard as 2c/2d: fold output into Step 9's Issues Found as **PATH DRIFT**, **fix it in place** (update the stale literal to the resolver's current shape — or, for an intentional legacy example, append a `path-lint:keep` marker to that line), then re-run to confirm green.
 
+### 2f. fs-safe Trust-Boundary Lint
+
+Assert every raw filesystem write/delete in a module that crosses the adopter trust boundary (writes into a *target/adopter* directory, not a workshop-local path) is routed through the symlink-safe wrappers in `_lib/fs-safe.js` — the mechanical form of `[[fs-safe-hardening-needs-every-callsite-not-just-most]]`, which the `full-review-260716` retro's own fresh review pass re-discovered a THIRD time (fleet.js/publish.js's `pruneEmptyDirs`). Run the deterministic checker:
+
+```bash
+node .claude/core/fs-safe-lint.js
+```
+
+It scans a hardcoded fileset — `install.js`, `template-updater.js`, `scaffold.js`, `_lib/{skill,agent}-merger.js`, `_lib/zone-copy.js`, `_lib/settings-merger.js`, `tools/fleet.js`, `tools/publish.js` — the confirmed adopter-trust-boundary-crossing modules, deliberately NOT `core/`/`hooks/`/`tools/`-wide (that would false-positive on the many legitimate workshop-local raw fs calls elsewhere, like gate.js reports or telemetry logs). Applies two rules:
+
+- **UNGUARDED_WRITE** (ERROR) — a raw `fs.writeFileSync`/`fs.copyFileSync`/`fs.cpSync` call with no `fs-safe-lint:local` marker on the line
+- **UNGUARDED_DELETE** (ERROR) — a raw `fs.rmSync`/`fs.rmdirSync` call with no marker AND no `assertNoSymlinkedAncestor()` guard call within the preceding 6 lines (the established `pruneEmptyDirs` pattern)
+
+Exit code is 0 when clean, 1 on any ERROR. Same operating standard as 2c/2d/2e: fold output into Step 9's Issues Found as **UNGUARDED FS CALL**, **fix it in place** (route through `safeWrite`/`safeCopy`/`safeDelete`, or add an `assertNoSymlinkedAncestor()` guard immediately before the delete — or, for a hand-verified workshop-local destination like `os.tmpdir()` scratch or `VERSION_PATH`, append a `fs-safe-lint:local` marker to that line), then re-run to confirm green. If a new module starts writing into an adopter tree, add it to `TRUST_BOUNDARY_FILES` in `fs-safe-lint.js`.
+
 ### 3. Scan Hook Inventory
 
 ```

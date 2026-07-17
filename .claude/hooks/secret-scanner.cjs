@@ -31,7 +31,8 @@
 const fs = require('fs');
 const path = require('path');
 const {
-    shouldSkipPath,
+    isHardSkipPath,
+    isTestFilePath,
     scanContent,
     formatFindings,
     readStdin,
@@ -101,7 +102,13 @@ function processEvent(parsedJson) {
     const toolInput = parsedJson.tool_input || {};
     const filePath = toolInput.file_path || toolInput.notebook_path || '';
 
-    if (shouldSkipPath(filePath)) return null;
+    // Hard-skip (scanner internals, VCS/package-manager plumbing) is a full
+    // pass. A test/spec file is NOT hard-skipped — a real provider secret
+    // pasted there is still a leak — it's scanned below in namedProvidersOnly
+    // mode instead (only the generic Password/Secret Assignment patterns,
+    // which false-positive on fixture noise, are suppressed).
+    if (isHardSkipPath(filePath)) return null;
+    const namedProvidersOnly = isTestFilePath(filePath);
 
     // Scan each content piece separately so a finding's line number refers to
     // the piece it was found in (a concatenated pseudo-document would report
@@ -122,7 +129,7 @@ function processEvent(parsedJson) {
     const findings = [];
     let sawHighRiskFile = false;
     for (const piece of pieces) {
-        for (const f of scanContent(piece.text, filePath)) {
+        for (const f of scanContent(piece.text, filePath, { namedProvidersOnly })) {
             if (f.type === 'HIGH_RISK_FILE') {
                 // Path-derived, identical for every piece — report once.
                 if (sawHighRiskFile) continue;
@@ -156,9 +163,11 @@ function processEvent(parsedJson) {
 function scanFile(filePath) {
     const resolved = path.resolve(filePath);
 
-    // Skip-path check comes first — cheaper than fs.existsSync and means skipped
-    // paths don't need to exist on disk (matches intent: "skip regardless").
-    if (shouldSkipPath(resolved)) {
+    // Hard-skip check comes first — cheaper than fs.existsSync and means
+    // skipped paths don't need to exist on disk. A test/spec file is NOT
+    // hard-skipped — see processEvent's comment — it's scanned below in
+    // namedProvidersOnly mode.
+    if (isHardSkipPath(resolved)) {
         return { findings: null, skipped: true };
     }
 
@@ -167,8 +176,62 @@ function scanFile(filePath) {
     }
 
     const content = fs.readFileSync(resolved, 'utf8');
-    const findings = scanContent(content, filePath);
+    const findings = scanContent(content, filePath, { namedProvidersOnly: isTestFilePath(resolved) });
     return { findings, skipped: false };
+}
+
+/**
+ * Determine whether a staged file is binary, via `git diff --cached --numstat`
+ * scoped to that single file (numstat reports "-\t-\t<path>" for a binary
+ * diff, and "<added>\t<deleted>\t<path>" for a text diff). Only called on the
+ * (rare) path where `git show :<file>` itself failed, so the extra subprocess
+ * cost is paid only for files that need the classification.
+ *
+ * @param {string} file - staged file path, as reported by `git diff --name-only`
+ * @param {string} root - project root (cwd for the git subprocess)
+ * @returns {boolean}
+ */
+function isBinaryStagedFile(file, root) {
+    try {
+        const { execFileSync } = require('child_process');
+        const output = execFileSync(
+            'git', ['diff', '--cached', '--numstat', '--', file],
+            { cwd: root, encoding: 'utf8', windowsHide: true }
+        ).trim();
+        return /^-\t-\t/.test(output);
+    } catch {
+        // Can't even determine binary-ness — treat as NOT binary so the caller
+        // fails closed rather than silently skipping.
+        return false;
+    }
+}
+
+/**
+ * Decide how to handle a staged file whose content `git show` failed to read.
+ * A detectably binary file is skipped — there's no secret text to leak in
+ * binary content, matching the long-standing behavior. Any OTHER failure
+ * (maxBuffer exceeded, a transient git error, etc.) on a non-binary file now
+ * FAILS the commit closed — warn-and-continue previously let a staged secret
+ * sail through silently whenever `git show` happened to error on it, which is
+ * exactly the failure mode a large generated report (the likeliest place to
+ * carry a leaked key) would trigger.
+ *
+ * @param {string} file
+ * @param {Error} err - the error `git show` threw
+ * @param {string} root - project root (cwd for the git subprocess)
+ * @returns {{ action: 'skip' | 'fail', message: string }}
+ */
+function classifyUnreadableStagedFile(file, err, root) {
+    if (isBinaryStagedFile(file, root)) {
+        return { action: 'skip', message: `[secret-scanner] "${file}" is binary — skipping.` };
+    }
+    return {
+        action: 'fail',
+        message:
+            `[secret-scanner] FAIL-CLOSED: could not read staged content for "${file}" ` +
+            `(${(err && err.message) || 'unknown error'}) and it is not detectably binary. ` +
+            `Blocking the commit — verify the file manually and retry.`,
+    };
 }
 
 // ============================================
@@ -179,14 +242,38 @@ function scanFile(filePath) {
  * Claude Code hook mode — reads tool input from stdin
  */
 async function runClaudeHook() {
-    const input = await readStdin();
+    let input;
+    try {
+        // failClosedOnTimeout: a wedged pipe or a truncated read must BLOCK, not
+        // silently pass through as "nothing to scan" — see the readStdin doc
+        // comment in secret-patterns.cjs for why this differs from every other
+        // blocking hook's bounded-and-fail-open stdin timeout.
+        input = await readStdin({ failClosedOnTimeout: true });
+    } catch (err) {
+        recordScannerBlock();
+        process.stderr.write(
+            '[secret-scanner] FAIL-CLOSED: stdin read did not complete — blocking the write to be safe.\n' +
+            '  ' + (err && err.message ? err.message : String(err)) + '\n'
+        );
+        process.exit(2);
+    }
     if (!input) process.exit(0);
 
     let data;
     try {
         data = JSON.parse(input);
     } catch {
-        process.exit(0); // Not JSON, nothing to scan
+        // FAIL CLOSED. Malformed JSON on this channel is not expected in
+        // ordinary operation (Claude Code's own harness writes it) — the
+        // realistic cause is a truncated/garbled stdin read, which could well
+        // contain a real secret in the part that didn't parse. Blindly
+        // treating unparseable input as "nothing to scan" would silently let
+        // that content through unscanned. Block instead.
+        recordScannerBlock();
+        process.stderr.write(
+            '[secret-scanner] FAIL-CLOSED: could not parse stdin payload as JSON — blocking the write to be safe.\n'
+        );
+        process.exit(2);
     }
 
     let result;
@@ -243,7 +330,9 @@ async function runGitPrecommit() {
     const allFindings = [];
 
     for (const file of stagedFiles) {
-        if (shouldSkipPath(file)) continue;
+        // Hard-skip only — a test/spec file is still scanned below in
+        // namedProvidersOnly mode, same as the Claude-hook path.
+        if (isHardSkipPath(file)) continue;
 
         // Get the staged content (not the working copy)
         let content;
@@ -256,18 +345,18 @@ async function runGitPrecommit() {
                 { cwd: getProjectRoot(), encoding: 'utf8', windowsHide: true, maxBuffer: 64 * 1024 * 1024 }
             );
         } catch (err) {
-            // File might be binary or deleted — but a TRANSIENT `git show` error
-            // on a file that DOES carry a secret would otherwise be skipped
-            // silently. Surface skips at precommit so the gap is visible.
-            console.error(
-                `[secret-scanner] WARNING: could not read staged content for "${file}" ` +
-                `(${(err && err.message) || 'unknown error'}); skipping. ` +
-                `If this file may contain a secret, verify it manually.`
-            );
-            continue;
+            const decision = classifyUnreadableStagedFile(file, err, getProjectRoot());
+            if (decision.action === 'skip') {
+                console.error(decision.message);
+                continue;
+            }
+            console.error(decision.message);
+            console.error('\nCommit blocked. Remove secrets and try again.');
+            console.error('To bypass (NOT recommended): git commit --no-verify\n');
+            process.exit(1);
         }
 
-        const findings = scanContent(content, file);
+        const findings = scanContent(content, file, { namedProvidersOnly: isTestFilePath(file) });
         allFindings.push(...findings);
     }
 
@@ -313,7 +402,13 @@ function runFileScan(filePath) {
 // Exports (for tests and programmatic use)
 // ============================================
 
-module.exports = { processEvent, scanFile, recordScannerBlock };
+module.exports = {
+    processEvent,
+    scanFile,
+    recordScannerBlock,
+    isBinaryStagedFile,
+    classifyUnreadableStagedFile,
+};
 
 // ============================================
 // Entry point

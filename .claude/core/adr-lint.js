@@ -110,7 +110,13 @@ function gather(repoRoot) {
   // ADR-shaped files anywhere else under docs/ (skip generated + canonical dir).
   const orphans = [];
   const walk = (dir) => {
-    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+    let entries;
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
       if (e.name === '.output' || e.name === 'node_modules' || e.name === '.git') continue;
       const p = path.join(dir, e.name);
       if (e.isDirectory()) { if (p !== adrDir) walk(p); }

@@ -12,7 +12,9 @@
  *                    update-config.json). Note: settings.json has a section-aware
  *                    --merge escape hatch in template-updater.js (template-owned sections
  *                    hooks + plansDirectory + statusLine overwritten; project-owned
- *                    sections preserved).
+ *                    sections preserved; adopter-AUTHORED hook entries — scripts in
+ *                    the adopter's hooks/ dir the template doesn't ship — are
+ *                    re-inserted, not clobbered; see _lib/settings-merger.js).
  *                    classifyClaudeFile() still returns 'project' for settings.json —
  *                    the special-casing lives in template-updater, not here.
  *   Mixed zone     — skip with warning, or merge with --merge (agents/*.md)

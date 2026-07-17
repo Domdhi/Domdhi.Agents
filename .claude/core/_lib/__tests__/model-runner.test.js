@@ -16,6 +16,7 @@ const {
     tryParseInnerJson,
     extractTokenCounts,
     invokeModel,
+    buildInvokeArgs,
 } = require('../model-runner');
 
 // Note: `invokeModel` + `checkClaudeCli` hit the real subprocess by design.
@@ -36,6 +37,101 @@ describe('invokeModel model-id validation', () => {
         expect(invokeModel('hi', { model: 'x$(whoami)', logTag: null })).toBeNull();
         expect(invokeModel('hi', { model: 'a`id`', logTag: null })).toBeNull();
         expect(invokeModel('hi', { model: 'a b', logTag: null })).toBeNull();
+    });
+});
+
+// ─── buildInvokeArgs tool-grant (Wave 3 Story 3A) ────────────────────────────
+
+describe('buildInvokeArgs tool grant', () => {
+    // The memory LLM utilities are text->text and embed UNTRUSTED text in the
+    // prompt. The old argv hardcoded `--allowedTools Read`, letting an injection
+    // payload read a secret file and echo it into a tracked memory JSON. Default
+    // must now grant NO tools; opt-in is per-call only.
+    it('grants NO tools by default (exact argv, no Read, --tools "")', () => {
+        const args = buildInvokeArgs('the prompt', 'claude-sonnet-4-6');
+        expect(args).toEqual([
+            '-p', 'the prompt',
+            '--model', 'claude-sonnet-4-6',
+            '--tools', '',
+            '--output-format', 'json', '--bare',
+        ]);
+        // No tool is granted, by name or allowlist.
+        expect(args).not.toContain('Read');
+        expect(args).not.toContain('--allowedTools');
+    });
+
+    it('grants NO tools when allowedTools is an empty array', () => {
+        const args = buildInvokeArgs('p', 'claude-sonnet-4-6', []);
+        expect(args).not.toContain('Read');
+        expect(args).not.toContain('--allowedTools');
+        const ti = args.indexOf('--tools');
+        expect(ti).toBeGreaterThan(-1);
+        expect(args[ti + 1]).toBe(''); // provable zero-tools form
+    });
+
+    it('opts back in only when allowedTools is non-empty (available AND allowed)', () => {
+        const args = buildInvokeArgs('p', 'claude-sonnet-4-6', ['Read']);
+        expect(args).toEqual([
+            '-p', 'p',
+            '--model', 'claude-sonnet-4-6',
+            '--tools', 'Read', '--allowedTools', 'Read',
+            '--output-format', 'json', '--bare',
+        ]);
+    });
+
+    it('joins multiple opt-in tools with commas', () => {
+        const args = buildInvokeArgs('p', 'claude-sonnet-4-6', ['Read', 'Grep']);
+        const ti = args.indexOf('--tools');
+        const ai = args.indexOf('--allowedTools');
+        expect(args[ti + 1]).toBe('Read,Grep');
+        expect(args[ai + 1]).toBe('Read,Grep');
+    });
+});
+
+// invokeModel must thread the no-tools default all the way to execFileSync argv:
+// the three real callers (curator/extractor/benchmark) pass no allowedTools, so
+// the spawned CLI must carry `--tools ''` and NO Read grant.
+describe('invokeModel default argv carries no tool grant', () => {
+    function withMockedExecFileSync(fn) {
+        const mockExecFileSync = vi.fn(() => 'ok');
+        const fakeChildProcess = { execFileSync: mockExecFileSync, execSync: () => '' };
+        require.cache['child_process'] = {
+            id: 'child_process', filename: 'child_process', loaded: true,
+            exports: fakeChildProcess, children: [], paths: [], parent: null,
+        };
+        const modelRunnerPath = require.resolve('../model-runner');
+        const prior = require.cache[modelRunnerPath];
+        delete require.cache[modelRunnerPath];
+        try {
+            const fresh = require('../model-runner');
+            fn(fresh, mockExecFileSync);
+        } finally {
+            delete require.cache['child_process'];
+            delete require.cache[modelRunnerPath];
+            if (prior) require.cache[modelRunnerPath] = prior;
+            else require('../model-runner');
+        }
+    }
+
+    it('spawns with --tools "" and never grants Read by default', () => {
+        withMockedExecFileSync((fresh, mock) => {
+            const out = fresh.invokeModel('hello', { model: 'claude-sonnet-4-6', logTag: null });
+            expect(out).toBe('ok');
+            const [, args] = mock.mock.calls[0];
+            expect(args).not.toContain('Read');
+            expect(args).not.toContain('--allowedTools');
+            const ti = args.indexOf('--tools');
+            expect(args[ti + 1]).toBe('');
+        });
+    });
+
+    it('threads a per-call allowedTools opt-in into argv', () => {
+        withMockedExecFileSync((fresh, mock) => {
+            fresh.invokeModel('hello', { model: 'claude-sonnet-4-6', logTag: null, allowedTools: ['Read'] });
+            const [, args] = mock.mock.calls[0];
+            expect(args.indexOf('--allowedTools')).toBeGreaterThan(-1);
+            expect(args[args.indexOf('--allowedTools') + 1]).toBe('Read');
+        });
     });
 });
 

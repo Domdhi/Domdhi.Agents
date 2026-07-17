@@ -7,6 +7,8 @@ const {
     PATTERNS,
     scanContent,
     shouldSkipPath,
+    isHardSkipPath,
+    isTestFilePath,
     formatFindings,
     redact,
     redactSecretsInText,
@@ -20,6 +22,14 @@ const {
  */
 function fakeAwsKey() {
     return 'AKIA' + 'IOSFODNN7' + 'EXAMPLE123456';   // 16 chars after AKIA
+}
+
+// A syntactically valid AWS-shaped key that is NOT AWS's documented example
+// (AKIAIOSFODNN7EXAMPLE, which fakeAwsKey() above happens to produce once the
+// regex trims it to 16 chars) — used to prove the placeholder exemption
+// doesn't overreach to a plausible-but-different key.
+function fakeAwsKeyNotPlaceholder() {
+    return 'AKIA' + 'QW3ERTY7UIOP' + 'AS2D';   // 16 chars after AKIA
 }
 
 function fakeOpenAiKey() {
@@ -521,7 +531,12 @@ describe('scanContent', () => {
         it('scanContent_dummyPrefixNamedSecret_stillDetected', () => {
             // The allowlist never suppresses a named-provider secret — dedicated patterns
             // bypass PLACEHOLDER_PATTERNS entirely, so a dummy prefix can't smuggle one through.
-            const content = 'awsKey = "test-AKIAIOSFODNN7EXAMPLE"';
+            // Key assembled from fragments so no whole AWS-example literal exists in
+            // THIS source file — story 3C now scans test files with the named-provider
+            // patterns, and a contiguous literal here would trip the repo's own
+            // pre-commit scan and block committing this file. Runtime value unchanged,
+            // so detection is still asserted below.
+            const content = 'awsKey = "test-' + 'AKIA' + 'IOSFODNN7EXAMPLE"';
             const findings = scanContent(content, 'config.js');
             expect(findings.length).toBeGreaterThan(0);
         });
@@ -530,6 +545,115 @@ describe('scanContent', () => {
             const findings = scanContent('', 'empty.js');
             expect(findings).toEqual([]);
         });
+    });
+
+    // ─── namedProvidersOnly mode (test-file scanning) ────────────────────────
+    // Test/spec files are no longer wholesale-skipped: a real provider secret
+    // pasted there is still a leak. Callers pass { namedProvidersOnly: true }
+    // for these paths, which suppresses ONLY the generic Password/Secret
+    // Assignment patterns (fixture false-positive noise) while every
+    // named-provider pattern keeps firing.
+    describe('scanContent_namedProvidersOnly', () => {
+        it('scanContent_namedProvidersOnly_awsKeyInTestFile_stillDetected', () => {
+            const content = `const key = "${fakeAwsKeyNotPlaceholder()}";`;
+            const findings = scanContent(content, 'foo.test.js', { namedProvidersOnly: true });
+            expect(findings.map(f => f.name)).toContain('AWS Access Key');
+        });
+
+        it('scanContent_namedProvidersOnly_awsDocumentedExampleKey_exempted', () => {
+            // AWS's own published example access key (AKIAIOSFODNN7EXAMPLE) is
+            // extremely common in SDK test fixtures/READMEs — it must not block
+            // a commit when it shows up in a test file. fakeAwsKey() happens to
+            // produce this exact literal once the regex trims it to 16 chars.
+            const content = `const key = "${fakeAwsKey()}";`;
+            const findings = scanContent(content, 'foo.test.js', { namedProvidersOnly: true });
+            expect(findings.map(f => f.name)).not.toContain('AWS Access Key');
+        });
+
+        it('scanContent_namedProvidersOnly_awsDocumentedExampleKey_notExemptedOutsideTestFileMode', () => {
+            // The exemption is scoped to namedProvidersOnly (test-file) mode only —
+            // default-mode scanning of a non-test file still flags it.
+            const content = `const key = "${fakeAwsKey()}";`;
+            const findings = scanContent(content, 'config.js');
+            expect(findings.map(f => f.name)).toContain('AWS Access Key');
+        });
+
+        it('scanContent_namedProvidersOnly_anthropicKeyInTestFile_stillDetected', () => {
+            const content = `ANTHROPIC_API_KEY=${fakeAnthropicKey()}`;
+            const findings = scanContent(content, 'foo.test.js', { namedProvidersOnly: true });
+            expect(findings.map(f => f.name)).toContain('Anthropic Key');
+        });
+
+        it('scanContent_namedProvidersOnly_genericPasswordAssignment_suppressed', () => {
+            const content = 'password = "hunter2hunter2"';
+            const findings = scanContent(content, 'foo.test.js', { namedProvidersOnly: true });
+            expect(findings.map(f => f.name)).not.toContain('Password Assignment');
+        });
+
+        it('scanContent_namedProvidersOnly_genericSecretAssignment_suppressed', () => {
+            const content = 'apiKey = "aB3xK9mP2qR7tY1wZ5nL8vC4"';
+            const findings = scanContent(content, 'foo.spec.ts', { namedProvidersOnly: true });
+            expect(findings.map(f => f.name)).not.toContain('Secret Assignment');
+        });
+
+        it('scanContent_namedProvidersOnly_genericUnquotedAssignment_suppressed', () => {
+            const content = 'export DB_PASSWORD=SuperSecretPass123';
+            const findings = scanContent(content, '__tests__/config.js', { namedProvidersOnly: true });
+            expect(findings.map(f => f.name)).not.toContain('Password Assignment (Unquoted)');
+        });
+
+        it('scanContent_defaultMode_nonTestFile_namedAndGenericBothDetected', () => {
+            // Non-test-file behavior is unchanged: no options arg → both classes fire.
+            const content = `const key = "${fakeAwsKey()}";\npassword = "hunter2hunter2"`;
+            const findings = scanContent(content, 'config.js');
+            const names = findings.map(f => f.name);
+            expect(names).toContain('AWS Access Key');
+            expect(names).toContain('Password Assignment');
+        });
+    });
+});
+
+// ─── isHardSkipPath / isTestFilePath ──────────────────────────────────────────
+
+describe('isHardSkipPath', () => {
+    it('isHardSkipPath_nodeModules_returnsTrue', () => {
+        expect(isHardSkipPath('/project/node_modules/lodash/index.js')).toBe(true);
+    });
+
+    it('isHardSkipPath_gitDirectory_returnsTrue', () => {
+        expect(isHardSkipPath('/project/.git/config')).toBe(true);
+    });
+
+    it('isHardSkipPath_testFile_returnsFalse', () => {
+        // Test files are NOT hard-skipped — they're scanned in namedProvidersOnly mode.
+        expect(isHardSkipPath('/project/src/auth.test.js')).toBe(false);
+        expect(isHardSkipPath('/project/src/__tests__/auth.js')).toBe(false);
+    });
+
+    it('isHardSkipPath_regularSourceFile_returnsFalse', () => {
+        expect(isHardSkipPath('/project/src/index.js')).toBe(false);
+    });
+});
+
+describe('isTestFilePath', () => {
+    it('isTestFilePath_testJs_returnsTrue', () => {
+        expect(isTestFilePath('/project/src/auth.test.js')).toBe(true);
+    });
+
+    it('isTestFilePath_specTs_returnsTrue', () => {
+        expect(isTestFilePath('/project/src/auth.spec.ts')).toBe(true);
+    });
+
+    it('isTestFilePath_testsDirectory_returnsTrue', () => {
+        expect(isTestFilePath('/project/src/__tests__/auth.js')).toBe(true);
+    });
+
+    it('isTestFilePath_regularSourceFile_returnsFalse', () => {
+        expect(isTestFilePath('/project/src/index.js')).toBe(false);
+    });
+
+    it('isTestFilePath_nodeModules_returnsFalse', () => {
+        expect(isTestFilePath('/project/node_modules/lodash/index.js')).toBe(false);
     });
 });
 
@@ -691,6 +815,38 @@ describe('redact', () => {
         const val = '1234567890123';
         const result = redact(val);
         expect(result).toContain('...');
+    });
+
+    // ─── redact — named-provider secrets never leak real bytes ───────────────
+    describe('redact_namedProvider', () => {
+        it('redact_awsKey_omitsLastFourRealBytes', () => {
+            const value = fakeAwsKey();
+            const result = redact(value, 'AWS Access Key');
+            expect(result).not.toContain(value.slice(-4));
+            expect(result).not.toContain(value);
+        });
+
+        it('redact_anthropicKey_omitsAnyRealBytes', () => {
+            const value = fakeAnthropicKey();
+            const result = redact(value, 'Anthropic Key');
+            expect(result).not.toContain(value.slice(-4));
+            expect(result).not.toContain(value.slice(0, 8));
+        });
+
+        it('redact_namedProvider_includesProviderNameAndLength', () => {
+            const value = fakeAwsKey();
+            const result = redact(value, 'AWS Access Key');
+            expect(result).toContain('AWS Access Key');
+            expect(result).toContain(String(value.length));
+        });
+
+        it('redact_genericPatternName_keepsOriginalHeadTailBehavior', () => {
+            // Passing a GENERIC pattern name explicitly preserves the original
+            // head+tail behavior (backward compatible with the no-arg call).
+            const value = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+            const result = redact(value, 'Secret Assignment');
+            expect(result.endsWith(value.slice(-4))).toBe(true);
+        });
     });
 });
 

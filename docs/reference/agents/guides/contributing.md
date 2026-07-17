@@ -2,7 +2,7 @@
 
 This guide is for adopters who want to extend the `.claude/` system with a new agent, command, or skill. The template ships with 11 agents, 39 commands, and 23 skills as of this writing — enough for most projects to get moving. But every project eventually needs something the template doesn't have: a domain-specific skill, a specialist agent for an unusual stack, a workflow command unique to your team. This guide walks through how to add one without breaking the three-tier architecture.
 
-For a tour of what already exists, see [`../concepts/commands.md`](../concepts/commands.md), [`../concepts/agents.md`](../concepts/agents.md), and [`../concepts/skills.md`](../concepts/skills.md). For the inventory and wiring map, see [`../reference/system-map.md`](../reference/system-map.md). For the abstract command reference, see [`../reference/commands.md`](../reference/commands.md).
+For a tour of what already exists, see [`../concepts/commands.md`](../concepts/commands.md), [`../concepts/agents.md`](../concepts/agents.md), and [`../concepts/skills.md`](../concepts/skills.md). For the inventory and wiring map, see [`../system-map.md`](../system-map.md). For the abstract command reference, see [`../commands.md`](../commands.md).
 
 ## The Three-Tier Refresher
 
@@ -241,7 +241,7 @@ Releases are cut on natural milestones — when a meaningful batch of agent/skil
 - [`../concepts/commands.md`](../concepts/commands.md) — the 39 commands and the 4-category taxonomy
 - [`../concepts/agents.md`](../concepts/agents.md) — the 11 baseline agents, model hierarchy, dispatch mechanics
 - [`../concepts/skills.md`](../concepts/skills.md) — the 23 skills and the three consumption paths
-- [`../reference/system-map.md`](../reference/system-map.md) — full inventory and wiring map
-- [`../reference/commands.md`](../reference/commands.md) — abstract reference for every command, including `/create:component` and `/review:check-templates`
+- [`../system-map.md`](../system-map.md) — full inventory and wiring map
+- [`../commands.md`](../commands.md) — abstract reference for every command, including `/create:component` and `/review:check-templates`
 - [`./specialize.md`](./specialize.md) — layering tech-stack context on top of baseline agents
 - [`./personalize.md`](./personalize.md) — giving agents names and soul-level identity

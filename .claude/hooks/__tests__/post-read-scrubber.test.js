@@ -15,7 +15,7 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 
-const { processEvent, extractOutput, inferToolKind, capForScan, BASH_SCAN_HEAD_BYTES, BASH_SCAN_TAIL_BYTES } = require('../post-read-scrubber.cjs');
+const { processEvent, extractOutput, inferToolKind } = require('../post-read-scrubber.cjs');
 
 // ─── Fake secret builders (runtime concatenation avoids pre-commit hook) ──────
 
@@ -204,26 +204,33 @@ describe('post-read-scrubber', () => {
         });
     });
 
-    // F70 (council-260715-2244): the 55-regex sweep over Bash stdout is capped —
-    // head + tail only past the byte cap, so a 200k-line build log can't add
-    // ~1s+ of synchronous hook latency to every Bash call.
-    describe('capForScan (F70 Bash stdout cap)', () => {
-        it('returns small input unchanged', () => {
-            expect(capForScan('short output')).toBe('short output');
+    // F70/F9 (260716 full-review MED, SEC-4): post-read-scrubber previously
+    // capped the 55-regex sweep over Bash stdout to a head+tail 64 KB window
+    // (128 KB total), so a secret ONLY in the skipped middle of a large log
+    // produced no finding, no warning, and no redaction. The cap was removed
+    // in favor of an always-full-length scan (early-exit on clean content is
+    // the cost mitigation instead). These tests pin the fix.
+    describe('full-length scan (no head/tail cap)', () => {
+        const OLD_CAP_BYTES = 128 * 1024; // the retired 64+64 KB cap, for sizing fixtures past it
+
+        it('small output is still scanned and redacted (unchanged behavior)', () => {
+            const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+            try {
+                processEvent({
+                    tool_name: 'Bash',
+                    tool_input: { command: 'env' },
+                    tool_response: { stdout: `AWS_KEY=${fakeAwsKey()}` },
+                });
+                const out = stdoutSpy.mock.calls.map(c => c[0]).join('');
+                expect(out).toMatch(/<REDACTED:/);
+            } finally {
+                stdoutSpy.mockRestore();
+            }
         });
 
-        it('bounds large input to head + tail (never scans the full log)', () => {
-            const line = 'npm WARN deprecated something@1.0.0: use another package\n';
-            const big = line.repeat(Math.ceil((BASH_SCAN_HEAD_BYTES + BASH_SCAN_TAIL_BYTES) * 4 / line.length));
-            const capped = capForScan(big);
-            expect(capped.length).toBeLessThanOrEqual(BASH_SCAN_HEAD_BYTES + BASH_SCAN_TAIL_BYTES + 1);
-            expect(capped.startsWith(big.slice(0, 200))).toBe(true);
-            expect(capped.endsWith(big.slice(-200))).toBe(true);
-        });
-
-        it('a secret in the HEAD or TAIL of an over-cap Bash log is still detected', () => {
+        it('a secret in the HEAD or TAIL of a >128 KB Bash log is still detected', () => {
             const filler = 'x'.repeat(200) + '\n';
-            const noise = filler.repeat(Math.ceil((BASH_SCAN_HEAD_BYTES + BASH_SCAN_TAIL_BYTES) * 2 / filler.length));
+            const noise = filler.repeat(Math.ceil((OLD_CAP_BYTES * 2) / filler.length));
             for (const stdout of [`AWS_KEY=${fakeAwsKey()}\n${noise}`, `${noise}\nAWS_KEY=${fakeAwsKey()}`]) {
                 const writes = [];
                 const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation((s) => { writes.push(String(s)); return true; });
@@ -236,12 +243,12 @@ describe('post-read-scrubber', () => {
             }
         });
 
-        it('DOCUMENTED DEGRADATION: a secret ONLY in the skipped middle of an over-cap log is NOT detected', () => {
-            // This pins the F70 trade-off exactly. If the cap is ever widened,
-            // narrowed, or removed, this test flags the change in either direction.
+        it('FIXED: a secret ONLY in the middle of a >128 KB Bash log IS now detected (was previously missed)', () => {
             const filler = 'x'.repeat(200) + '\n';
-            const half = filler.repeat(Math.ceil((BASH_SCAN_HEAD_BYTES + BASH_SCAN_TAIL_BYTES) / filler.length));
+            const half = filler.repeat(Math.ceil(OLD_CAP_BYTES / filler.length));
             const stdout = `${half}AWS_KEY=${fakeAwsKey()}\n${half}`;
+            expect(stdout.length).toBeGreaterThan(OLD_CAP_BYTES);
+
             const writes = [];
             const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation((s) => { writes.push(String(s)); return true; });
             let result;
@@ -250,8 +257,8 @@ describe('post-read-scrubber', () => {
             } finally {
                 stdoutSpy.mockRestore();
             }
-            expect(result).toBeNull();
-            expect(writes.join('')).not.toContain('REDACTED');
+            expect(result).toBeNull(); // still non-blocking
+            expect(writes.join('')).toContain('REDACTED');
         });
     });
 });

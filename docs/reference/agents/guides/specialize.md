@@ -4,7 +4,7 @@ After you've written your architecture document, running `/review:specialize` cu
 
 This guide walks through it on a concrete Next.js 15 project. The command itself is tech-agnostic — nothing about it is Next.js-specific. We use Next.js as the scenario so the shape of inputs and outputs is concrete. Swap your stack in and the same process applies.
 
-For the abstract command reference, see [`../reference/commands.md`](../reference/commands.md). For the zone boundaries `/review:specialize` respects when writing to agent files, see [`../reference/customization.md`](../reference/customization.md). For the inventory of baseline agents it extends, see [`../concepts/agents.md`](../concepts/agents.md).
+For the abstract command reference, see [`../commands.md`](../commands.md). For the zone boundaries `/review:specialize` respects when writing to agent files, see [`../customization.md`](../customization.md). For the inventory of baseline agents it extends, see [`../concepts/agents.md`](../concepts/agents.md).
 
 ## Before You Run
 
@@ -109,7 +109,7 @@ The other 10 agents get their own slices. `qa-engineer` gets the testing strateg
 
 Each agent's Project Context entirely replaces any previous one — if you re-specialize after ADR-004 lands, the section is regenerated, not appended to. This is the idempotency guarantee.
 
-**Soul Zone preservation.** If you've already run [`/review:personalize`](../reference/commands.md#reviewpersonalize) (or will later), each agent has a personality section above its skills list — identity, decision philosophy, working style. `/review:specialize` does not touch that. It finds the `## Project Context` heading (or appends after the soul zone if it doesn't exist yet) and operates strictly below that anchor. Run order between `specialize` and `personalize` does not matter — they own non-overlapping zones.
+**Soul Zone preservation.** If you've already run [`/review:personalize`](../commands.md#reviewpersonalize) (or will later), each agent has a personality section above its skills list — identity, decision philosophy, working style. `/review:specialize` does not touch that. It finds the `## Project Context` heading (or appends after the soul zone if it doesn't exist yet) and operates strictly below that anchor. Run order between `specialize` and `personalize` does not matter — they own non-overlapping zones.
 
 ### Stack-specific agents the command creates
 
@@ -121,7 +121,7 @@ Beyond the 11 baseline agents, `/review:specialize` scans your architecture for 
 
 What gets created is dynamic. A backend-only project wouldn't get `frontend-specialist`. A project using Firestore instead of Postgres would get a `db-architect` with Firestore-specific expertise. If your architecture has a section the command doesn't recognize — say, a GraphQL federation layer — it creates an `api-specialist` sized to that section rather than ignoring it. The table in the command's Step 2b is a starting point, not a ceiling.
 
-These agents are **project-specific** — the tech stack details are embedded in the agent's prompt body, not appended as a Project Context section. That's because the 11 baseline agents are template-owned (they get updated when the template updates), while stack-specific agents are yours to edit. See [`../reference/customization.md`](../reference/customization.md) for the zone rules.
+These agents are **project-specific** — the tech stack details are embedded in the agent's prompt body, not appended as a Project Context section. That's because the 11 baseline agents are template-owned (they get updated when the template updates), while stack-specific agents are yours to edit. See [`../customization.md`](../customization.md) for the zone rules.
 
 ### Risk map for code review
 
@@ -208,6 +208,6 @@ After `/review:specialize` lands cleanly, the natural next step is `/review:pers
 ## See Also
 
 - [`../concepts/agents.md`](../concepts/agents.md) — the 11 baseline agents, model hierarchy, how commands dispatch them
-- [`../reference/customization.md`](../reference/customization.md) — zone boundaries that `/review:specialize` respects when editing agent files
-- [`../reference/system-map.md`](../reference/system-map.md) — the inventory of commands, agents, skills, and hooks that specialize extends
+- [`../customization.md`](../customization.md) — zone boundaries that `/review:specialize` respects when editing agent files
+- [`../system-map.md`](../system-map.md) — the inventory of commands, agents, skills, and hooks that specialize extends
 - [`../concepts/memory.md`](../concepts/memory.md) — the confidence ladder and decay model for seeded memories

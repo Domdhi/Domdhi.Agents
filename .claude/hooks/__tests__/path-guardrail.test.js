@@ -323,3 +323,56 @@ describe('path-guardrail getTargetPath', () => {
         expect(getTargetPath('Write', null)).toBe('');
     });
 });
+
+// ── Finding 2 (retry): fail CLOSED on a truncated/wedged stdin read. Claude Code
+//    only blocks a Write/Edit call on exit 2; a wedged pipe / truncated JSON must
+//    BLOCK (never exit 0, which would let the write proceed with NO path-tier
+//    enforcement), WHILE a legitimate empty/valid payload still passes. This
+//    hook's graceful outer catch previously reclassified these as exit 0. ──
+describe('path-guardrail runClaudeHook fail-closed on stdin (spawned process)', () => {
+    const { execFileSync, spawn } = require('node:child_process');
+    const hookPath = require.resolve('../path-guardrail.cjs');
+    const REPO = path.resolve(path.dirname(hookPath), '..', '..');
+
+    function runHook(input) {
+        try {
+            const stdout = execFileSync('node', [hookPath], {
+                input,
+                env: { ...process.env, CLAUDE_PROJECT_DIR: REPO },
+                stdio: 'pipe',
+            });
+            return { exitCode: 0, stdout: stdout.toString(), stderr: '' };
+        } catch (err) {
+            return { exitCode: err.status, stdout: err.stdout?.toString() || '', stderr: err.stderr?.toString() || '' };
+        }
+    }
+
+    it('malformed/truncated JSON on non-empty stdin → BLOCKS (exit 2), not exit 0', () => {
+        const result = runHook('{"tool_name":"Write","tool_input":');
+        expect(result.exitCode).not.toBe(0); // never silently unchecked
+        expect(result.exitCode).toBe(2);
+        expect(result.stderr).toContain('fail-closed');
+    });
+
+    it('wedged pipe (stdin never closes) → times out and BLOCKS (exit 2)', async () => {
+        const child = spawn('node', [hookPath], {
+            env: { ...process.env, CLAUDE_PROJECT_DIR: REPO, HOOK_STDIN_TIMEOUT_MS: '150' },
+            stdio: ['pipe', 'pipe', 'pipe'],
+        });
+        child.stdin.write('{"tool_name":"Write"'); // truncated; stdin intentionally left open
+        let stderr = '';
+        child.stderr.on('data', (c) => { stderr += c; });
+        const exitCode = await new Promise((resolve) => child.on('exit', resolve));
+        expect(exitCode).toBe(2);
+        expect(stderr).toContain('fail-closed');
+    });
+
+    it('legitimate EMPTY stdin (clean end) → passes (exit 0), no regression', () => {
+        expect(runHook('').exitCode).toBe(0);
+    });
+
+    it('legitimate VALID JSON (benign write target) → passes (exit 0), no regression', () => {
+        const result = runHook(JSON.stringify({ tool_name: 'Write', tool_input: { file_path: '/tmp/pg-benign/hello.js' } }));
+        expect(result.exitCode).toBe(0);
+    });
+});

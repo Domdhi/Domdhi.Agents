@@ -292,6 +292,7 @@ Main Agent writes the TODO directly. Do NOT delegate assembly to a subagent — 
 10. **AC bullets are NEVER stripped or summarized** — they flow verbatim into `/do` and `/run-todo`
 11. **Every story carries an Agent budget line within the HARD CAP** — ≤5 files modified / ≤2 files created (tests count). Split anything larger into parallel sub-stories. Bias toward more, smaller stories + more agents.
 12. **Sub-story splits use sibling H2 headers (`## Story N.M.K`), never H3 nested under a wrapping H2** — `status.js --regen-master` only counts H2 headers (see the SPLIT rule above).
+13. **Surface the project's recurring implementation constraints in the story's Research Notes at authoring time** — any constraint that has bitten implementers ≥2 times (per memory, retros, or project CLAUDE.md) gets named explicitly in each affected story's Research Notes; memory recall alone has proven insufficient for implementers. Typical shapes: a per-file registration/exports step with no barrel, a write-boundary guard set that must be re-visited by name on every related change, an expensive (AI/embedding) call that must be ordered after every cheap check that could obviate it.
 
 ---
 

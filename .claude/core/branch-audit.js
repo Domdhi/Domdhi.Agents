@@ -87,6 +87,19 @@ function classifyPath(p) {
 // branch name can't inject. This is a belt-and-suspenders reject of enumerated
 // names carrying shell metacharacters ($ ` ; | & ( ) newline) — the toolkit
 // never legitimately audits such a branch, so skipping one is lossless.
+//
+// Deliberately does NOT reject a leading `-` (which would let a branch name be
+// misread as a flag by git in an argv position, e.g. `git merge-tree --write-tree
+// BASE -branch`). Every branch name this file processes comes from `git
+// for-each-ref --format=%(refname:short) refs/heads/` (main(), above) — never
+// from arbitrary/attacker-controlled input — and `git check-ref-format` refuses
+// to create a ref that starts with `-` in the first place, so a leading-`-`
+// branch name is not a state git itself can ever produce here. If a future
+// change ever threads a branch name from a source OTHER than for-each-ref (e.g.
+// a CLI flag), that assumption breaks and this function would need an explicit
+// leading-`-` guard (or the call sites would need `--`-guarding before the ref
+// argv position) — this comment exists so that change doesn't quietly reopen
+// the gap.
 const SHELL_METACHAR_RE = /[$`;|&()\n]/;
 function hasShellMetachar(name) { return SHELL_METACHAR_RE.test(name); }
 

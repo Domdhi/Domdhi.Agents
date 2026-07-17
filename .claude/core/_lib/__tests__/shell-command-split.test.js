@@ -87,4 +87,99 @@ describe('stripWrapperPrefix', () => {
   it('strips stacked wrappers', () => {
     expect(stripWrapperPrefix('sudo env FOO=1 nice git commit -m x').trim()).toBe('git commit -m x');
   });
+
+  // ── Bare inline env-assignment prefix (no `env` keyword) — the shared-splitter
+  //    root fix for the commit-guard M and guardrail finding-1 bypasses. `FOO=bar
+  //    git commit` used to skip commit.js's scan; `FOO=bar rm -rf .env` downgraded
+  //    the zeroAccessPaths hard block to an escalatable nudge. ──
+  it('strips a single bare VAR=val assignment prefix', () => {
+    expect(stripWrapperPrefix('FOO=bar git commit -m x').trim()).toBe('git commit -m x');
+    expect(stripWrapperPrefix('FOO=bar rm -rf .env').trim()).toBe('rm -rf .env');
+  });
+
+  it('strips multiple stacked bare assignments', () => {
+    expect(stripWrapperPrefix('A=1 B=2 C=3 git commit -m x').trim()).toBe('git commit -m x');
+    expect(stripWrapperPrefix('A=1 B=2 rm -rf .env').trim()).toBe('rm -rf .env');
+  });
+
+  it('strips an assignment with an empty value (VAR=)', () => {
+    expect(stripWrapperPrefix('FOO= rm -rf .env').trim()).toBe('rm -rf .env');
+  });
+
+  it('strips a bare assignment nested under another wrapper', () => {
+    expect(stripWrapperPrefix('sudo FOO=1 rm -rf .env').trim()).toBe('rm -rf .env');
+    expect(stripWrapperPrefix('FOO=1 nice -n10 rm -rf .env').trim()).toBe('rm -rf .env');
+  });
+
+  it('treats a name literally called env with an assignment as a bare assignment, not the env command', () => {
+    // `env=1` is a variable named `env`, NOT the env(1) wrapper — the `env`
+    // branch needs whitespace after the token, so this falls to the bare form.
+    expect(stripWrapperPrefix('env=1 git commit -m x').trim()).toBe('git commit -m x');
+  });
+
+  it('does NOT consume a leading `=` with no variable name (a lone `x=` from a $( split)', () => {
+    // `x=$(...)` splits on `$(` to a bare `x=` segment; with no trailing command
+    // it must be left intact (a name-less `=value` never matches).
+    expect(stripWrapperPrefix('x=').trim()).toBe('x=');
+    expect(stripWrapperPrefix('=foo bar').trim()).toBe('=foo bar');
+  });
+
+  it('leaves a bare command whose first token merely contains `=` in a later token untouched', () => {
+    // `git -c user.email=x commit` — the head `git` is not an assignment, so the
+    // bare-assignment branch must not fire (the `-c …=x` is a git option, handled
+    // downstream by the commit-guard's own option walker).
+    expect(stripWrapperPrefix('git -c user.email=x commit -m y').trim()).toBe('git -c user.email=x commit -m y');
+  });
+
+  // ── env OWN option flags (MAJOR-2): env's flags must be stripped too, not just
+  //    NAME=value assignments, or a flag-decorated destructive verb bypasses the
+  //    zeroAccess `.env` block. ──
+  it('strips env option flags (no-value, lone-dash, long, combined) to the real head', () => {
+    expect(stripWrapperPrefix('env -i rm .env').trim()).toBe('rm .env');
+    expect(stripWrapperPrefix('env - rm .env').trim()).toBe('rm .env');
+    expect(stripWrapperPrefix('env --ignore-environment rm -rf .env').trim()).toBe('rm -rf .env');
+    expect(stripWrapperPrefix('env -0 -v rm .env').trim()).toBe('rm .env');
+  });
+
+  it('strips env value-taking flags with a SEPARATE value (-u NAME / -C DIR) without leaving the value as the head', () => {
+    expect(stripWrapperPrefix('env -u PATH rm .env').trim()).toBe('rm .env');
+    expect(stripWrapperPrefix('env -C /home/dom rm -rf .env').trim()).toBe('rm -rf .env');
+    expect(stripWrapperPrefix('env --unset PATH rm .env').trim()).toBe('rm .env');
+    expect(stripWrapperPrefix('env --unset=PATH rm .env').trim()).toBe('rm .env');
+  });
+
+  it('strips a mix of env flags and assignments interleaved', () => {
+    expect(stripWrapperPrefix('env -i A=1 -u PATH rm .env').trim()).toBe('rm .env');
+  });
+
+  it('does not over-strip benign env usage (leaves a non-delete head)', () => {
+    expect(stripWrapperPrefix('env -i printenv').trim()).toBe('printenv');
+    expect(stripWrapperPrefix('env FOO=1 node build.js').trim()).toBe('node build.js');
+  });
+
+  // ── nice arbitrary flags (MAJOR-2 same-class): --adjustment and any leading flag ──
+  it('strips nice --adjustment (attached or separate) and arbitrary flags', () => {
+    expect(stripWrapperPrefix('nice --adjustment=10 rm .env').trim()).toBe('rm .env');
+    expect(stripWrapperPrefix('nice --adjustment 10 rm -rf .env').trim()).toBe('rm -rf .env');
+    expect(stripWrapperPrefix('nice -n 5 rm .env').trim()).toBe('rm .env');
+  });
+
+  // ── timeout / stdbuf wrappers (MAJOR-2 same-class) ──
+  it('strips timeout + its flags + the DURATION positional', () => {
+    expect(stripWrapperPrefix('timeout 5 rm .env').trim()).toBe('rm .env');
+    expect(stripWrapperPrefix('timeout 5s truncate -s0 .env').trim()).toBe('truncate -s0 .env');
+    expect(stripWrapperPrefix('timeout -k 10 5 rm .env').trim()).toBe('rm .env');
+    expect(stripWrapperPrefix('timeout --signal=9 5 shred .env').trim()).toBe('shred .env');
+  });
+
+  it('strips stdbuf buffering options (attached and separate)', () => {
+    expect(stripWrapperPrefix('stdbuf -oL rm .env').trim()).toBe('rm .env');
+    expect(stripWrapperPrefix('stdbuf -o L rm -rf .env').trim()).toBe('rm -rf .env');
+  });
+
+  it('never throws on odd wrapper input (fail-closed guarantee)', () => {
+    for (const s of ['env', 'env ', 'nice', 'timeout', 'stdbuf -', 'env -u']) {
+      expect(() => stripWrapperPrefix(s)).not.toThrow();
+    }
+  });
 });

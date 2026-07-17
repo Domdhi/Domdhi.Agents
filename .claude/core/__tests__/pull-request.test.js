@@ -192,6 +192,17 @@ describe('pull-request.js create (integration, no network)', () => {
     expect(status).not.toBe(0);
     expect(stdout).toMatch(/requires --title/);
   });
+
+  // Wave 7 NIT: a --title value starting with `-` could be misread as a flag by
+  // gh/az's own CLI arg parser (no shell exposure — this is an argv array — but
+  // the target CLI's parser is a separate concern from shell injection).
+  it.skipIf(!gitAvailable())('rejects a --title starting with "-"', () => {
+    const repo = setupRepo(tmp, 'https://github.com/acme/widget.git');
+    execFileSync('git', ['checkout', '-b', 'feat/dash'], { cwd: repo.repoPath, stdio: 'pipe' });
+    const { status, stdout } = runPr(repo.repoPath, ['create', '--title', '-fix: thing', '--dry-run']);
+    expect(status).not.toBe(0);
+    expect(stdout).toMatch(/--title must not start with/);
+  });
 });
 
 describe('pull-request.js azurePrId', () => {

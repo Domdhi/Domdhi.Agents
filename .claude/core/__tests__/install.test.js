@@ -15,8 +15,23 @@ import path from 'node:path';
 import fs from 'node:fs';
 
 const require = createRequire(import.meta.url);
-const { runInstall, resolveConflict, DO_NOT_SHIP, parseArgs } = require('../install');
+const { runInstall, resolveConflict, writeMergeNotes, DO_NOT_SHIP, parseArgs } = require('../install');
 const { createTmpDir } = require('./_helpers/tmp-dir');
+
+// Symlink-capability probe — Windows checkouts without Developer Mode cannot
+// create symlinks; skip rather than fail there (mirrors fs-safe.test.js).
+const canSymlink = (() => {
+  const probeDir = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'symlink-probe-'));
+  try {
+    fs.writeFileSync(path.join(probeDir, 't.txt'), 'x');
+    fs.symlinkSync(path.join(probeDir, 't.txt'), path.join(probeDir, 'l.txt'));
+    return true;
+  } catch {
+    return false;
+  } finally {
+    fs.rmSync(probeDir, { recursive: true, force: true });
+  }
+})();
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -562,5 +577,150 @@ describe('runInstall — --force does not propagate into scaffold', () => {
     const recorded = fs.readFileSync(path.join(target, 'scaffold-force.txt'), 'utf8');
     expect(recorded).toBe('false');     // NOT 'true' — the fix
     expect(stats.ok).toBe(true);
+  });
+});
+
+// ── runInstall: symlinked-ancestor guard (MED — install.js:302,318 containRoot) ──
+//
+// copyFile() forwards `target` as containRoot at both call sites so
+// assertNoSymlinkedAncestor (fs-safe.js) actually fires when a brownfield
+// target has replaced a directory under .claude/ with a symlink pointing
+// outside the tree — e.g. `.claude/core -> /external-dir`. Without
+// containRoot the guard is a silent no-op and the write follows the link
+// out of the project, clobbering an arbitrary external path.
+describe.skipIf(!canSymlink)('runInstall — symlinked-ancestor guard', () => {
+  it('refuses a NEW-file copy through a symlinked .claude/core, leaving the external dir untouched', () => {
+    const source = buildSource(tmp, ['core/foo.js']);
+    const target = buildTarget(tmp);
+
+    // External directory OUTSIDE the target tree — the attack's intended victim.
+    const externalDir = tmp.mkdir('external-dir');
+
+    // Replace .claude/core with a symlink to the external directory before install
+    // ever creates it — simulating a brownfield/compromised target.
+    fs.mkdirSync(path.join(target, '.claude'), { recursive: true });
+    fs.symlinkSync(externalDir, path.join(target, '.claude', 'core'), 'dir');
+
+    // The new-file branch (install.js ~302) must throw rather than silently
+    // writing through the symlinked ancestor.
+    expect(() => runInstall({ source, target, dryRun: false, interactive: false }))
+      .toThrow(/symlinked ancestor/);
+
+    // The external directory must remain exactly as it was — empty.
+    expect(fs.readdirSync(externalDir)).toHaveLength(0);
+  });
+
+  it('refuses an OVERWRITE-conflict copy through a symlinked .claude/core, leaving the external file untouched', () => {
+    const newContent = '# new content from source';
+    const source = buildSource(tmp, ['core/foo.js']);
+    fs.writeFileSync(
+      path.join(tmp.root, 'source', '.claude', 'core', 'foo.js'),
+      newContent, 'utf8'
+    );
+    const target = buildTarget(tmp);
+
+    // External directory holds a pre-existing "foo.js" so destAbs (reached via
+    // the .claude/core symlink) already exists — this drives install into the
+    // conflict/overwrite branch (install.js ~318), not the new-file branch.
+    const externalDir = tmp.mkdir('external-dir');
+    const externalContent = 'ORIGINAL EXTERNAL CONTENT — must not be clobbered';
+    fs.writeFileSync(path.join(externalDir, 'foo.js'), externalContent, 'utf8');
+
+    fs.mkdirSync(path.join(target, '.claude'), { recursive: true });
+    fs.symlinkSync(externalDir, path.join(target, '.claude', 'core'), 'dir');
+
+    expect(() => runInstall({ source, target, dryRun: false, force: true, interactive: false }))
+      .toThrow(/symlinked ancestor/);
+
+    // The external file's content must be exactly what it was before install ran.
+    expect(fs.readFileSync(path.join(externalDir, 'foo.js'), 'utf8')).toBe(externalContent);
+  });
+
+  it('still copies normally into a target with no symlinked ancestors (regression: containRoot does not break the ordinary case)', () => {
+    const source = buildSource(tmp, ['core/foo.js']);
+    const target = buildTarget(tmp);
+
+    const stats = runInstall({ source, target, dryRun: false, interactive: false });
+
+    expect(stats.ok).toBe(true);
+    expect(stats.created).toBeGreaterThan(0);
+    expect(fs.existsSync(path.join(target, '.claude', 'core', 'foo.js'))).toBe(true);
+  });
+});
+
+// ── Wave-2 review class-closure: raw writes in install.js that skipped fs-safe ──
+// M1 (CLAUDE.md stub) + M2 (MERGE-NOTES append) were the two raw-write survivors
+// of this wave's symlink-containment class, in the very module 2C hardened.
+describe.skipIf(!canSymlink)('runInstall — CLAUDE.md stub is symlink-safe (M1)', () => {
+  it('does NOT create the external target when CLAUDE.md is a DANGLING symlink', () => {
+    const source = buildSource(tmp, ['core/foo.js']);
+    const target = buildTarget(tmp);
+    // dangling: link target does not exist — existsSync(CLAUDE.md) follows it → false,
+    // so the "absent" branch runs and a raw write would create the external file.
+    const external = path.join(tmp.root, 'EXTERNAL_claudemd.txt');
+    fs.symlinkSync(external, path.join(target, 'CLAUDE.md'));
+
+    runInstall({ source, target, dryRun: false, interactive: false, keepAll: true });
+
+    expect(fs.existsSync(external)).toBe(false);           // stub never written through the link
+    // the dangling link is replaced by a real stub file in the project root
+    const st = fs.lstatSync(path.join(target, 'CLAUDE.md'));
+    expect(st.isSymbolicLink()).toBe(false);
+    expect(st.isFile()).toBe(true);
+  });
+
+  it('still writes a real CLAUDE.md stub in the ordinary (no-symlink) case', () => {
+    const source = buildSource(tmp, ['core/foo.js']);
+    const target = buildTarget(tmp);
+
+    runInstall({ source, target, dryRun: false, interactive: false, keepAll: true });
+
+    const md = path.join(target, 'CLAUDE.md');
+    expect(fs.existsSync(md)).toBe(true);
+    expect(fs.readFileSync(md, 'utf8')).toContain('This project uses the Domdhi Agents template.');
+  });
+});
+
+describe.skipIf(!canSymlink)('writeMergeNotes — symlink-safe append (M2)', () => {
+  it('does NOT append through a symlinked MERGE-NOTES.md leaf; replaces it with a real file', () => {
+    const target = buildTarget(tmp);
+    const claude = path.join(target, '.claude');
+    fs.mkdirSync(claude, { recursive: true });
+    const external = path.join(tmp.root, 'NOTES_victim.md');
+    fs.writeFileSync(external, 'ORIGINAL_VICTIM\n', 'utf8');
+    fs.symlinkSync(external, path.join(claude, 'MERGE-NOTES.md'));
+
+    writeMergeNotes(claude, ['some/conflict.md'], target);
+
+    expect(fs.readFileSync(external, 'utf8')).toBe('ORIGINAL_VICTIM\n'); // victim untouched
+    const st = fs.lstatSync(path.join(claude, 'MERGE-NOTES.md'));
+    expect(st.isSymbolicLink()).toBe(false);
+    expect(st.isFile()).toBe(true);
+    expect(fs.readFileSync(path.join(claude, 'MERGE-NOTES.md'), 'utf8')).toContain('some/conflict.md');
+  });
+
+  it('refuses to write MERGE-NOTES through a symlinked .claude ANCESTOR', () => {
+    const target = buildTarget(tmp);
+    const externalDir = path.join(tmp.root, 'external-claude');
+    fs.mkdirSync(externalDir, { recursive: true });
+    fs.symlinkSync(externalDir, path.join(target, '.claude'), 'dir');
+
+    expect(() => writeMergeNotes(path.join(target, '.claude'), ['c.md'], target))
+      .toThrow(/symlinked ancestor/);
+    expect(fs.readdirSync(externalDir)).toEqual([]); // nothing written into the victim dir
+  });
+
+  it('preserves prior history from a genuine regular MERGE-NOTES.md (append semantics intact)', () => {
+    const target = buildTarget(tmp);
+    const claude = path.join(target, '.claude');
+    fs.mkdirSync(claude, { recursive: true });
+    const notes = path.join(claude, 'MERGE-NOTES.md');
+    fs.writeFileSync(notes, '# .claude/ Merge Notes\n\nPRIOR_RUN_MARKER\n\n', 'utf8');
+
+    writeMergeNotes(claude, ['later/conflict.md'], target);
+
+    const out = fs.readFileSync(notes, 'utf8');
+    expect(out).toContain('PRIOR_RUN_MARKER');       // history preserved
+    expect(out).toContain('later/conflict.md');      // new section appended
   });
 });

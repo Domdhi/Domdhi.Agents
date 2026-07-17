@@ -1814,6 +1814,368 @@ describe('memory-manager', () => {
     });
   }); // honest usage
 
+  // ── Wave 4A correctness fixes (full-review-260716) ───────────────────────────
+
+  describe('Wave 4A correctness fixes', () => {
+
+    // Seed a memory JSON directly (bypasses createMemory's updated=now stamp so we
+    // can control the `updated` date the decay curve reads).
+    function seedMem(manager, category, id, overrides = {}) {
+      const base = {
+        id, type: category.slice(0, -1), category,
+        created: '2024-01-01T00:00:00.000Z', updated: '2024-01-01T00:00:00.000Z',
+        usage_count: 0, content: { description: 'seed token here' }, metadata: { confidence: 1.0 },
+        ...overrides,
+      };
+      const dir = path.join(manager.memoriesDir, category);
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, `${id.replace(/_/g, '-')}.json`), JSON.stringify(base, null, 2));
+      return base;
+    }
+
+    // ── MEM-1: FTS-path decay uses the per-category RATE, not DEFAULT_RATE ────────
+    it.skipIf(!hasSqlite)('MEM-1_ftsPath_decisionsMemory_usesPointNineEightRateNotDefault', async () => {
+      // A 30-active-day decisions memory must decay at 0.98^30 (≈0.545), NOT the
+      // 0.95 DEFAULT_RATE (0.95^30 ≈ 0.215) it fell back to when mockMemory omitted
+      // `category`. Git fixture supplies ~30 active work-days since the 2024-01-01
+      // `updated`; rebuildIndex indexes the seeded old-dated memory into FTS.
+      const repo = createGitRepo({ root: tmp.root });
+      for (let i = 1; i <= 30; i++) {
+        repo.addCommitOnDate(`commit ${i}`, new Date(2024, 0, i).toISOString());
+      }
+      const manager = makeManager();
+      seedMem(manager, 'decisions', 'mem1_decision', {
+        content: { description: 'mem1uniquetoken decisions decay probe' },
+      });
+      await manager.rebuildIndex(); // index the seeded old-dated memory
+
+      const results = await manager.searchMemories('mem1uniquetoken', { recordRecall: false });
+      const hit = results.find(r => r.id === 'mem1_decision');
+      expect(hit).toBeTruthy();
+
+      // Precise value: 0.98^30 with tolerance for the ±1 active-day fuzz (mirrors
+      // the calculateDecayedConfidence sibling test). Bracket EXCLUDES the wrong
+      // 0.95-rate value (0.215) with wide margin.
+      const expected = Math.pow(0.98, 30);
+      expect(Math.abs(hit.decayed_confidence - expected)).toBeLessThan(0.05);
+      expect(hit.decayed_confidence).toBeGreaterThan(0.4); // never the 0.215 over-decay
+    });
+
+    // ── MEM-2: JSON-scan search survives a metadata-less hand-authored memory ─────
+    it('MEM-2_jsonScan_memoryMissingMetadata_doesNotCrash', async () => {
+      const manager = makeManager();
+      // Hand-authored minimal record: no metadata, no usage_count, no importance.
+      seedMem(manager, 'patterns', 'mem2_bare', {
+        metadata: undefined, usage_count: undefined,
+        content: { description: 'mem2barewordxyz' },
+      });
+      // Force the JSON-scan path (the calculateRelevance null-deref site).
+      manager.initDb = () => false;
+
+      // Pre-fix this threw a TypeError on memory.metadata.confidence, aborting the
+      // whole search. It must now return the memory with a numeric relevance.
+      const results = await manager.searchMemories('mem2barewordxyz');
+      expect(results.length).toBeGreaterThanOrEqual(1);
+      const hit = results.find(r => r.id === 'mem2_bare');
+      expect(hit).toBeTruthy();
+      expect(typeof hit.relevance).toBe('number');
+      expect(Number.isFinite(hit.relevance)).toBe(true);
+    });
+
+    it('MEM-2_calculateRelevance_missingMetadataAndUsage_returnsFiniteScore', () => {
+      const manager = makeManager();
+      // Directly exercise the guarded arithmetic with an object missing both fields.
+      const bare = { content: { description: 'token here' }, updated: new Date().toISOString() };
+      const score = manager.calculateRelevance(bare, 'token');
+      expect(Number.isFinite(score)).toBe(true);
+    });
+
+    // ── MEM-4: a clean zero-result FTS query returns [] without a JSON-scan ───────
+    it.skipIf(!hasSqlite)('MEM-4_zeroResultFtsQuery_returnsEmpty_withoutJsonScanFallthrough', async () => {
+      const manager = makeManager();
+      await manager.createMemory('patterns', 'mem4_present', { description: 'mem4presenttoken' });
+
+      // A valid single-token query that legitimately matches nothing in FTS must NOT
+      // fall through to the JSON linear scan (which listMemories drives).
+      const listSpy = vi.spyOn(manager, 'listMemories');
+      const results = await manager.searchMemories('mem4zzzznomatchzzzz');
+      expect(results).toEqual([]);
+      // The JSON-scan fallback is the ONLY caller of listMemories inside search —
+      // a clean zero-result FTS branch must return [] before reaching it.
+      expect(listSpy).not.toHaveBeenCalled();
+      listSpy.mockRestore();
+    });
+
+    // ── MEM-3: listMemories decay reflects the live-merged usage_count ────────────
+    it.skipIf(!hasSqlite)('MEM-3_listMemories_decayConsistentWithMergedUsageCount', async () => {
+      // Old-dated memory so decay leaves headroom below the 1.0 cap (usage boost is
+      // observable). Recall it several times to accumulate live index usage_count,
+      // then confirm the summary's decayed_confidence was computed from that SAME
+      // merged usage — not the stale JSON baseline of 0.
+      const repo = createGitRepo({ root: tmp.root });
+      for (let i = 1; i <= 30; i++) {
+        repo.addCommitOnDate(`commit ${i}`, new Date(2024, 0, i).toISOString());
+      }
+      const manager = makeManager();
+      seedMem(manager, 'decisions', 'mem3_probe', {
+        content: { description: 'mem3uniquetoken decay merge probe' },
+      });
+      await manager.rebuildIndex();
+
+      await manager.searchMemories('mem3uniquetoken');
+      await manager.searchMemories('mem3uniquetoken');
+      await manager.searchMemories('mem3uniquetoken');
+
+      const list = await manager.listMemories('decisions', { includeFull: true });
+      const summary = list.find(m => m.id === 'mem3_probe');
+      expect(summary.usage_count).toBeGreaterThanOrEqual(1); // live index value
+
+      const withMerged = manager.calculateDecayedConfidence({
+        ...summary.full, usage_count: summary.usage_count,
+      });
+      const withStaleZero = manager.calculateDecayedConfidence({
+        ...summary.full, usage_count: 0,
+      });
+      // The summary must equal the merged-usage computation …
+      expect(summary.decayed_confidence).toBeCloseTo(withMerged, 10);
+      // … and that differs from the stale-usage computation (proving the fix bites).
+      expect(withMerged).toBeGreaterThan(withStaleZero);
+    });
+
+    // ── MEM-5: supersede signals indexStale when the SQLite update throws ─────────
+    it.skipIf(!hasSqlite)('MEM-5_supersede_indexUpdateThrows_returnsIndexStaleWarning', async () => {
+      const manager = makeManager();
+      await manager.createMemory('patterns', 'mem5_old', { description: 'wombat token findme' });
+      await manager.createMemory('patterns', 'mem5_new', { description: 'wombat token findme better' });
+      expect(manager.initDb()).toBe(true);
+
+      // Make every prepared statement in the index-update block throw.
+      manager.db.prepare = () => { throw new Error('simulated index failure'); };
+
+      const res = await manager.supersede('patterns', 'mem5_old', 'mem5_new');
+      // JSON is still stamped (source of truth), but the caller is warned the index
+      // may still surface the memory until a rebuild.
+      expect(res.superseded).toBe(true);
+      expect(res.indexStale).toBe(true);
+      expect(res.warning).toMatch(/index/i);
+      // JSON was stamped despite the index failure.
+      const oldMem = await manager.readMemory('patterns', 'mem5_old');
+      expect(oldMem.invalid_at).toBeTruthy();
+      expect(oldMem.superseded_by).toBe('mem5_new');
+    });
+
+    it('MEM-5_supersede_indexSucceeds_noIndexStaleFlag', async () => {
+      const manager = makeManager();
+      await manager.createMemory('patterns', 'mem5b_old', { description: 'quokka token findme' });
+      await manager.createMemory('patterns', 'mem5b_new', { description: 'quokka token findme better' });
+      const res = await manager.supersede('patterns', 'mem5b_old', 'mem5b_new');
+      expect(res.superseded).toBe(true);
+      expect(res.indexStale).toBeUndefined();
+      expect(res.warning).toBeUndefined();
+    });
+
+    // ── MEM-6: getMemoryCount counts live memories only ──────────────────────────
+    it('MEM-6_getMemoryCount_excludesSupersededHistory', async () => {
+      const manager = makeManager();
+      await manager.createMemory('patterns', 'mem6_live', { description: 'alpha' });
+      await manager.createMemory('patterns', 'mem6_dead', { description: 'beta' });
+      await manager.createMemory('patterns', 'mem6_repl', { description: 'gamma' });
+
+      expect(await manager.getMemoryCount('patterns')).toBe(3);
+
+      const res = await manager.supersede('patterns', 'mem6_dead', 'mem6_repl');
+      expect(res.superseded).toBe(true);
+
+      // The tombstone file still exists on disk, but the LIVE count drops to 2 —
+      // dead history must not eat into the per-category cap.
+      expect(await manager.getMemoryCount('patterns')).toBe(2);
+      const deadFile = path.join(manager.memoriesDir, 'patterns', 'mem6-dead.json');
+      expect(fs.existsSync(deadFile)).toBe(true); // history preserved
+    });
+
+    // ── MEM-8: supersede refuses a non-existent successor ─────────────────────────
+    it('MEM-8_supersede_nonexistentSuccessor_refusesWithError', async () => {
+      const manager = makeManager();
+      await manager.createMemory('patterns', 'mem8_old', { description: 'seed' });
+
+      const res = await manager.supersede('patterns', 'mem8_old', 'mem8_ghost_successor');
+      expect(res.superseded).toBe(false);
+      expect(res.error).toMatch(/successor.*not found/i);
+
+      // The old memory must remain LIVE — no dangling superseded_by pointer written.
+      const oldMem = await manager.readMemory('patterns', 'mem8_old');
+      expect(oldMem.invalid_at == null).toBe(true);
+      expect(oldMem.superseded_by == null).toBe(true);
+    });
+
+    // ── MEM-8 (wave-4 code review): self-supersede refused ────────────────────────
+    it('MEM-8_supersede_selfReference_refusesWithoutStampingInvalidAt', async () => {
+      const manager = makeManager();
+      await manager.createMemory('patterns', 'mem8_self', { description: 'seed' });
+
+      const res = await manager.supersede('patterns', 'mem8_self', 'mem8_self');
+      expect(res.superseded).toBe(false);
+      expect(res.error).toMatch(/cannot supersede itself/i);
+
+      // Must remain LIVE — a self-reference must never stamp its own invalid_at.
+      const mem = await manager.readMemory('patterns', 'mem8_self');
+      expect(mem.invalid_at == null).toBe(true);
+      expect(mem.superseded_by == null).toBe(true);
+    });
+
+    // ── class-closure sibling of MEM-3 (wave-4 code review): the JSON-scan
+    // fallback path must also score/decay off the live-merged usage_count, not
+    // the stale-JSON baseline `.full` carries. ─────────────────────────────────
+    it.skipIf(!hasSqlite)('searchMemories_ftsThrows_jsonFallbackUsesLiveMergedUsage', async () => {
+      const manager = makeManager();
+      await manager.createMemory('patterns', 'json_fallback_a', { description: 'zephyrmarker searchable text alpha' });
+      await manager.createMemory('patterns', 'json_fallback_b', { description: 'zephyrmarker searchable text beta' });
+      expect(manager.initDb()).toBe(true);
+
+      // Lower confidence below 1.0 on both so the decay ceiling (Math.min(…,1.0))
+      // doesn't mask the usage-boost delta this test needs to observe.
+      await manager.updateMemory('patterns', 'json_fallback_a', { metadata: { confidence: 0.5 } });
+      await manager.updateMemory('patterns', 'json_fallback_b', { metadata: { confidence: 0.5 } });
+
+      // Bump LIVE usage_count for 'a' only, directly in the index (plumbing test,
+      // not a genuine-recall test — real recall accounting is covered elsewhere).
+      manager.db.prepare('UPDATE memories SET usage_count = usage_count + 5 WHERE id = ?').run('json_fallback_a');
+
+      // Force the FTS branch to throw on every attempt (both the primary and the
+      // tokenized-retry query) so searchMemories falls through to the JSON-scan
+      // fallback — while non-FTS statements (e.g. _indexUsageMap's SELECT, used
+      // by listMemories inside the fallback) keep working normally.
+      const origPrepare = manager.db.prepare.bind(manager.db);
+      manager.db.prepare = (sql) => {
+        if (sql.includes('memories_fts')) throw new Error('simulated FTS failure');
+        return origPrepare(sql);
+      };
+
+      const results = await manager.searchMemories('zephyrmarker', { recordRecall: false });
+      const a = results.find(r => r.id === 'json_fallback_a');
+      const b = results.find(r => r.id === 'json_fallback_b');
+      expect(a).toBeTruthy();
+      expect(b).toBeTruthy();
+
+      // 'a' has live usage_count=5, 'b' has 0 — the stale JSON baseline is 0 for
+      // BOTH (usage_count only ever grows in the SQLite index, F44), so if the
+      // fallback were still reading `.full`'s stale usage, these would be equal.
+      expect(a.relevance).toBeGreaterThan(b.relevance);
+      expect(a.decayed_confidence).toBeGreaterThan(b.decayed_confidence);
+    });
+
+    // ── MEM-10: importance is a top-level field only (never lingers in content) ────
+    it('MEM-10_createMemory_stripsImportanceFromStoredContent', async () => {
+      const manager = makeManager();
+      const input = { description: 'x', importance: 5 };
+      await manager.createMemory('patterns', 'mem10_create', input);
+
+      const mem = await manager.readMemory('patterns', 'mem10_create');
+      expect(mem.importance).toBe(5);                       // promoted top-level
+      expect(mem.content.importance).toBeUndefined();       // stripped from content
+      expect(mem.content.description).toBe('x');            // rest of content intact
+      // Caller's input object is NOT mutated.
+      expect(input.importance).toBe(5);
+    });
+
+    it('MEM-10_updateMemory_repromotesContentImportance_andStrips', async () => {
+      const manager = makeManager();
+      await manager.createMemory('patterns', 'mem10_update', { description: 'x', importance: 2 });
+
+      const updated = await manager.updateMemory('patterns', 'mem10_update', {
+        content: { importance: 5, note: 'n' },
+      });
+      // Top-level re-promoted, content stripped, other content merged.
+      expect(updated.importance).toBe(5);
+      expect(updated.content.importance).toBeUndefined();
+      expect(updated.content.note).toBe('n');
+      expect(updated.content.description).toBe('x');
+
+      // Persisted to disk the same way.
+      const onDisk = await manager.readMemory('patterns', 'mem10_update');
+      expect(onDisk.importance).toBe(5);
+      expect(onDisk.content.importance).toBeUndefined();
+    });
+
+    it('MEM-10_updateMemory_legacyContentImportance_promotedOnUpdate', async () => {
+      // A legacy record that still carries importance inside content (written before
+      // the strip) gets it promoted to top-level on the next update.
+      const manager = makeManager();
+      seedMem(manager, 'patterns', 'mem10_legacy', {
+        importance: undefined,
+        content: { description: 'legacy', importance: 4 },
+      });
+      const updated = await manager.updateMemory('patterns', 'mem10_legacy', {
+        metadata: { confidence: 0.9 },
+      });
+      expect(updated.importance).toBe(4);
+      expect(updated.content.importance).toBeUndefined();
+    });
+
+    // ── MEM-11: FTS indexes human-readable VALUES, not JSON field names ────────────
+    it.skipIf(!hasSqlite)('MEM-11_ftsSearch_fieldNameDoesNotMatch_butValueDoes', async () => {
+      const manager = makeManager();
+      // 'description'/'evidence'/'confidence' are FIELD NAMES here — they must not be
+      // searchable terms. 'mem11phosphorus' is a VALUE — it must be.
+      await manager.createMemory('patterns', 'mem11_probe', {
+        description: 'mem11phosphorus token',
+        evidence: 'some corroborating note',
+        confidence: 0.8,
+      });
+
+      // Field names must NOT surface the memory (they're no longer indexed).
+      const byFieldName = await manager.searchMemories('description', { recordRecall: false });
+      expect(byFieldName.some(r => r.id === 'mem11_probe')).toBe(false);
+      const byConfidence = await manager.searchMemories('confidence', { recordRecall: false });
+      expect(byConfidence.some(r => r.id === 'mem11_probe')).toBe(false);
+
+      // The actual content value still matches.
+      const byValue = await manager.searchMemories('mem11phosphorus', { recordRecall: false });
+      expect(byValue.some(r => r.id === 'mem11_probe')).toBe(true);
+    });
+
+    it.skipIf(!hasSqlite)('MEM-11_ftsSearch_nestedAndArrayStringValues_areIndexed', async () => {
+      // collectContentText must recurse into nested objects + string arrays.
+      const manager = makeManager();
+      await manager.createMemory('patterns', 'mem11_nested', {
+        description: 'top level',
+        detail: { note: 'mem11nestedtoken' },
+        references: ['mem11arraytoken', 'other ref'],
+      });
+
+      expect((await manager.searchMemories('mem11nestedtoken', { recordRecall: false }))
+        .some(r => r.id === 'mem11_nested')).toBe(true);
+      expect((await manager.searchMemories('mem11arraytoken', { recordRecall: false }))
+        .some(r => r.id === 'mem11_nested')).toBe(true);
+    });
+
+    // ── MEM-12: recall bumps every result's usage_count in one batched UPDATE ──────
+    it.skipIf(!hasSqlite)('MEM-12_recall_bumpsAllResultUsageCountsByOne', async () => {
+      const manager = makeManager();
+      expect(manager.initDb()).toBe(true);
+      await manager.createMemory('patterns', 'mem12_a', { description: 'mem12sharedtoken alpha' });
+      await manager.createMemory('patterns', 'mem12_b', { description: 'mem12sharedtoken beta' });
+
+      const results = await manager.searchMemories('mem12sharedtoken');
+      expect(results.length).toBeGreaterThanOrEqual(2);
+
+      const countOf = (id) => manager.db
+        .prepare('SELECT usage_count AS n FROM memories WHERE id = ?').get(id).n;
+      // One search = one recall = exactly +1 for BOTH matched ids (the batched UPDATE
+      // must hit every result id, not just one).
+      expect(countOf('mem12_a')).toBe(1);
+      expect(countOf('mem12_b')).toBe(1);
+    });
+
+    it('MEM-12_recordRecall_emptyResults_noThrow', async () => {
+      const manager = makeManager();
+      manager.initDb();
+      // An empty result set must be a safe no-op (invalid `IN ()` SQL avoided).
+      await expect(manager._recordRecall([])).resolves.toBeUndefined();
+    });
+
+  }); // Wave 4A correctness fixes
+
   // ── ingestAgentMemory ───────────────────────────────────────────────────────
 
   describe('ingestAgentMemory', () => {

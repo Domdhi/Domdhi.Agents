@@ -4,7 +4,7 @@
 //
 // Runs in isolation: npx vitest run .claude/core/__tests__/memory-manager-cli.supersede.test.js
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -12,6 +12,8 @@ import { spawnSync } from 'node:child_process';
 
 const require = createRequire(import.meta.url);
 const { createTmpDir } = require('./_helpers/tmp-dir');
+const MemoryManager = require('../memory-manager');
+const { main: cliMain } = require('../memory-manager-cli');
 
 const projectRoot = path.resolve(__dirname, '..', '..', '..');
 const cliScript = path.join(projectRoot, '.claude', 'core', 'memory-manager-cli.js');
@@ -214,6 +216,68 @@ describe('supersede CLI command — error handling', () => {
         expect(status).toBe(1);
         expect(stderr).toContain('Supersede failed');
         expect(stderr).toContain('not found');
+    });
+
+});
+
+// MEM-5 regression: supersede() can return { superseded: true, indexStale: true,
+// warning: '...' } when the JSON write succeeds but the SQLite FTS update fails.
+// The CLI must surface that warning, not print an indistinguishable flat success line.
+describe('supersede CLI command — stale index warning (MEM-5)', () => {
+
+    const originalArgv = process.argv;
+    const originalProjectDir = process.env.CLAUDE_PROJECT_DIR;
+
+    afterEach(() => {
+        process.argv = originalArgv;
+        if (originalProjectDir === undefined) delete process.env.CLAUDE_PROJECT_DIR;
+        else process.env.CLAUDE_PROJECT_DIR = originalProjectDir;
+        vi.restoreAllMocks();
+    });
+
+    it('prints the warning to stderr when supersede() reports indexStale', async () => {
+        process.env.CLAUDE_PROJECT_DIR = tmp.root;
+        vi.spyOn(MemoryManager.prototype, 'supersede').mockResolvedValue({
+            superseded: true,
+            category: 'patterns',
+            oldId: 'old-id',
+            newId: 'new-id',
+            invalid_at: '2026-07-17T00:00:00.000Z',
+            indexStale: true,
+            warning: 'SQLite index update failed; JSON is stamped but the FTS index may still surface this memory until rebuild-index runs',
+        });
+        const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+        const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+        process.argv = ['node', 'memory-manager-cli.js', 'supersede', 'patterns', 'old-id', 'new-id'];
+        await cliMain();
+
+        const allOutput = [...warnSpy.mock.calls, ...errSpy.mock.calls, ...logSpy.mock.calls]
+            .map((call) => call.join(' ')).join('\n');
+        expect(allOutput).toContain('SQLite index update failed');
+        expect(allOutput).toContain('rebuild-index');
+    });
+
+    it('does NOT print a warning when supersede() succeeds cleanly (no indexStale)', async () => {
+        process.env.CLAUDE_PROJECT_DIR = tmp.root;
+        vi.spyOn(MemoryManager.prototype, 'supersede').mockResolvedValue({
+            superseded: true,
+            category: 'patterns',
+            oldId: 'old-id',
+            newId: 'new-id',
+            invalid_at: '2026-07-17T00:00:00.000Z',
+        });
+        const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+        const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+        process.argv = ['node', 'memory-manager-cli.js', 'supersede', 'patterns', 'old-id', 'new-id'];
+        await cliMain();
+
+        expect(warnSpy).not.toHaveBeenCalled();
+        expect(errSpy).not.toHaveBeenCalled();
+        expect(logSpy.mock.calls.join(' ')).toContain('Superseded');
     });
 
 });

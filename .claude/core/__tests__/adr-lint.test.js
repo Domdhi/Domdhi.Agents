@@ -15,6 +15,7 @@ import { createRequire } from 'node:module';
 import path from 'node:path';
 
 const require = createRequire(import.meta.url);
+const fs = require('node:fs');
 const { readStatus, supersedesRefs, saysSuperseded, lint, gather, looksLikeAdr, main } = require('../adr-lint');
 const { createTmpDir } = require('./_helpers/tmp-dir');
 
@@ -197,6 +198,27 @@ describe('gather', () => {
     tmp.write('docs/node_modules/pkg/ADR-2-decoy.md', '# ADR: decoy');
     const r = gather(tmp.root);
     expect(r.orphans).toEqual([]);
+  });
+
+  it('does not abort the whole walk when a subdirectory is unreadable — sibling orphans still reported', () => {
+    tmp.write('docs/product/ADR-99-good.md', '# ADR: good\n\nbody');
+    tmp.write('docs/broken/placeholder.md', 'x');
+
+    const brokenDir = path.join(tmp.root, 'docs', 'broken');
+    const realReaddirSync = fs.readdirSync;
+    const spy = vi.spyOn(fs, 'readdirSync').mockImplementation((dir, opts) => {
+      if (dir === brokenDir) throw new Error('EACCES: permission denied');
+      return realReaddirSync(dir, opts);
+    });
+
+    let r;
+    try {
+      r = gather(tmp.root);
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(r.orphans).toEqual(['docs/product/ADR-99-good.md']);
   });
 });
 
