@@ -3,6 +3,8 @@ description: Run a retrospective after completing an epic — code-review pass f
 argument-hint: [epic name or number] [--skip-review]
 ---
 
+<!-- Generated from .agents/skills/retro/references/workflow.md; edit the canonical source, then run node .claude/core/render-shared-agents.js. -->
+
 # Retrospective
 
 Analyze a completed epic to extract lessons learned and patterns. Runs a **code-review pass over the epic's commits first** — its findings feed the retro (mirroring `/sweep`'s Phase 1→2 flow) — then produces `docs/.output/findings/reviews/retro-{epic-slug}.md`.
@@ -56,7 +58,7 @@ Reuses the `/review:code-review` methodology, scoped to the epic. This is the re
 1. **Scope** = the epic's commit range from Step 1. Build the diff, e.g. `git diff {first}^..{last}`. **Skip generated/vendored code** (lockfiles, `dist/`, `*.min.*`, migration scaffolding, snapshots) — sanity-check intent only, never review generated line volume.
 1b. **Path-A gap-closure check.** Read each story's Execution Log entry in the epic's TODO for a noted dispatch fallback ("Path A", "no subagent available", "implemented directly by main agent"). A story that shipped via Path A got no independent subagent review at wave time — epic-wide diff review alone has historically missed real MAJOR bugs sitting in exactly these stories. If any story is flagged, dispatch a **dedicated gap-closure review scoped to that story's files** (not just folded into the epic-wide diff) in addition to the normal Step 2 pass, and call it out in the findings table.
 2. **Classify risk tiers.** If a risk map exists (`code-reviewer` agent's `## Project Context > ### Risk Map`), match each changed file to a tier (HIGH / MEDIUM / LOW); otherwise default all files to MEDIUM. Overall review depth = the highest tier present (any HIGH → Deep; all MEDIUM → Standard; all LOW → Fast-Lane).
-3. **Dispatch `code-reviewer`** via Task tool. **Model routing:** overall tier **HIGH** → pass `model: opus`; **MEDIUM or LOW** → omit `model:` (Sonnet floor). For a large multi-theme epic, dispatch one reviewer per theme in parallel and consolidate (as `/sweep` Phase 1 does). The agent auto-loads the `code-review` skill — do not paste the rubric. The task prompt must include:
+3. **Dispatch `code-reviewer`** via Task tool. **Model routing:** overall tier **HIGH** → pass `model: "opus"`; **MEDIUM or LOW** → omit `model:` (`standard` default). For a large multi-theme epic, dispatch one reviewer per theme in parallel and consolidate (as `/sweep` Phase 1 does). The agent auto-loads the `code-review` skill — do not paste the rubric. The task prompt must include:
    - The diff (or per-theme diffs) to review
    - Architecture standards from `docs/architecture/overview.md` + `CLAUDE.md` (if present)
    - Relevant memory patterns/constraints: `node .claude/core/memory-manager.js search "{domain}"`, `… list constraints`, `… list decisions`
@@ -235,7 +237,7 @@ Surface to the user (in Step 8) **only genuine forks**: mutually-exclusive appro
 
 ### 7. Commit (main agent)
 
-Follow the **Post-Command Commit Convention** in CLAUDE.md. Stage all files created or modified by this command — the retro doc, the in-pass fixes from Step 6.5, and any memory updates — and commit with a descriptive message.
+Follow the **Post-Command Commit Convention** in `.agents/startup-reference.md`. Stage all files created or modified by this command — the retro doc, the in-pass fixes from Step 6.5, and any memory updates — and commit with a descriptive message.
 
 ### 8. Report (main agent)
 

@@ -3,6 +3,8 @@ description: Investigate a bug with root cause analysis before applying fixes
 argument-hint: [error message, file path, or "last failure"]
 ---
 
+<!-- Generated from .agents/skills/investigate/references/workflow.md; edit the canonical source, then run node .claude/core/render-shared-agents.js. -->
+
 # /investigate — Root Cause Investigation
 
 Structured debugging command. Diagnoses failures with root cause analysis before attempting fixes. Four phases: Investigate, Analyze, Hypothesize, Implement.

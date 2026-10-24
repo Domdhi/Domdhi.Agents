@@ -9,6 +9,8 @@ user-invocable: false
 allowed-tools: Read Grep Glob
 ---
 
+<!-- Generated from .agents/skills/code-review/SKILL.md; edit the canonical source, then run node .claude/core/render-shared-agents.js. -->
+
 # Code Review
 
 Consolidated methodology for reviewing code changes in this project. Combines the review report template and severity definitions from `code-reviewer` with the intake triage and risk-based routing from `code-review-playbook`.
@@ -30,7 +32,9 @@ The reviewer's job is to **diagnose, document, and communicate** — not to rewr
 - Be specific: `file:line`, what's wrong, why it matters, how to fix (if not obvious).
 - Give a clear verdict. "Looks good" without checking, or vague notes like "improve error handling", are not reviews.
 - **A finding against working, passing code is a hypothesis — the orchestrator verifies it compiles and passes BEFORE applying it.** "X is safer/cleaner/more idiomatic" is a correctness claim, not a free win; applying it blind can regress code that was green. (Field-proven: applying an unverified "string literal is safer than the enum" MINOR to working, deployed code broke 3,153 tests and cost a full cycle.) Speculative hardening on green code is the one place a critic's confidence is most dangerous.
-- **Scope-deferred work is not "missing" — check the TODO before flagging it.** DI registration, a migration, or hub wiring that a *later* story explicitly owns is a planned deferral, not an omission. Before raising "X is unregistered/unimplemented," grep the TODO/backlog for a later story that owns it; if one exists, note the dependency, don't flag a gap. A reviewer without the multi-wave context manufactures false CRITICALs.
+- **Scope-deferred work is not "missing" — check the TODO before flagging it.** DI registration, a migration, or endpoint wiring that a *later* story explicitly owns is a planned deferral, not an omission. Before raising "X is unregistered/unimplemented," grep the TODO/backlog for a later story that owns it; if one exists, note the dependency, don't flag a gap. A reviewer without the multi-wave context manufactures false CRITICALs.
+
+**Independent review starts from persisted scope.** Before dispatching a reviewer, write the review scope (stories, AC, changed files, constraints and evidence locations) to the run's work folder, and start a fresh reviewer from that file rather than from the implementer's conversation, so it judges the diff independently. After the fixes, send them back to the same reviewer for a closure pass that verifies only that each listed finding is closed. Three reviewer passes per scope is the hard maximum: a new CRITICAL or MAJOR that a fix introduced earns at most one more pass, a new MINOR or NIT is fixed and proven by a test with no further review, and anything CRITICAL or MAJOR still open after the third pass goes to the user as a decision. Record the review and its closure in a tracked findings report, not only in scratch.
 
 **Diagnose, don't rewrite — and that is full compliance with the operating standard, not an exception to it.** The project's standard is "resolve it or don't report it," but for the *reviewer* role it translates rather than relaxes: the reviewer's "resolve" is an **exhaustive, precise, immediately-actionable** finding (`file:line` + a concrete fix), handed to the orchestrator who performs the resolution. Writing the fix yourself would contaminate the field you're examining (and a `code-reviewer`/`security-auditor` has no `Edit` tool). So "Fix everything you find" (Section 4) is an instruction about *scope of attention* — nothing you spot is out of bounds — executed as a fix-ready finding, not a code edit. The loop still closes in one pass; the orchestrator is the hand that resolves.
 
@@ -45,7 +49,7 @@ This is the **critic** layer: it advises, it does not block on its own. Did the 
 - Compare implementation line-by-line against acceptance criteria.
 - Check for missing requirements, over-engineering, and misinterpretations.
 - Do not trust the implementer's report; read the actual code.
-- While reading, record every candidate code finding (including low-confidence ones), each labelled with confidence (high/medium/low) and severity (CRITICAL/MAJOR/MINOR/NIT). Do not filter at this stage.
+- While reading, record every candidate code finding (including low-confidence ones), each labeled with confidence (high/medium/low) and severity (CRITICAL/MAJOR/MINOR/NIT). Do not filter at this stage.
 - **A precondition-dependent bug or an edge-case-value bug reads as plausible/correct on inspection — write and run a standalone repro before ruling on it, don't reason from the source alone.** Two bug classes reliably survive read-only review: (1) code copied from a "mirror this existing pattern" instruction that silently drops a structural precondition the original relied on (e.g. a reset-on-open effect that only works because the original component has an internal trigger; the copy doesn't, so the effect never fires) — this reads correct because each file is internally consistent, the mismatch is only *between* them; (2) a schema/validation edge case (empty string, `0`, `null`) that's fatal to an entire request but doesn't announce itself in the schema definition — trace at least one such value through by hand or a quick check before trusting "the schema looks right." Confirm these by writing a runnable repro, not by re-reading the code more carefully.
 - If the change introduces or repurposes a domain term in a skill/command, grep the affected file and its siblings for prior uses of that term — a term used two ways is an interpretation bug for the agents that read it (e.g. "judge" meaning both a review stage and the ship-gate).
 - Result: spec pass or list of specific gaps. If spec has open issues, stop — stage 2 does not run until they are resolved. Candidate findings are passed to stage 2 regardless.
@@ -82,6 +86,14 @@ This stage is severity **adjudication** over the candidate findings — deciding
 **Security-control changes — mandatory bypass attempt.** Any change that touches a security hook, guardrail, exemption list, or matching regex (e.g. `guardrail-rules.yaml`, `secret-patterns.cjs`, path-tier logic) MUST include an explicit bypass attempt before approval: construct at least one input that *should* be caught and check the new logic still catches it (chained commands, trailing/sibling tokens, substring look-alikes, encoding tricks). Field-proven twice: a guardrail `rm -rf` exemption regex shipped a whole-line-lookahead bypass (`rm -rf ~/x && echo /tmp` passed), and a widening amplified it. Loosening a control without an adversarial check is how a "fix" becomes a hole. Treat the widened-control change itself as HIGH-risk regardless of file.
 
 ---
+
+<!-- @@project-additions:start -->
+## Checks when a change relies on another implementation
+
+- **Verify cross-story guarantees.** When a removal or simplification is justified by a sibling story, read that story's implemented behavior before accepting the guarantee. Record an unresolved dependency when its implementation is unavailable.
+- **Separate remedy evidence from defect evidence.** Label a suggested fix as tested by execution or inspected but unexecuted. A confirmed defect does not establish that its proposed remedy is safe; trace the affected consumers before applying it and verify afterward.
+- **Keep counting guards meaningful after extraction.** When a refactor moves a literal into a helper, find guards that count that literal. Check that they still measure the risky call sites, with a violating control that fails. A smaller count alone can make a broken guard appear green.
+<!-- @@project-additions:end -->
 
 ## 4. The "Never Out of Scope" Rule
 

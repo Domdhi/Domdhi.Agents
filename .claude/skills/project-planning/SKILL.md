@@ -9,6 +9,8 @@ user-invocable: false
 allowed-tools: Read Write Edit Grep Glob WebSearch WebFetch
 ---
 
+<!-- Generated from .agents/skills/project-planning/SKILL.md; edit the canonical source, then run node .claude/core/render-shared-agents.js. -->
+
 # Project Planning
 
 Consolidated methodology for the product planning pipeline — from problem space exploration through brainstorm/research, to project brief, to full product requirements document (PRD), to the epics/stories backlog, plus the project-context quick-reference. Consolidates `project-analyst`, `project-brief-writer`, `prd-writer`, `epic-writer`, and `project-context`.
@@ -58,7 +60,16 @@ These rules apply across every document in the pipeline:
 
 8. **HIGH-risk epics get the 4-layer review chain as standing wave-plan line items:** per-wave review → mid-epic checkpoint → full-epic cross-wave pass → independent retro. Each layer has found real, non-overlapping MAJORs in the field (one integration-breaking bug survived 3 prior passes and fell to the fourth). Schedule the mid-epic checkpoint and full-epic pass in the plan itself, not ad hoc.
 
+9. **Mechanical plan checks prove structure, not semantics.** For a large backlog or TODO, check the story-to-index-to-wave mapping, dependency order, per-story file budgets, same-wave path collisions and forward outputs (a file a later story modifies exists or is created earlier) with a short script rather than by eye. A passing structural check proves no acceptance criterion; semantic acceptance still needs the actual files or commands. Report effort as summed estimates along the dependency chain, never as elapsed time, and keep the project's own per-story file caps: a story that outgrows them gets a bounded sibling story before mutation, not a silent widening.
+
 ---
+
+<!-- @@project-additions:start -->
+## Acceptance and claim checks
+
+- **Keep story and criterion states coherent.** Update a completed story and its verified acceptance bullets together. Explicitly label criteria that were cut, superseded, moved or not applicable; do not check them as delivered or leave their meaning ambiguous. Retain the project's actual status syntax and structural validation.
+- **Mark unverified factual claims.** Label an unchecked claim in a TODO as `UNVERIFIED`, especially a security or risk assertion. Resolve it with evidence, correct it or explicitly carry the unresolved dependency before accepting the story. A plausible risk statement is not evidence that the event occurred.
+<!-- @@project-additions:end -->
 
 ## Navigation
 

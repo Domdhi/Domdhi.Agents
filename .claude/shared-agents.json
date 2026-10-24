@@ -1,0 +1,61 @@
+{
+  "roles": {
+    "qa-engineer": {
+      "model": "sonnet",
+      "tools": "Read, Write, Edit, Bash, Grep, Glob",
+      "memory": "project"
+    },
+    "architect": {
+      "model": "sonnet",
+      "tools": "Read, Write, Edit, Bash, Grep, Glob",
+      "memory": "project"
+    },
+    "code-reviewer": {
+      "model": "sonnet",
+      "tools": "Read, Grep, Glob, Bash, Write",
+      "disallowedTools": "Edit",
+      "memory": "project"
+    },
+    "doc-writer": {
+      "model": "sonnet",
+      "tools": "Read, Write, Edit, Grep, Glob",
+      "memory": "project"
+    },
+    "general-purpose": {
+      "model": "sonnet",
+      "tools": "Read, Write, Edit, Bash, Grep, Glob",
+      "memory": "project"
+    },
+    "playwright": {
+      "model": "sonnet",
+      "tools": "Read, Write, Edit, Bash, Grep, Glob",
+      "memory": "project"
+    },
+    "product-strategist": {
+      "model": "sonnet",
+      "tools": "Read, Grep, Glob, WebSearch, WebFetch, Write, Edit",
+      "memory": "project"
+    },
+    "project-planner": {
+      "model": "sonnet",
+      "tools": "Read, Write, Edit, Grep, Glob",
+      "memory": "project"
+    },
+    "security-auditor": {
+      "model": "opus",
+      "tools": "Read, Grep, Glob, Bash, Write",
+      "disallowedTools": "Edit",
+      "memory": "project"
+    },
+    "shadow": {
+      "model": "sonnet",
+      "tools": "Read, Write, Edit, Grep, Glob, WebSearch, WebFetch",
+      "memory": "project"
+    },
+    "ux-designer": {
+      "model": "sonnet",
+      "tools": "Read, Write, Edit, Grep, Glob",
+      "memory": "project"
+    }
+  }
+}

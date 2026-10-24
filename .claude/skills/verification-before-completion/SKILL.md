@@ -9,6 +9,8 @@ user-invocable: false
 allowed-tools: Read Bash
 ---
 
+<!-- Generated from .agents/skills/verification-before-completion/SKILL.md; edit the canonical source, then run node .claude/core/render-shared-agents.js. -->
+
 # Verification Before Completion
 
 ## Overview
@@ -152,6 +154,10 @@ This skill is the canonical home of the project's operating standard (the missio
 
 ## Key Patterns
 
+**Acceptance evidence is tracked.** The facts, citations, gate output and review evidence a completion claim relies on go into tracked documents (the TODO, the plan or a findings record). Ignored scratch, such as `docs/.output/.state/`, is same-checkout working space and never the only authority; `git add` refuses an ignored path, so evidence staged from there silently never lands.
+
+**Discovery is not execution.** An installed skill, a listed command or a loaded file proves availability, not that a workflow ran. A completion claim cites that run's own gate output, AC table and commit.
+
 **Tests:**
 ```
 ✅ [Run test command] [See: 34/34 pass] "All tests pass"
@@ -201,7 +207,7 @@ The fix must reach the runtime surface, not just the named function. (Evidence: 
 ✅ Unit tests pass → dogfood against one real, messy input (an actual adopter checkout, a real log, real divergent content) → observe output → "done"
 ❌ "All fixture tests pass" on synthetic fixtures alone
 ```
-For code whose job is reconciling real-world messy content, passing unit tests is necessary but not sufficient — synthetic fixtures encode the author's assumptions, and the gap lives outside them. (Evidence: skill-merger's anchored-fence rewrite `a0cb9c6` passed its full test suite, then produced Form-1 duplication bugs on its first real application to Mfa.Hub — `8715e9d`.)
+For code whose job is reconciling real-world messy content, passing unit tests is necessary but not sufficient — synthetic fixtures encode the author's assumptions, and the gap lives outside them. (Evidence: skill-merger's anchored-fence rewrite `a0cb9c6` passed its full test suite, then produced Form-1 duplication bugs on its first real application to an adopter project — `8715e9d`.)
 
 ## Why This Matters
 

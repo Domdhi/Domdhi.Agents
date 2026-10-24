@@ -85,6 +85,4 @@ Match CTA friction to relationship depth. Early subscribers get low-friction CTA
 
 ## Voice Calibration
 
-This skill teaches structure. Voice comes from the writer agent (shadow or ghostwriting). Load both when writing voice-matched newsletter content:
-- This skill: structure, hook discipline, CTA placement
-- ghostwriting skill: voice rules, anti-patterns, approved phrasings
+This reference supplies platform structure. Load `ghostwriting` for the author’s voice, verified claims and writing conventions. Publishing or sending requires the owner’s explicit authorization.

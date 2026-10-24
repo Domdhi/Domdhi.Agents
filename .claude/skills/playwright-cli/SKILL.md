@@ -9,6 +9,8 @@ user-invocable: false
 allowed-tools: Bash(playwright-cli:*) Read Write
 ---
 
+<!-- Generated from .agents/skills/playwright-cli/SKILL.md; edit the canonical source, then run node .claude/core/render-shared-agents.js. -->
+
 # Browser Automation with playwright-cli
 
 ## Quick start

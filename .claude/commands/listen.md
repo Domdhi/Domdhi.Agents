@@ -3,6 +3,8 @@ description: Aggregate post-MVP signals (git, telemetry, agent-updates, backlog 
 argument-hint: [optional --since {YYYY-MM-DD} | "14d" | source filter]
 ---
 
+<!-- Generated from .agents/skills/listen/references/workflow.md; edit the canonical source, then run node .claude/core/render-shared-agents.js. -->
+
 # /listen — Signal Intake Aggregator
 
 The first **post-MVP lifecycle** command. When the initial backlog drains, the harness has no model for *push-from-reality* work — bug reports, telemetry drift, unaddressed agent issues, expiring flags. `/listen` is the listener: it sweeps every available signal source, tags each finding with its provenance, and writes a single dated intake file. It does **not** triage, prioritize, or ask questions — that is `/triage`'s job (Tier 2). `/listen` only gathers.
@@ -123,7 +125,7 @@ De-duplicate within the run (the same TODO surfaced by git and backlog is one si
 
 ### Step 4: Commit (main agent)
 
-Follow the **Post-Command Commit Convention** in CLAUDE.md. Stage only the intake file. Message: `docs: /listen — {N} signals ({YYYY-MM-DD})`.
+Follow the **Post-Command Commit Convention** in `.agents/startup-reference.md`. Stage only the intake file. Message: `docs: /listen — {N} signals ({YYYY-MM-DD})`.
 
 ### Step 5: Report
 

@@ -2,6 +2,8 @@
 description: Run extract (opt-in) + lint + decay health check on the memory system
 ---
 
+<!-- Generated from .agents/skills/review-memory-health/references/workflow.md; edit the canonical source, then run node .claude/core/render-shared-agents.js. -->
+
 # Memory Health Check
 
 Run the memory health pipeline (optional Sonnet extraction, lint, decay report). Suitable for headless automation via `claude -p "/review:memory-health" --model sonnet --allowedTools Bash`.

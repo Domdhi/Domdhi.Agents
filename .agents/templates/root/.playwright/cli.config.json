@@ -1,0 +1,9 @@
+{
+  "browser": {
+    "browserName": "chromium",
+    "launchOptions": {
+      "channel": "chrome"
+    }
+  },
+  "outputDir": "docs/.output/.state/screenshots"
+}

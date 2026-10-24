@@ -1,0 +1,7 @@
+{
+  "stack": "neutral-adopter",
+  "build": { "command": "npm run build", "timeout": 30000 },
+  "test": { "command": "npm test", "timeout": 30000 },
+  "lint": { "missing": true },
+  "e2e": { "command": "node application-check.cjs integration --isolated", "timeout": 30000 }
+}

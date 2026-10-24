@@ -1,6 +1,6 @@
 # Specializing for Your Stack
 
-After you've written your architecture document, running `/review:specialize` customizes the generic `.claude/` template for your actual tech stack. It reads your architecture, appends project context to each of the 11 baseline agents, creates stack-specific agents where the architecture calls for them, seeds your memory system with ADR-derived decisions, and generates a code-review risk map from your component architecture.
+After you've written your architecture document, running `/review:specialize` customizes the shared `.agents/` toolkit for your actual tech stack. It reads your architecture, appends project context to each of the 11 baseline agents, creates stack-specific agents where the architecture calls for them, seeds your memory system with ADR-derived decisions, and generates a code-review risk map from your component architecture.
 
 This guide walks through it on a concrete Next.js 15 project. The command itself is tech-agnostic — nothing about it is Next.js-specific. We use Next.js as the scenario so the shape of inputs and outputs is concrete. Swap your stack in and the same process applies.
 
@@ -109,7 +109,7 @@ The other 10 agents get their own slices. `qa-engineer` gets the testing strateg
 
 Each agent's Project Context entirely replaces any previous one — if you re-specialize after ADR-004 lands, the section is regenerated, not appended to. This is the idempotency guarantee.
 
-**Soul Zone preservation.** If you've already run [`/review:personalize`](../commands.md#reviewpersonalize) (or will later), each agent has a personality section above its skills list — identity, decision philosophy, working style. `/review:specialize` does not touch that. It finds the `## Project Context` heading (or appends after the soul zone if it doesn't exist yet) and operates strictly below that anchor. Run order between `specialize` and `personalize` does not matter — they own non-overlapping zones.
+**Soul Zone preservation.** If you've already run [`/review:personalize`](personalize.md) (or will later), each agent has a personality section above its skills list — identity, decision philosophy, working style. `/review:specialize` does not touch that. It finds the `## Project Context` heading (or appends after the soul zone if it doesn't exist yet) and operates strictly below that anchor. Run order between `specialize` and `personalize` does not matter — they own non-overlapping zones.
 
 ### Stack-specific agents the command creates
 
@@ -143,9 +143,9 @@ Paths not matching any pattern default to MEDIUM. When code-reviewer runs, it us
 
 ### Skills audit and gap filling
 
-The command reads every skill under `.claude/skills/` and classifies it against your stack. For our Next.js project:
+The command reads every skill under `.agents/skills/` and classifies it against your stack. For our Next.js project:
 
-- `tailwind-css-patterns` — **relevant**, Tailwind is in the stack, already wired to `ux-designer`
+- `tailwind-css-patterns` — **relevant**, Tailwind is in the stack
 - `playwright-cli` — **relevant**, Playwright is your E2E framework
 - `qa-engineer` — **relevant**, tech-agnostic planning skill
 - ...every other baseline skill gets classified the same way
@@ -154,7 +154,7 @@ Then it detects gaps. Our stack uses React 19 and Drizzle 0.36 — neither has a
 
 After new skills are generated, the command wires them into relevant agents automatically. `code-reviewer` gets all stack skills (it reviews everything). `frontend-specialist` gets React and Tailwind. `db-architect` gets Drizzle.
 
-In `--dry-run` mode, gaps are reported as "Would create" — nothing written. In `--fix`, the skills land as new directories under `.claude/skills/`. If you've manually customized a skill already, re-running won't overwrite it — the command skips any skill directory that already exists.
+In `--dry-run` mode, gaps are reported as "Would create" — nothing written. In `--fix`, the skills land as new directories under `.agents/skills/`. If you've manually customized a skill already, re-running won't overwrite it — the command skips any skill directory that already exists.
 
 ### Memory seeding
 
@@ -203,7 +203,7 @@ The cost of re-running is a few seconds and a commit. The cost of not re-running
 
 ## What's Next
 
-After `/review:specialize` lands cleanly, the natural next step is `/review:personalize` — it gives each agent a name, a persona, and a working style. Specialize and personalize own non-overlapping zones in the agent files and can run in either order. A dedicated walkthrough for `/review:personalize` is coming in a sibling guide; for now, the command's own file at `.claude/commands/review/personalize.md` is the reference.
+After `/review:specialize` lands cleanly, the natural next step is `/review:personalize` — it gives each agent a name, a persona, and a working style. Specialize and personalize own non-overlapping zones in the agent files and can run in either order. See the existing [personalization guide](personalize.md) and canonical `.agents/skills/review-personalize/references/workflow.md`.
 
 ## See Also
 
@@ -211,3 +211,7 @@ After `/review:specialize` lands cleanly, the natural next step is `/review:pers
 - [`../customization.md`](../customization.md) — zone boundaries that `/review:specialize` respects when editing agent files
 - [`../system-map.md`](../system-map.md) — the inventory of commands, agents, skills, and hooks that specialize extends
 - [`../concepts/memory.md`](../concepts/memory.md) — the confidence ladder and decay model for seeded memories
+
+## Native source and runtime
+
+Use canonical `.agents/roles/` and skills first. Legacy `.claude/` components are authoring fallbacks only without a canonical counterpart. After edits, render native roles through the active helper: `node .codex/core/render-shared-agents.js` in Codex or the compatible `.claude/core/` path in Claude. Workshop runtime metadata stays in adapters; adopter model/tool/memory overrides stay in native `shared-agents.json`. Codex invokes `$review-specialize` / `$review-personalize` through its discovered skills. See [migration v6](../migration-v6.md) for conflicts and execution limits.

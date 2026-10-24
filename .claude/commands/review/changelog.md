@@ -3,6 +3,8 @@ description: Generate a changelog from completed stories and git history
 argument-hint: [version or date range — e.g., "v1.0" or "2026-01-01..2026-02-01"]
 ---
 
+<!-- Generated from .agents/skills/review-changelog/references/workflow.md; edit the canonical source, then run node .claude/core/render-shared-agents.js. -->
+
 # Changelog
 
 Generate a structured changelog from completed stories, git commits, and retrospective findings. Release-oriented view of what's new for users since last release.
@@ -137,7 +139,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### 5. Commit (main agent)
 
-Follow the **Post-Command Commit Convention** in CLAUDE.md. Stage all files created or modified by this command and commit with a descriptive message.
+Follow the **Post-Command Commit Convention** in `.agents/startup-reference.md`. Stage all files created or modified by this command and commit with a descriptive message.
 
 ### 6. Report (main agent)
 

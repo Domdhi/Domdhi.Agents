@@ -9,6 +9,8 @@ user-invocable: false
 allowed-tools: Read Bash Grep Glob
 ---
 
+<!-- Generated from .agents/skills/systematic-debugging/SKILL.md; edit the canonical source, then run node .claude/core/render-shared-agents.js. -->
+
 # Systematic Debugging
 
 ## Overview

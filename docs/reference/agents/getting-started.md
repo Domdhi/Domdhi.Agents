@@ -1,6 +1,6 @@
 # Getting Started
 
-This guide walks you from a fresh clone to a specialized, implementation-ready project in about thirty minutes. You end with filled planning docs (brief, PRD, architecture, backlog), a `.claude/` directory customized for your stack, and a first story ready to hand to `/do`.
+This guide walks you from an application checkout with a pinned Domdhi.Agents release installed to a specialized, implementation-ready project through the planning workflow. You end with filled planning docs (brief, PRD, architecture, backlog), canonical `.agents/` roles/skills with native Claude/Codex delivery, and a first story ready to hand to `/do`.
 
 The path is one command deep: `/create:new-project`. Everything else in this guide is what that command asks you and what it produces. For a wider tour of the system it builds on, see [`concepts/commands.md`](concepts/commands.md), [`concepts/agents.md`](concepts/agents.md), and [`concepts/skills.md`](concepts/skills.md). For adding your own commands or agents after you're moving, see [`guides/contributing.md`](guides/contributing.md).
 
@@ -8,34 +8,34 @@ The path is one command deep: `/create:new-project`. Everything else in this gui
 
 At a glance, so you can skim and skip:
 
-1. **Clone the template** (1 min) — `git clone` into the directory that will hold your project
+1. **Install a pinned Domdhi.Agents release** (a few min) — the installer adds the toolkit to your application checkout
 2. **Run `/create:new-project`** (25 min)
    - Three-round interview captures the elevator pitch, stack, and constraints (~3 min)
    - Planning pipeline chains `/create:project-brief` → `/create:project-requirements` → `/create:project-architecture` → `/create:project-epics` (~15 min)
    - `/review:specialize --fix` customizes the agents and memory for your stack (~5 min)
-   - `product/context.md` is generated and the whole initialization commits in one squash (~2 min)
+   - `product/context.md` is generated; each subcommand commits its output and the orchestrator records the wrap-up
 3. **Look around** (4 min) — read the filled brief, confirm the backlog is sensible, decide whether to personalize the agents now or later
 
-If you're in a hurry, the only prerequisite for running the command is a completed clone. Everything else is interactive.
+If you're in a hurry, the only prerequisite for running the command is a completed installation. Everything else is interactive.
 
 ## Before You Start
 
 Two assumptions this guide makes:
 
 - **You have Claude Code installed and working.** If `claude` doesn't launch in your terminal, start with the [Claude Code install docs](https://docs.anthropic.com/claude-code) and come back here.
-- **You have an empty directory or a new repo ready.** The template scaffolds into the current working directory. Running it inside an existing project with filled docs is explicitly blocked — `/create:new-project` detects filled planning docs and refuses unless you pass `--yolo`. Start clean.
+- **You have an application checkout with a pinned Domdhi.Agents release installed.** For a new application, generate it with the selected stack’s starter first (Step 1 covers the install). Running `/create:new-project` inside an existing project with filled docs is explicitly blocked — `/create:new-project` detects filled planning docs and refuses unless you pass `--yolo`. Start clean.
 
 Everything else — the docs tree, the initial commit, the specialization — is handled for you.
 
-## Step 1 — Clone the Template
+## Step 1 — Install a Pinned Domdhi.Agents Release
+
+Domdhi.Agents is installed into an application checkout; it is not cloned as a project template, and its own repository history is never repurposed as your project. For a new application, generate it with the selected stack’s starter first, then install a pinned Domdhi.Agents release into that checkout:
 
 ```bash
-git clone https://github.com/Domdhi/Domdhi.Agents.git my-project
-cd my-project
-rm -rf .git && git init
+node .claude/core/install.js "<path to your application>" --dry-run
 ```
 
-The `rm -rf .git && git init` detaches the template's history so your project starts clean. The template's license and README travel with the clone; you'll overwrite those in the first few days or delete them outright when you're ready.
+Run it from the pinned release’s checkout, review the preview, then repeat without `--dry-run`. The installer validates source assets, target paths and project update configuration before mutation. Ordinary updates later use the updater described in [`customization.md`](customization.md).
 
 Launch Claude Code from the project root:
 
@@ -110,7 +110,7 @@ With planning docs in place, `/create:new-project` invokes `/review:specialize -
 
 Specialize reads `architecture/overview.md` and:
 
-- Appends a `## Project Context` section to every default agent in `.claude/agents/*.md`, filled with your stack, ADRs, and conventions
+- Appends a `## Project Context` section to every default agent in `.agents/roles/*.md`, filled with your stack, ADRs, and conventions
 - Creates new stack-specific agents where the architecture warrants — a `db-architect.md` if your stack leans on a non-trivial database layer, an `auth-builder.md` if auth is a named concern, and so on
 - Seeds the memory system with ADRs and architectural patterns at confidence 0.9
 - Audits the skill inventory for relevance and flags framework gaps for you to fill later
@@ -122,9 +122,9 @@ For Lane, specialize produces a `cli-designer.md` and a `sqlite-architect.md` ag
 Two small things close out the pipeline:
 
 1. **`docs/product/context.md` is generated.** This is the quick-reference that `/prime` reads at the start of every future session. It lists every planning doc by path, summarizes the stack, and links the implementation commands (`/do`, `/run-todo`, `/review:*`). You rarely edit it by hand — `/review:update-docs` keeps it in sync as the codebase evolves.
-2. **Everything initialized commits in one squash.** The message reads something like `feat: /create:new-project — Lane initialized`. Sub-commands along the way may have staged their own work per the project's commit convention; this final commit catches `product/context.md` and the interview scratch file.
+2. **The orchestrator commits the wrap-up.** Planning subcommands commit their own outputs. The final initialization commit records project context and the workflow's selected continuity artifacts; ignored interview scratch remains working state rather than the only durable evidence.
 
-The command prints a final report — tier, stack, documents created, specialization summary, readiness check, commit hash, and recommended next commands. That's the thirty-minute mark.
+The command prints a final report — tier, stack, documents created, specialization summary, readiness check, commit hash, and recommended next commands. Review those outputs before beginning implementation.
 
 ## Where You Land
 
@@ -132,7 +132,7 @@ Read the final report. Then take five minutes and look at:
 
 - `docs/product/brief.md` — does the strategic framing match your intent? Small edits are fine; structural disagreements mean the interview was under-specified and you should re-run with `--yolo` or edit directly
 - `docs/work/backlog.md` — is the epic breakdown sensible? Are the first two or three stories small enough to execute in a single `/do`?
-- `.claude/agents/` — notice the new `## Project Context` sections and any new stack-specific agents
+- `.agents/roles/` — notice the new `## Project Context` sections and any new stack-specific agents
 
 You now have a project that Claude Code understands on its own terms. The next session can open cold with `/prime` and resume from `product/context.md` without you re-explaining anything.
 
@@ -154,3 +154,7 @@ If you want to extend the system itself — a custom command for your team's wor
 - [`concepts/memory.md`](concepts/memory.md) — how the memory system compounds across sessions
 - [`reference/commands.md`](commands.md) — canonical reference for every slash command
 - [`reference/system-map.md`](system-map.md) — full inventory of agents, commands, skills, and hooks
+
+## Codex walkthrough equivalent
+
+Use `.codex/core/install.js` from the pinned toolkit checkout, launch Codex in the application and invoke the discovered `$create-new-project` or `$onboard`. Namespaced Claude commands map to hyphenated skills, listed in [commands](commands.md). Read the installed body; start a fresh session if discovery is stale. Native trust, live model behavior and Windows execution remain separate verification, as described in [migration v6](migration-v6.md).

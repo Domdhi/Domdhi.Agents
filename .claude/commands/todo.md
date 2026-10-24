@@ -3,11 +3,13 @@ description: Create an execution-ready TODO checklist with AC, file lists, resea
 argument-hint: [task description, file path, or module name]
 ---
 
+<!-- Generated from .agents/skills/todo/references/workflow.md; edit the canonical source, then run node .claude/core/render-shared-agents.js. -->
+
 # /todo — Create Execution-Ready TODO
 
 Create a TODO checklist that `/run-todo` can execute without additional research. Every story has acceptance criteria, file lists, estimates, and research notes. Dependencies are optimized, waves are pre-computed.
 
-Main Agent does all planning and assembly. Research agents (Sonnet) scan the codebase. The output is a contract — `/run-todo` trusts it completely.
+Main Agent does all planning and assembly. Research agents (`standard` tier) scan the codebase. The output is a contract — `/run-todo` trusts it completely.
 
 ## Telemetry (run first)
 
@@ -58,13 +60,15 @@ Read in parallel:
 - `docs/architecture/overview.md` — architecture boundaries, schemas, ADRs
 - Module docs: `docs/modules/{module}/brief.md` (if module-scoped)
 
+**Runtime and verification.** In Codex, run each `.claude/core/` command in this workflow as `.codex/core/` with the same arguments, per `.agents/adapters/codex/execution.md`. This workflow runs no build gate; its evidence is the written TODO passing the Phase 3b self-review and mechanical checks, accepted review findings applied in Phase 5, the Phase 7 handoff and the Phase 8 commit hash. Every story's verification names the application's own build and test commands in an adopter, never the Domdhi.Agents toolkit suite, also after agent-file edits; in Domdhi.Agents itself it names the toolkit's Node build and Vitest suite (`node .claude/core/gate.js test`). Discovery alone (an installed skill, a listed command or a loaded file) never proves this workflow ran; report completion only from that evidence.
+
 ---
 
-## Phase 2: Research (Sonnet agents — scaled to complexity)
+## Phase 2: Research (`standard` tier agents — scaled to complexity)
 
 **All research agents must persist their output to files.** Agent results evaporate when context compresses — persisted files are the permanent record.
 
-**Reuse warm session agents before cold-spawning.** If agents earlier in THIS session already hold relevant context — e.g. an audit or investigation that motivated this TODO and already read the target files — RESUME them with a focused deep-dive prompt (SendMessage to the `agentId`) instead of cold-spawning fresh researchers. A warm agent skips rediscovery, already knows the file layout, and returns exact signatures faster. Still require it to persist findings to the research file below. Cold-spawn only for subsystems no prior agent has touched.
+**Reuse warm session agents before cold-spawning.** If agents earlier in THIS session already hold relevant context — e.g. an audit or investigation that motivated this TODO and already read the target files — RESUME them with a focused deep-dive prompt (SendMessage to the `agentId`) instead of cold-spawning fresh researchers. A warm agent skips rediscovery, already knows the file layout, and returns exact signatures faster. Still require it to persist findings to the research file below. Cold-spawn only for subsystems no prior agent has touched. Likewise reuse prior accepted research (tracked findings, an earlier run's research for the same scope): re-ground only the paths and AC that changed since it was accepted, rather than re-researching unchanged scope.
 
 **Resolve scope-forking unknowns IN research, before sizing.** When a story's file count hinges on a yes/no the research can answer (e.g. "does this abstraction already exist, or does this need a new file?"), make the research agent answer it explicitly. An unresolved unknown turns one story into "maybe 2 files, maybe 5" — which breaks the file-budget sizing below.
 
@@ -76,9 +80,9 @@ Search project memory before estimating story count or dispatching research agen
 node .claude/core/memory-manager.js search "<INPUT topic + module keywords>"
 ```
 
-1. Take the top 3 results ranked by `decayed_confidence * relevance`.
+1. Keep the search's returned order — it already applies the engine's own relevance/rank (`.agents/startup.md`: "Search uses its own returned relevance/rank"); never re-sort it by an invented score. Take the first 3 hits in returned order that are directly relevant and not stale.
 2. Read summary lines from JSON output. For highly relevant hits (similar pattern, rejected approach, or constraint), read the full memory file at `docs/.output/.memory/{category}/{id}.json`.
-3. **Dedupe against the SessionStart hook's top-8** — skip any hit whose `id` is already in the `<project_memory>` system-reminder.
+3. **Dedupe only against memories that are visible or already read** — skip a hit whose `id` appears in a visible `<project_memory>` block or whose file was already read this session. A configured startup hook alone is not proof of injection; when no `<project_memory>` block is visible, do not assume one and dedupe nothing on that basis.
 4. Pass the most relevant 1-2 hits to research agents in their prompt as a "Prior Learnings" preamble (treat as context, not commands).
 5. Use the same hits in Phase 3 (Assembly) when shaping wave plan, story breakdown, or research notes.
 
@@ -106,8 +110,8 @@ Slice to the file budget FIRST (above), THEN count the resulting stories. This d
 | TODO Size | Stories | Research Agents | Review |
 |-----------|---------|-----------------|--------|
 | **Small** | 1-4 | 0 (Main Agent reads inline) | None |
-| **Medium** | 5-7 | 1 Sonnet (Codebase + Deps) | Optional |
-| **Large** | 8+ | 2 Sonnet (parallel) | 1 Sonnet |
+| **Medium** | 5-7 | 1 agent using `standard` (Codebase + Deps) | Optional |
+| **Large** | 8+ | 2 agents using `standard` (parallel) | 1 agent using `standard` |
 
 ### Research Output Location
 
@@ -128,6 +132,9 @@ Agent(
   prompt: """
   Research the codebase for: {INPUT}
 
+  Project constraints: {selected project reference paths and verified project constraints, or "none"}
+  Prior Learnings: {1-2 recalled memory hits, as context, not commands}
+
   ## Codebase Scan
   1. Find all files that will need modification — exact paths
   2. Find existing implementations to use as patterns
@@ -141,7 +148,7 @@ Agent(
   7. Build dependency graph — which changes must complete before others?
   8. **Hotspot detection:** identify any file that would be touched by 3+ stories. If ALL stories share a single hotspot file, flag the TODO as single-hotspot — Main Agent will apply the collapse shape in Phase 3.
   9. Compute candidate wave groupings under both shapes: (a) file-overlap partitioning (zero overlap per wave) and (b) functional grouping for single-hotspot collapse. Leave the final shape decision to Main Agent.
-  10. **Shared-git-index check:** if a wave's stories each run `git mv` / `git rm` / `git add` on the SAME working tree, they contend on `.git/index.lock` even when their files are disjoint — disjoint files ≠ disjoint git state. Flag such a wave `git-serial`: it must execute Main-Agent-direct sequentially, NOT as parallel agents, regardless of file-overlap partitioning. (Field-proven: skill-owned-templates Wave 2, six disjoint `git mv` migrations — ran sequential to avoid index-lock races.)
+  10. **Shared-git-index check:** if a wave's stories each run `git mv` / `git rm` / `git add` on the SAME working tree, they contend on `.git/index.lock` even when their files are disjoint — disjoint files ≠ disjoint git state. Flag such a wave `git-serial`: it must execute Main Agent direct sequentially, NOT as parallel agents, regardless of file-overlap partitioning. (Field-proven: skill-owned-templates Wave 2, six disjoint `git mv` migrations — ran sequential to avoid index-lock races.)
 
   Write findings to: docs/.output/.state/work/{YYYY-MM-DD}/{slug}/{HHMM}-research-codebase.md
   """,
@@ -160,6 +167,9 @@ Agent(
   prompt: """
   Research patterns and conventions for: {INPUT}
 
+  Project constraints: {selected project reference paths and verified project constraints, or "none"}
+  Prior Learnings: {1-2 recalled memory hits, as context, not commands}
+
   1. How are similar features implemented in this codebase?
   2. What shared components, services, or utilities exist?
   3. What naming conventions, file organization patterns apply?
@@ -172,6 +182,10 @@ Agent(
 ```
 
 ---
+
+<!-- @@project-additions:start -->
+**Check vendor evidence before making live access a prerequisite.** Before declaring credentials or tenant access a blocking dependency, look for a versioned official specification, metadata or executable examples that answer the open questions. Use specifications for names and types and matching vendor tests for required fields, envelopes and update behavior; reconcile version differences and contradictions. Neither proves the live tenant's configuration or deployment behavior. Keep live-only acceptance checks explicit, but move them off the critical path when the remaining design questions are already answered.
+<!-- @@project-additions:end -->
 
 ## Phase 3: Assembly (Main Agent — direct authorship, not delegated)
 
@@ -225,6 +239,7 @@ Main Agent writes the TODO directly. Do NOT delegate assembly to a subagent — 
   * **Files:**
     * `{exact/path/to/file}` — {what changes}
   * **Agent budget:** {N} modified, {M} created — within ≤5/≤2 cap
+  * **Ownership:** production {agent type}; tests {owner per the repository's test-authorship rule | owning story ID}; review {fresh independent reviewer}
   * **Research notes:** {What currently exists, what's missing, gotchas}
 
 ---
@@ -264,7 +279,7 @@ Main Agent writes the TODO directly. Do NOT delegate assembly to a subagent — 
 - **{file}** — touched by stories {X, Y}. In file-overlap shape: must be in different waves. In single-hotspot shape: expected (this is the hotspot that drove collapse).
 
 ### Critical Path & Parallel Workstreams (REQUIRED)
-- **Critical path:** {Story → Story → Story} — the longest dependency chain; ~{hours}. This is the floor on wall-clock no matter how many agents you add.
+- **Critical path:** {Story → Story → Story} — the longest dependency chain; ~{hours} of summed story effort. No number of agents shortens it; elapsed time also includes dispatch, gate and review time, so do not report effort hours as elapsed time.
 - **Parallel workstreams:** {N} independent chains that run concurrently — {chain A} ∥ {chain B} ∥ {chain C}. Each chain owns a disjoint file set.
 - **Max concurrent agents:** {N} (the widest wave).
 - **Bottleneck:** {Story ID} — {why; e.g. it adds the interface every Wave-2 story consumes}. If it slips, everything downstream slips.
@@ -272,6 +287,8 @@ Main Agent writes the TODO directly. Do NOT delegate assembly to a subagent — 
 ---
 
 ## Key Findings from Research
+
+{Accepted facts, citations and scope decisions that execution relies on — copied here from the ignored research files, never only referenced}
 
 1. **{Finding}** — {detail with file paths}
 2. **{Finding}** — {detail}
@@ -293,12 +310,15 @@ Main Agent writes the TODO directly. Do NOT delegate assembly to a subagent — 
 11. **Every story carries an Agent budget line within the HARD CAP** — ≤5 files modified / ≤2 files created (tests count). Split anything larger into parallel sub-stories. Bias toward more, smaller stories + more agents.
 12. **Sub-story splits use sibling H2 headers (`## Story N.M.K`), never H3 nested under a wrapping H2** — `status.js --regen-master` only counts H2 headers (see the SPLIT rule above).
 13. **Surface the project's recurring implementation constraints in the story's Research Notes at authoring time** — any constraint that has bitten implementers ≥2 times (per memory, retros, or project CLAUDE.md) gets named explicitly in each affected story's Research Notes; memory recall alone has proven insufficient for implementers. Typical shapes: a per-file registration/exports step with no barrel, a write-boundary guard set that must be re-visited by name on every related change, an expensive (AI/embedding) call that must be ordered after every cheap check that could obviate it.
+14. **Every story names production, test and review ownership** — read the repository's actual test-authorship rule before assigning it; do not import another repository's rule. In this toolkit, `/run-todo` Step 2b has the Main Agent write AC tests before dev dispatch (with its documented one-round and cross-story test-ownership exceptions); dev agents own production edits; a fresh independent reviewer owns review. A deviation from the actual rule is stated in the story, not hidden.
+15. **Accepted evidence is portable** — accepted facts, citations, scope decisions and review evidence that execution relies on go into the TODO itself (Research notes, Key Findings) or another tracked doc. Research files under `docs/.output/.state/` are ignored scratch: useful for reuse, never the sole execution authority a cold clone would lack.
+16. **Project constraints land in the affected stories** — when Phase 1 verified project references, name the applicable reference paths and the verified project constraints in each affected story's Research notes; omit them for toolkit or unrelated stories.
 
 ---
 
 ### Complexity Score (1–10) — canonical rubric
 
-Every story carries a persisted `**Complexity:** {1–10}` field. This is the **routing signal of record**: `/do` reads it to choose Main-Agent/Opus-direct vs Sonnet-delegate (Complexity ≤5 → Opus-direct; ≥6 → delegate), and `/review:optimize-backlog` can reason over it. Scoring it at authoring time makes the size/route decision **auditable** instead of re-judged ad-hoc on every `/do` run.
+Every story carries a persisted `**Complexity:** {1–10}` field. This is the **routing signal of record**: `/do` reads it to choose Main Agent direct vs delegated (Complexity ≤5 → Main Agent direct; ≥6 → delegate), and `/review:optimize-backlog` can reason over it. Scoring it at authoring time makes the size/route decision **auditable** instead of re-judged ad-hoc on every `/do` run.
 
 Score from the same signals `/do` uses to size a task — files touched, new LOC, AC-bullet count, and nature (mechanical vs ambiguous):
 
@@ -309,7 +329,7 @@ Score from the same signals `/do` uses to size a task — files touched, new LOC
 | 6–7 | Large | >5 files OR ≥500 LOC OR >8 AC, some ambiguity |
 | 8–10 | Complex | multi-component, cross-cutting, multiple valid approaches |
 
-Complexity is **distinct from Estimate**: Estimate is wall-clock effort, Complexity is routing/ambiguity. A 2-hour but purely mechanical refactor is high-Estimate, low-Complexity (≤5 → stays Opus-direct). This is the single source of truth for the score; `/create:project-epics-todo` references this rubric rather than restating it.
+Complexity is **distinct from Estimate**: Estimate is wall-clock effort, Complexity is routing/ambiguity. A 2-hour but purely mechanical refactor is high-Estimate, low-Complexity (≤5 → stays Main Agent direct). This is the single source of truth for the score; `/create:project-epics-todo` references this rubric rather than restating it.
 
 ---
 
@@ -366,8 +386,20 @@ Before handing off to external review, Main Agent scans its own output for plan 
 - [ ] Any story exceeds the HARD CAP (> 5 files modified or > 2 files created) — split it into parallel sub-stories
 - [ ] Any story is missing its **Agent budget** line
 - [ ] Wave Plan is missing the **Critical Path & Parallel Workstreams** block
+- [ ] Any story is missing its **Ownership** line, or its test owner contradicts the repository's actual test-authorship rule without a stated deviation
 
 **This is a 30-second scan that catches 3-5 issues every time.** Do not skip it.
+
+**Mechanical plan checks (structural — run against the written file, not from memory):**
+
+- [ ] Story/index parity — every story in the body appears in the Story Index and every index row has a body story; split sub-stories are sibling H2 headers so `status.js --regen-master` counts them
+- [ ] Dependencies — every Dependencies ID exists, and no story depends on a story in the same or a later wave
+- [ ] Budget — every Agent budget line matches its Files list and stays within ≤5 modified / ≤2 created
+- [ ] Path collisions — per the declared Shape, no unintended file is owned by two stories dispatched in parallel
+- [ ] Forward outputs — a story that reads or edits a file another story creates sits in a later wave than its creator
+- [ ] Critical path — the stated chain is the longest dependency chain, its hours are summed story effort, and nothing reports them as elapsed time
+
+These checks prove the plan's structure only. They never prove that a story's AC is correct, satisfiable or met; that semantic proof is the spec-bug checks below and execution-time evidence.
 
 **Spec-bug checks (wrong output, not just incomplete):**
 
@@ -380,15 +412,19 @@ These run inline as part of the same scan — no subagent round-trip. Source: co
 
 ---
 
-## Phase 4: Review (Sonnet — Large TODOs only, 8+ stories)
+## Phase 4: Review (`standard` tier — Large TODOs only, 8+ stories)
 
 Skip for Small (1-4). Use judgment for Medium (5-7).
+
+Dispatch a **fresh, independent** reviewer: give it the persisted scope (the written TODO path, the research files, the source paths the stories name and verified project constraints and architecture reference paths), not this conversation's context, so it judges the plan as written. Keep its `agentId`: after Phase 5 applies accepted findings, resume the **same reviewer** to confirm each finding is closed, rather than spawning a new one.
 
 ```
 Agent(
   subagent_type: "code-reviewer",
   prompt: """
   Review the TODO at {path} for execution readiness.
+  Persisted scope: {research file paths}, {source paths named in the stories}
+  Project constraints: {selected project reference paths and verified project constraints, or "none"}
 
   ## Coverage
   1. Every AC is specific and testable (no "properly", "correctly", "as needed")
@@ -411,7 +447,7 @@ Agent(
 
 ## Phase 5: Synthesis (Main Agent)
 
-Read the review findings. Decide what to accept. Apply accepted findings to the TODO file directly.
+Read the review findings. Decide what to accept. Apply accepted findings to the TODO file directly, then resume the same Phase 4 reviewer to confirm closure of each accepted finding. Record the accepted findings, their resolution and any rejected finding with its reason in the TODO's Key Findings, because the review file under `docs/.output/.state/` is ignored scratch.
 
 Main Agent is the single author of the TODO — review agents advise, Main Agent decides.
 
@@ -448,7 +484,9 @@ HANDOFF=$(node .claude/core/handoff-path.js write todo)
 
 Read that skill for the template, rules, and `/todo`-specific tailoring (Step 4 in the skill).
 
-**Why:** a newly-created TODO is "ready to execute." The handoff's Next Actions should point at `/run-todo {path}` as #1 so the next session's `/prime` immediately surfaces what to do next. The TODO path + research files go in Key Files.
+**Why:** a newly-created TODO is "ready to execute." The handoff's Next Actions should point at `/run-todo {path}` as #1 so the next session's `/prime` immediately surfaces what to do next. The TODO path goes in Key Files (subject to compact resume below); research files are never Key Files.
+
+**Compact resume.** When the TODO exceeds the session-handoff Key Files ceiling (over 20kb per file, or a set over ~15k tokens), do not list it as a Key File. List a compact companion brief instead only when a tracked one already exists (for example a module brief, or the `/run-todo` plan on a resumed TODO); at `/todo` time there usually is none, so list no Key File for the TODO and rely on Next Actions #1 (`/run-todo {path}`) to name it for on-demand reading. A brief never restates or summarizes AC; resume reads them verbatim from the full TODO. Research files under `docs/.output/.state/` are mentioned in Decisions & Context for on-demand reuse, never relied on as the only record (Template Rule 15).
 
 ---
 
@@ -460,12 +498,14 @@ Write the commit message to `docs/.output/.state/.commit-msg` (Write tool — no
 docs: /todo — create TODO for {slug} ({N} stories)
 ```
 
-Then run:
+Then run (in Codex, use `node .codex/core/commit.js`):
 
 ```bash
-git add {TODO_PATH} docs/.output/.state/work/{YYYY-MM-DD}/{slug}/ "$HANDOFF"
+git add {TODO_PATH} "$HANDOFF"
 node .claude/core/commit.js
 ```
+
+Stage exactly these tracked files. The research and review files under `docs/.output/.state/` are gitignored scratch, so they are not staged; their accepted content is already in the TODO (Template Rule 15). Commit only through the native commit helper, and do not push, open a PR or take any other outward action without explicit authorization.
 
 ---
 
@@ -481,3 +521,8 @@ node .claude/core/commit.js
 8. **Always regenerate the session handoff (Phase 7) and commit (Phase 8).** A newly-created TODO that isn't surfaced in the handoff won't be picked up by the next session's `/prime`. Use the `session-handoff` skill (path via `handoff-path.js write todo`).
 9. **Per-agent file budget is a HARD CAP** — ≤5 files modified / ≤2 files created per dev agent. More small stories + more parallel agents beats fewer fat ones. No background agent should ever compact mid-implementation.
 10. **Reuse warm session agents when they already hold the context** — resume via SendMessage over cold-spawn; still persist findings to the research file.
+11. **Ownership is explicit and grounded** — every story names production, test and review ownership per the repository's actual test-authorship rule (Template Rule 14).
+12. **Review is fresh, closure is warm** — a fresh independent reviewer reads the persisted scope; the same reviewer confirms finding closure (Phase 4/5).
+13. **Accepted evidence lives in tracked docs** — ignored scratch is never the sole execution authority (Template Rule 15).
+14. **Mechanical checks are structural** — they never stand in for semantic AC proof, and effort hours are never reported as elapsed time (Phase 3b).
+15. **Commits are exact and local** — stage exact tracked files, commit through the native commit helper, and take no outward action without authorization (Phase 8).

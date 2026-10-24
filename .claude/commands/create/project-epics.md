@@ -3,6 +3,8 @@ description: Break requirements into epics and stories for implementation
 argument-hint: [project name or architecture path] [--yolo]
 ---
 
+<!-- Generated from .agents/skills/create-project-epics/references/workflow.md; edit the canonical source, then run node .claude/core/render-shared-agents.js. -->
+
 # Create Epics
 
 Break product requirements into implementable epics and stories. Produces `docs/work/backlog.md`.
@@ -66,6 +68,8 @@ Synthesize a planning brief from upstream docs:
 
 Use the Task tool with `subagent_type: "project-planner"` to generate epics and stories.
 
+**Runtime and verification.** In Codex, run each `.claude/core/` command in this workflow as `.codex/core/` with the same arguments, per `.agents/adapters/codex/execution.md`. This workflow runs no build gate; its evidence is the written `docs/work/backlog.md` passing Step 5 validation, the Step 6 overlap check, the Step 6b real-document check (no `<!-- @@template -->` marker left) and the Step 7 commit hash. Stories that name build or test commands use the application's own commands in an adopter, never the Domdhi.Agents toolkit suite, also after agent-file edits. Discovery alone (an installed skill, a listed command or a loaded file) never proves this workflow ran; report completion only from that evidence.
+
 **Task prompt must include**:
 1. What to produce (`docs/work/backlog.md`)
 2. Full list of FRs with their MoSCoW priorities and acceptance criteria
@@ -93,6 +97,8 @@ After the agent completes, verify the output:
 - **Epic IDs are contiguous** (C9) — the epic numbers run without gaps (e.g. Epic 0..Epic N, not 0–7 then jumping to 11) and the count stated in any summary matches the number of `## Epic` headers. A non-contiguous ID propagates silently into the master index, per-epic filenames, and every story ID downstream — delegate back to renumber before continuing.
 - If issues found, delegate back to the agent to fix
 
+These checks and the Step 6 overlap scan are structural: they prove the backlog's shape, not that any acceptance criterion is satisfiable or met. Story estimates are effort, not elapsed time.
+
 ### 6. Detect File Overlap (main agent)
 
 Run the epic-overlap CLI against the new `backlog.md` to surface any inadvertent file-ownership overlaps between epics. The wave-based execution model in `/run-todo` requires zero file overlap within a wave — overlaps that aren't explicitly acknowledged will produce silent merge conflicts during parallel dispatch.
@@ -116,7 +122,7 @@ node -e "require('./.claude/core/_lib/doc-drift.js').stripTemplateMarker(require
 
 ### 7. Commit (main agent)
 
-Follow the **Post-Command Commit Convention** in CLAUDE.md. Stage all files created or modified by this command and commit with a descriptive message.
+Follow the **Post-Command Commit Convention** in `.agents/startup-reference.md`. Stage each file this command created or modified by its exact path and commit through the native commit helper (`node .claude/core/commit.js`, or `node .codex/core/commit.js` in Codex) with a descriptive message. Do not push, open a PR or take any other outward action without explicit authorization.
 
 ### 8. Report (main agent)
 

@@ -3,6 +3,8 @@ description: Create a project brief capturing strategic vision and project scope
 argument-hint: [project name or description]
 ---
 
+<!-- Generated from .agents/skills/create-project-brief/references/workflow.md; edit the canonical source, then run node .claude/core/render-shared-agents.js. -->
+
 # Create Project Brief
 
 Create a strategic project brief. Produces `docs/product/brief.md`.
@@ -56,6 +58,8 @@ Synthesize a context brief from upstream docs:
 
 ### 5. Delegate to Agent
 
+**Runtime and verification.** In Codex, run each `.claude/core/` command in this workflow (such as `telemetry-log.js`) as `.codex/core/` with the same arguments, per `.agents/adapters/codex/execution.md`. This workflow has no build or test gate; in an adopter any later gate is the application's own and never the Domdhi.Agents toolkit suite. Its evidence is `docs/product/brief.md` passing the real-document check (no `<!-- @@template -->` first line) and the Step 6 Required Sections Checklist, plus the hash of a commit that stages only the files this command wrote; discovery alone (an installed skill, a listed command or a loaded file) never proves this workflow ran.
+
 Use the Task tool with `subagent_type: "product-strategist"` to generate the brief.
 
 **Task prompt must include**:
@@ -63,6 +67,7 @@ Use the Task tool with `subagent_type: "product-strategist"` to generate the bri
 2. Summary of upstream context (brainstorm direction, research findings)
 3. User's answers from interview rounds (if any)
 4. Mode (Context/Interview)
+6. The grounding rule: never invent or fabricate project business requirements, goals, users or constraints; ground each in the user's statements, the upstream documents and verified source, and record anything unknown as an open question
 
 The `product-strategist` agent auto-loads the `project-planning` skill via frontmatter — do NOT tell it to read the skill file.
 
@@ -74,7 +79,7 @@ After the agent completes, verify the output:
 
 ### 7. Commit (main agent)
 
-Follow the **Post-Command Commit Convention** in CLAUDE.md. Stage all files created or modified by this command and commit with a descriptive message.
+Follow the **Post-Command Commit Convention** in `.agents/startup-reference.md`. Stage all files created or modified by this command and commit with a descriptive message.
 
 ### 8. Report (main agent)
 

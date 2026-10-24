@@ -2,12 +2,14 @@
 name: ux-design
 description: "Use WHEN creating a UX specification, wireframes, design system, theme files, or HTML mock layout. Triggers: ux, wireframe, design system, color palette, typography, layout, accessibility, theme, mock"
 metadata:
-  version: 1.0.0
+  version: 1.1.0
   author: Domdhi.Agents
   tags: [ux, wireframes, design-system, accessibility, themes, mock-layout]
 user-invocable: false
 allowed-tools: Read Write Grep Glob
 ---
+
+<!-- Generated from .agents/skills/ux-design/SKILL.md; edit the canonical source, then run node .claude/core/render-shared-agents.js. -->
 
 # UX Design
 
@@ -34,6 +36,10 @@ Expert in UX specification documents. Produces a complete design artifact suite:
 | Light theme (`theme.light.md`) | `assets/theme.light.md` |
 | Dark theme (`theme.dark.md`) | `assets/theme.dark.md` |
 | Mock layout (`mock.html`) | `assets/mock.html` |
+
+## Project stack and brand
+
+Read the project’s own `brand-guidelines` before choosing colors, typography or logos. Unfilled scaffold placeholders are not approved brand values. Keep the existing component library and styling system; verify component APIs and token names against the installed versions before using them.
 
 ## Required Sections Checklist
 
@@ -97,13 +103,13 @@ Expert in UX specification documents. Produces a complete design artifact suite:
 ## Interview Questions
 
 1. "What's the overall feel? (professional, playful, minimal, data-dense)"
-2. "Any brand colors or existing design language?"
+2. "What approved brand values and existing design language should this use?"
 3. "What devices/screen sizes matter most?"
 4. "Any accessibility requirements? (WCAG level, audience needs)"
 5. "What's the most important page/view in the app?"
 6. "Any design inspirations or anti-inspirations?"
 7. "Light mode, dark mode, or both?"
-8. "What UI component library are you using? (or building custom)"
+8. "What UI component library and version does the app already use? (or building custom)"
 
 ## Cross-References
 - Reads from: `docs/product/requirements.md` (required)

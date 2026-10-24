@@ -1,0 +1,61 @@
+{
+  "roles": {
+    "qa-engineer": {
+      "tier": "standard",
+      "tools": "Read, Write, Edit, Bash, Grep, Glob",
+      "memory": "project"
+    },
+    "architect": {
+      "tier": "standard",
+      "tools": "Read, Write, Edit, Bash, Grep, Glob",
+      "memory": "project"
+    },
+    "code-reviewer": {
+      "tier": "standard",
+      "tools": "Read, Grep, Glob, Bash, Write",
+      "disallowedTools": "Edit",
+      "memory": "project"
+    },
+    "doc-writer": {
+      "tier": "standard",
+      "tools": "Read, Write, Edit, Grep, Glob",
+      "memory": "project"
+    },
+    "general-purpose": {
+      "tier": "standard",
+      "tools": "Read, Write, Edit, Bash, Grep, Glob",
+      "memory": "project"
+    },
+    "playwright": {
+      "tier": "standard",
+      "tools": "Read, Write, Edit, Bash, Grep, Glob",
+      "memory": "project"
+    },
+    "product-strategist": {
+      "tier": "standard",
+      "tools": "Read, Grep, Glob, WebSearch, WebFetch, Write, Edit",
+      "memory": "project"
+    },
+    "project-planner": {
+      "tier": "standard",
+      "tools": "Read, Write, Edit, Grep, Glob",
+      "memory": "project"
+    },
+    "security-auditor": {
+      "tier": "audit",
+      "tools": "Read, Grep, Glob, Bash, Write",
+      "disallowedTools": "Edit",
+      "memory": "project"
+    },
+    "shadow": {
+      "tier": "standard",
+      "tools": "Read, Write, Edit, Grep, Glob, WebSearch, WebFetch",
+      "memory": "project"
+    },
+    "ux-designer": {
+      "tier": "standard",
+      "tools": "Read, Write, Edit, Grep, Glob",
+      "memory": "project"
+    }
+  }
+}

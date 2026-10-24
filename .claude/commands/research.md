@@ -3,6 +3,8 @@ description: Research and validate market, technical, or domain assumptions
 argument-hint: [research topic or question]
 ---
 
+<!-- Generated from .agents/skills/research/references/workflow.md; edit the canonical source, then run node .claude/core/render-shared-agents.js. -->
+
 # Research
 
 Conduct structured research to validate assumptions. Output is **context-bundled** — if researching a specific feature/module, output goes to `docs/modules/{feature}/research.md`. If general, output goes to `docs/.output/findings/research/{YYMMDD-HHMM}-{slug}.md`.
@@ -56,6 +58,8 @@ If INPUT is a broad topic, break it into specific questions. This step has two p
 
 ### 3. Delegate to Agent
 
+**Runtime and verification.** In Codex, run each `.claude/core/` command in this workflow (such as `telemetry-log.js`) as `.codex/core/` with the same arguments, per `.agents/adapters/codex/execution.md`. This workflow has no build or test gate; in an adopter any later gate is the application's own and never the Domdhi.Agents toolkit suite. Its evidence is the consolidated `{OUTPUT_PATH}` document with cited claims and the hash of a commit that stages only the files this command wrote; discovery alone (an installed skill, a listed command or a loaded file) never proves this workflow ran.
+
 Use the Task tool with `subagent_type: "product-strategist"` to conduct the research.
 
 **Task prompt must include**:
@@ -84,7 +88,7 @@ After agent(s) complete:
 
 ### 5. Commit (main agent)
 
-Follow the **Post-Command Commit Convention** in CLAUDE.md. Stage all files created or modified by this command and commit with a descriptive message.
+Follow the **Post-Command Commit Convention** in `.agents/startup-reference.md`. Stage all files created or modified by this command and commit with a descriptive message.
 
 ### 6. Report (main agent)
 

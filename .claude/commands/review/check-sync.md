@@ -3,6 +3,8 @@ description: Detect documentation drift after implementation — flags docs that
 argument-hint: [scope: all | architecture | stories | prd]
 ---
 
+<!-- Generated from .agents/skills/review-check-sync/references/workflow.md; edit the canonical source, then run node .claude/core/render-shared-agents.js. -->
+
 # Check Sync
 
 Detect documentation drift by comparing planning docs against actual project state. Run after stories, after epics, or on-demand to catch misalignment early.

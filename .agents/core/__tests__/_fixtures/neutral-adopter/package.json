@@ -1,0 +1,10 @@
+{
+  "name": "neutral-application-gate-fixture",
+  "private": true,
+  "scripts": {
+    "build": "node application-check.cjs build",
+    "test": "node application-check.cjs test --filter=Category!=Integration --coverage",
+    "security": "node application-check.cjs security",
+    "pr:preflight": "node application-check.cjs preflight"
+  }
+}

@@ -2,6 +2,8 @@
 description: Analyze backlog for dependency optimization, critical path, and parallel workstreams
 ---
 
+<!-- Generated from .agents/skills/review-optimize-backlog/references/workflow.md; edit the canonical source, then run node .claude/core/render-shared-agents.js. -->
+
 # Optimize Backlog
 
 Analyze `docs/work/backlog.md` for dependency optimization, critical path identification, and parallel workstream mapping. This is the analytical counterpart to `/create:project-epics` — where epic creation thinks in coverage and phasing, this command thinks in graphs, parallelism, and realistic developer workflow.
@@ -150,7 +152,7 @@ File format:
 
 ### 7. Commit (main agent)
 
-Follow the **Post-Command Commit Convention** in CLAUDE.md. Stage all files created or modified by this command — including `docs/.output/findings/reviews/{YYMMDD-HHMM}-backlog-optimization.md` — and commit with a descriptive message.
+Follow the **Post-Command Commit Convention** in `.agents/startup-reference.md`. Stage all files created or modified by this command — including `docs/.output/findings/reviews/{YYMMDD-HHMM}-backlog-optimization.md` — and commit with a descriptive message.
 
 ### 8. Report (main agent)
 

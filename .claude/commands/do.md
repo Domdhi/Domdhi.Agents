@@ -3,9 +3,11 @@ description: Execute a single task — from conversation context, a TODO story, 
 argument-hint: "[story ID | task description] [--e2e] [--delegate]"
 ---
 
+<!-- Generated from .agents/skills/do/references/workflow.md; edit the canonical source, then run node .claude/core/render-shared-agents.js. -->
+
 # /do — Single Task Execution
 
-Execute one task through a structured pipeline. Main Agent owns the TaskList, plans, verifies, and makes every judgment call. For small/medium tasks, Main Agent implements directly — no lossy translation, no delegation overhead. For large tasks (or `--delegate`), Main Agent delegates to Sonnet. Sonnet documents.
+Execute one task through a structured pipeline. Main Agent owns the TaskList, plans, verifies, and makes every judgment call. For small/medium tasks, Main Agent implements directly — no lossy translation, no delegation overhead. For large tasks (or `--delegate`), Main Agent delegates implementation and documentation to agents using the `standard` tier.
 
 ## Telemetry (run first)
 
@@ -21,7 +23,7 @@ INPUT: $ARGUMENTS (the task; flags below are stripped from it)
 
 **Flags** (parsed from `$ARGUMENTS`):
 - `--e2e` — run the E2E gate leg (`gate.js e2e`) in Step 7, not just `build`+`test`. Pass it when the task touches a contract/interface surface (API shapes, shared types/schemas, public signatures, DB migrations, IPC/config contracts). See Step 7.
-- `--delegate` — force delegation to a Sonnet subagent even for small/medium tasks.
+- `--delegate` — force delegation to a `standard` tier subagent even for small/medium tasks.
 
 ## Task Status Markers (in TODO files)
 
@@ -49,7 +51,7 @@ IF INPUT is empty → infer:
 
 **Output of this step:** A clear task description, and optionally a TODO file path + story ID if this task lives in a checklist.
 
-**Surface the Complexity score at pick-time.** When the resolved task is a story that carries a persisted `**Complexity:** {1–10}` field (emitted by `/todo` and `/create:project-epics-todo`), echo it now with the route it implies — e.g. `T15.2 · Complexity 4 → Path A (Opus-direct)`. This makes the size/route decision visible the moment the story is picked, before planning. If the story has no Complexity field (older TODO), say so and note the route will be sized from the plan at Step 6b. The threshold is defined in Step 6b.
+**Surface the Complexity score at pick-time.** When the resolved task is a story that carries a persisted `**Complexity:** {1–10}` field (emitted by `/todo` and `/create:project-epics-todo`), echo it now with the route it implies — e.g. `T15.2 · Complexity 4 → Path A (Main Agent direct)`. This makes the size/route decision visible the moment the story is picked, before planning. If the story has no Complexity field (older TODO), say so and note the route will be sized from the plan at Step 6b. The threshold is defined in Step 6b.
 
 **Branch pre-flight (run before any work):** `git branch --show-current`. If it prints the default branch (`main`), STOP and create a feature branch first (`git checkout -b {type}/{kebab-task-name}`) — unless the user explicitly said to work on main, or the repo's own CLAUDE.md convention is main-direct commits (docs-only lifecycle repos). Committing task work straight to local `main` has required manual git surgery to untangle (field-proven twice on an adopter — retro-emp-profile-hr-consolidation, 2026-07). If multiple unrelated tasks run in one session, each gets its own branch.
 
@@ -85,7 +87,9 @@ Read in parallel:
 - `docs/architecture/overview.md` — relevant ADRs and constraints
 - Any **module brief** if module-scoped: `docs/modules/{module}/brief.md`
 
-**Why Main Agent reads the files:** The implementation agent needs code snippets, not file paths. Main Agent assembles the context package so Sonnet has zero ambiguity.
+**Why Main Agent reads the files:** The implementation agent needs code snippets, not file paths. Main Agent assembles the context package so the implementation agent has zero ambiguity.
+
+**Runtime and verification.** In an adopter, the Step 7 gate (`gate.js`) runs the application's own build and test commands and never the Domdhi.Agents toolkit suite, including after agent-file edits; in Domdhi.Agents itself it runs the toolkit's Node build and Vitest suite. In Codex, run each `.claude/core/` command in this workflow as `.codex/core/` with the same arguments, per `.agents/adapters/codex/execution.md`. Discovery alone (an installed skill, a listed command or a loaded file) never proves this workflow ran: claim completion only from the Step 7 gate output, the Step 8 AC evidence and the Step 9f commit hash.
 
 `TaskUpdate: "Gather context" → completed`
 
@@ -99,13 +103,13 @@ Before planning, search project memory for relevant prior decisions, patterns, a
 node .claude/core/memory-manager.js search "<story title + AC keywords>"
 ```
 
-1. Take the top 3 results ranked by `decayed_confidence * relevance`.
+1. Keep the search's returned order (it ranks by its own relevance; never re-sort it by `decayed_confidence` or invent a combined score) and take the first 3 directly relevant, non-stale hits.
 2. For each, read the summary line in the JSON output.
 3. If a result looks load-bearing, read the full memory file:
    ```bash
    cat docs/.output/.memory/{category}/{id}.json
    ```
-4. **Dedupe against the SessionStart hook's top-8** — that injection is already in your context as a `<project_memory>` system-reminder. Skip any hit whose `id` appears there.
+4. **Dedupe only against memories you can actually see** — a `<project_memory>` block visibly injected into this session, or a memory already read. A configured SessionStart hook is not proof of injection; if no block is visible, dedupe nothing and say so.
 5. Carry the most relevant 1-2 hits forward into Step 4 (Plan) — call them out by id when they shape a decision.
 
 **Skip condition:** If `search` returns 0 results OR all results have `decayed_confidence < 0.3`, skip silently and proceed to Step 4. Do not log "no memories found".
@@ -169,6 +173,9 @@ Use the Write tool directly. Template:
 ## Patterns to Follow
 {code snippets and file:line references from Step 3}
 
+## Project Constraints
+{selected project reference paths and verified project constraints from Step 3, or "none"}
+
 ## Test Cases
 {what will be tested}
 
@@ -221,6 +228,9 @@ Agent(
   EXISTING TEST PATTERNS:
   {test framework, file naming convention, setup/teardown patterns from Step 3}
 
+  PROJECT CONSTRAINTS (verified from project instructions and source):
+  {reference paths and verified project constraints; omit for toolkit or unrelated work}
+
   TEST FILE: {path following project conventions}
 
   RULES:
@@ -261,14 +271,14 @@ Handle QA agent STATUS the same as dev agent (Step 6, Path B, B4).
 git status --short
 ```
 
-If dirty → commit or stash before proceeding.
+If dirty → identify whose changes they are: commit your own with exact paths; otherwise stop and ask. Never stash or reset a shared working tree (it clobbers concurrent work).
 
 ### 6b. Size the task
 
 **Route on the persisted Complexity score first.** When the story carries a `**Complexity:** {1–10}` field (emitted by `/todo` / `/create:project-epics-todo` per the canonical rubric in `/todo`), that score is the **routing signal of record** — it was scored at authoring time so the size/route decision is auditable, not re-judged here:
 
-- **Complexity ≤ 5** → **Path A** (Main Agent / Opus-direct)
-- **Complexity ≥ 6** → **Path B** (Sonnet-delegate)
+- **Complexity ≤ 5** → **Path A** (Main Agent direct)
+- **Complexity ≥ 6** → **Path B** (delegated)
 
 **Fallback when no Complexity field is present** (older TODOs authored before the field, or ad-hoc tasks): size from the plan (Step 4) using the signal table below — never error, never block on a missing field.
 
@@ -279,7 +289,7 @@ If dirty → commit or stash before proceeding.
 | AC bullets | ≤ 8 | > 8 |
 | Nature | Mechanical — spec → code | Ambiguous — multiple valid approaches |
 
-**Default: Main Agent implements directly.** Delegation adds overhead: prompt assembly, lossy translation (Sonnet misinterprets intent), status triage, fix-up. Field-tested: delegation introduced 3 bugs Main Agent wouldn't have made, cost 6+ min wall time for a single agent call. It only pays off when the task is large enough that Main Agent benefits from focusing on judgment over typing.
+**Default: Main Agent implements directly.** Delegation adds overhead: prompt assembly, lossy translation (an agent can misinterpret intent), status triage, fix-up. Field-tested: delegation introduced 3 bugs Main Agent wouldn't have made, cost 6+ min wall time for a single agent call. It only pays off when the task is large enough that Main Agent benefits from focusing on judgment over typing.
 
 Override: `--delegate` in INPUT forces delegation (Path B) regardless of the Complexity score or the signal table.
 
@@ -325,7 +335,7 @@ Main Agent holds both the spec and the codebase in context — no translation lo
 
 Proceed to Step 7 (gate).
 
-### Path B: Delegate to Sonnet (large tasks or --delegate)
+### Path B: Delegate to an agent (`standard` default) (large tasks or --delegate)
 
 Use when the task is too large for Main Agent to hold in working memory, or when `--delegate` is specified.
 
@@ -336,20 +346,20 @@ Use when the task is too large for Main Agent to hold in working memory, or when
 | Frontend / UI components | `general-purpose` | risk-routed (see B1a) |
 | Backend / API / business logic | `general-purpose` | risk-routed (see B1a) |
 | Database / migrations | `general-purpose` | risk-routed (see B1a) |
-| Tests only | `qa-engineer` | `sonnet` |
-| Documentation only | `doc-writer` | `sonnet` |
+| Tests only | `qa-engineer` | `standard` |
+| Documentation only | `doc-writer` | `standard` |
 | Infrastructure / config | `general-purpose` | risk-routed (see B1a) |
 
 ##### B1a. Risk-route the `general-purpose` model
 
-Pass `model: opus` when ANY of the following is true:
+Pass `model: "opus"` when ANY of the following is true:
 - The task touches **> 3 files or crosses module boundaries** (multi-component refactor)
 - The task involves **concurrency, data-integrity, or migration logic**
 - The task is **ambiguous and needs design judgment** (multiple valid approaches, unclear spec)
 
-Omit `model:` (Sonnet floor) for tasks that are small and well-specified: ≤ 3 files, mechanical spec-to-code, scripted changes.
+Omit `model:` (`standard` default) for tasks that are small and well-specified: ≤ 3 files, mechanical spec-to-code, scripted changes.
 
-`qa-engineer` and `doc-writer` always omit `model:` (they stay on their own Sonnet floor).
+`qa-engineer` and `doc-writer` always omit `model:` (they stay on their own `standard` default).
 
 #### B2. Assemble implementation prompt
 
@@ -390,6 +400,9 @@ The prompt to the implementation agent MUST include all of the following. **Cont
 
 7. CONSTRAINTS:
    {Relevant ADRs, architecture rules, CLAUDE.md conventions}
+   {Verified project constraints from Step 3, only when they apply: the selected
+    project reference paths and the verified project constraints;
+    omit entirely for toolkit or unrelated work}
 
 8. PRIOR LEARNINGS (project memory matches — if any):
    ## Prior Learnings (project memory matches)
@@ -439,7 +452,7 @@ Before assembling the prompt:
    ```bash
    node .claude/core/memory-manager.js search "<story title + relevant keywords>"
    ```
-2. Take the top 3–5 results ranked by `decayed_confidence * relevance`.
+2. Keep the search's returned order and take the first 3–5 directly relevant, non-stale results (no re-sort or invented combined score), skipping any memory already visibly injected or read.
 3. For each result, read the full memory payload:
    ```bash
    cat docs/.output/.memory/{category}/{id}.json
@@ -456,7 +469,7 @@ Before assembling the prompt:
 ```
 Agent(
   subagent_type: "{agent-type}",
-  model: "{sonnet | opus — from B1a for general-purpose; omit for qa-engineer/doc-writer}",
+  {selected_model_argument},
   prompt: "{assembled prompt from B2}",
   description: "Implement {story-id}: {title}"
 )
@@ -563,7 +576,7 @@ For each AC bullet in the story:
 1. Read each AC bullet
 2. Identify the command or file read that would PROVE it's satisfied
 3. Run that command or read that file — don't assume from the agent's report
-4. If ANY AC is not met → fix directly or re-dispatch to Sonnet with targeted instructions
+4. If ANY AC is not met → fix directly or re-dispatch to an agent with targeted instructions
 5. Loop until all verifiable AC bullets pass
 
 Also check for:
@@ -614,7 +627,7 @@ This is a precondition, not a judgment call: no token, no commit.
 
 `TaskUpdate: "Update TODO + commit" → in_progress`
 
-### 9a. Update TODO (Sonnet)
+### 9a. Update TODO (`standard` tier)
 
 If the task is in a TODO file:
 
@@ -650,7 +663,7 @@ This regenerates the Epic Index status cells + Phase Map Done/Total from current
 
 ### 9c. Log agent issues (Main Agent)
 
-Log **every** agent misalignment, no matter how small. Model doesn't matter — any delegated agent (Sonnet or otherwise) that produces output Main Agent has to fix is a misalignment and gets logged. Do not filter for "systemic" or "recurring" issues — that is `/review:optimize-agents`'s job, not yours. Only skip logging when the agent's output was accepted as-is.
+Log **every** agent misalignment, no matter how small. Model doesn't matter — any delegated agent (regardless of tier) that produces output Main Agent has to fix is a misalignment and gets logged. Do not filter for "systemic" or "recurring" issues — that is `/review:optimize-agents`'s job, not yours. Only skip logging when the agent's output was accepted as-is.
 
 We only put up rails for things that go wrong. Do not log "what worked well" — noise crowds out signal.
 
@@ -671,9 +684,9 @@ If any misalignment or quality issue was observed in Step 6, append to today's d
 **Attribution ledger (S-PI.7):** when you read the dispatched agent's status (Step 6), append one entry to the per-run change-attribution ledger so wrap-up can tell which agent touched which files (and never wrongly revert a sub-agent's work). Use the files the agent reported touching:
 ```bash
 node .claude/core/_lib/attribution-ledger.js append \
-  '{"story_id":"{story ID}","agent":"{agent-type}","model":"{sonnet|opus}","files_touched":["path/a","path/b"],"status":"{DONE|DONE_WITH_CONCERNS|BLOCKED}"}'
+  '{"story_id":"{story ID}","agent":"{agent-type}","model":"{resolved model or session default}","files_touched":["path/a","path/b"],"status":"{DONE|DONE_WITH_CONCERNS|BLOCKED}"}'
 ```
-Skip only if no agent was dispatched (Opus-direct path). The ledger lands at `docs/.output/.state/telemetry/attribution-{YYMMDD}.jsonl` and appends within the day.
+Skip only if no agent was dispatched (Main Agent direct path). The ledger lands at `docs/.output/.state/telemetry/attribution-{YYMMDD}.jsonl` and appends within the day.
 
 ### 9d. Regenerate the session handoff — session-handoff skill
 
@@ -707,6 +720,8 @@ git add {implementation files} {test files} {TODO updates if any} "$HANDOFF" doc
 ls docs/TODO_*.md >/dev/null 2>&1 && git add docs/TODO_*.md
 node .claude/core/commit.js
 ```
+
+Stage exactly the files this task owns (never `git add .`, `git add -A` or `commit.js --all` in a shared working tree) and commit locally through the native commit helper. The commit is the only authorized Git action: push, PR, publication or deployment needs the user's explicit authorization for that action.
 
 ### 9f. Verify commit
 
@@ -789,13 +804,13 @@ This mode is for: "we just talked through a design — now do it."
 
 1. **TaskList is your spine.** Create it at Step 2, update it at every phase. It survives context compression.
 2. **Plan-first — write the plan file to disk at Step 4, BEFORE implementation.** A plan that only exists in chat is gone on disconnect. Step 4c's Write call is non-negotiable. Step 10 updates the same file with the completion section — two writes, one file, survives crashes.
-3. **Main Agent implements by default.** Only delegate to Sonnet when the task is large enough to justify the overhead (> 5 files, > 500 LOC, > 8 AC bullets). Delegation adds lossy translation, 6+ min wall time, and introduced 3 bugs in field testing. `--delegate` overrides.
+3. **Main Agent implements by default.** Only delegate to an agent when the task is large enough to justify the overhead (> 5 files, > 500 LOC, > 8 AC bullets). Delegation adds lossy translation, 6+ min wall time, and introduced 3 bugs in field testing. `--delegate` overrides.
 4. **Use Decision Principles for intermediate questions.** Classify every mid-implementation decision as Mechanical (auto-decide), Taste (auto-decide + log), or User Challenge (always ask). See Step 6c. When in doubt, bias toward action — the user reviews the commit.
 5. **AC verification is a gate, not a formality.** Failed AC = not done. This applies to BOTH paths — Main Agent-direct and delegated.
-6. **Context assembly matters for delegation.** When delegating (Path B), a rich Sonnet prompt with variable names and code snippets prevents hallucination. When Main Agent implements directly (Path A), the context from Step 3 is sufficient.
+6. **Context assembly matters for delegation.** When delegating (Path B), a rich implementation prompt with variable names and code snippets prevents hallucination. When Main Agent implements directly (Path A), the context from Step 3 is sufficient.
 7. **Mark [>] before starting, [x] after committing.** Session crashes leave a trail.
-8. **Main Agent fixes gate failures directly.** Don't re-dispatch to Sonnet for build errors.
-9. **Log agent fuck-ups.** Every misalignment — no matter how small — goes to `docs/.output/evolution/agents/{YYYY-MM-DD}.md`. `/review:optimize-agents` decides what's systemic, not you. Only applies when delegation was used (Path B). Don't log what worked; rails are for failures only.
+8. **Main Agent fixes gate failures directly.** Don't re-dispatch an agent for build errors.
+9. **Log every agent misalignment.** Every misalignment — no matter how small — goes to `docs/.output/evolution/agents/{YYYY-MM-DD}.md`. `/review:optimize-agents` decides what's systemic, not you. Only applies when delegation was used (Path B). Don't log what worked; rails are for failures only.
 10. **Check for pending commits before implementing.** Don't build on dirty state.
 11. **Every `/do` ends with a handoff regeneration.** Step 9d uses the `session-handoff` skill to write this run's session handoff (`docs/.output/handoffs/`, path from `handoff-path.js write do`). Don't skip it even for trivial tasks — the next session's `/prime` depends on it.
 12. **One task per invocation.** Use `/run-todo` for batch execution.

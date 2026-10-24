@@ -1,0 +1,21 @@
+{
+  "name": "claude-lifecycle-core",
+  "version": "0.1.0",
+  "description": "Claude Code project lifecycle runtime engine",
+  "private": true,
+  "scripts": {
+    "memory:search": "node memory-manager.js search",
+    "memory:list": "node memory-manager.js list",
+    "memory:report": "node memory-manager.js report",
+    "memory:health": "node memory-health-check.js",
+    "cleanup-logs": "node cleanup-logs.js",
+    "scaffold": "node scaffold.js",
+    "organize": "node ../hooks/organize.cjs"
+  },
+  "keywords": [
+    "claude-code",
+    "lifecycle"
+  ],
+  "author": "Domdhi",
+  "license": "UNLICENSED"
+}

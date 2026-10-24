@@ -3,6 +3,8 @@ description: Apply documentation fixes — update planning docs to match actual 
 argument-hint: [scope: all | architecture | epics | prd]
 ---
 
+<!-- Generated from .agents/skills/review-update-docs/references/workflow.md; edit the canonical source, then run node .claude/core/render-shared-agents.js. -->
+
 # Update Docs
 
 Fix documentation drift detected by `/check-sync`. Reads the actual codebase and updates planning docs to match reality.
@@ -111,7 +113,7 @@ If significant changes were made, update `docs/product/context.md`:
 
 ### 6. Commit (main agent)
 
-Follow the **Post-Command Commit Convention** in CLAUDE.md. Stage all files created or modified by this command and commit with a descriptive message.
+Follow the **Post-Command Commit Convention** in `.agents/startup-reference.md`. Stage all files created or modified by this command and commit with a descriptive message.
 
 ### 7. Report (main agent)
 

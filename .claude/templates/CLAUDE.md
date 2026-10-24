@@ -1,7 +1,7 @@
 # Documentation Structure
 
 The single navigation contract for `docs/` in projects using the Domdhi.Agents
-template. `docs/` is organized **by concern — the question each doc answers** —
+toolkit. `docs/` is organized **by concern — the question each doc answers** —
 not by artifact type or producer. The domain names are identical on every
 project, so any path here is correct everywhere (ADR: docs/ Domain Taxonomy).
 
@@ -15,7 +15,7 @@ project, so any path here is correct everywhere (ADR: docs/ Domain Taxonomy).
 | **engineering/** | *How do we work on it?* | `setup.md`, `conventions.md`, `testing.md` |
 | **operations/** | *How do we ship & run it?* | `deploy.md`, `observability.md`, `security.md`, `runbooks/*.md` |
 | **work/** | *What now & next?* (the living plan) | `backlog.md`, `roadmap.md`, `timeline.md`, `todo/` (+ `_archive/`) |
-| **reference/** | *How do I find my way?* | `onboarding.md`, `glossary.md`, `links.md` |
+| **reference/** | *How do I find my way?* | `onboarding.md`, `glossary.md`, `links.md` (+ `agents/` — the toolkit's own reference docs, shipped with the publish artifact only) |
 
 Plus two non-domain elements:
 
@@ -60,7 +60,8 @@ docs/
 │   └── todo/                  # Implementation checklists (+ _archive/)
 │
 ├── reference/                 # HOW to find your way
-│   └── onboarding.md  glossary.md  links.md
+│   ├── onboarding.md  glossary.md  links.md
+│   └── agents/                # toolkit reference docs (reach a project only through the publish artifact; install and update do not deliver them; never put project docs here)
 │
 ├── modules/{name}/            # Per-feature zoom — mirrors the codebase
 │   └── brief.md               # Scope, key files, dependencies (+ more as earned)

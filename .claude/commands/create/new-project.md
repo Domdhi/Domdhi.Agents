@@ -3,11 +3,13 @@ description: Initialize a new project — scaffolds the docs tree and walks the 
 argument-hint: "[project name] [--yolo]"
 ---
 
+<!-- Generated from .agents/skills/create-new-project/references/workflow.md; edit the canonical source, then run node .claude/core/render-shared-agents.js. -->
+
 # New Project
 
 Master orchestrator that walks a fresh clone from zero to implementation-ready. Scaffolds the `docs/` tree, interviews the user, and chains the planning pipeline (`/create:project-brief` → `/create:project-requirements` → optional `/create:project-design` → `/create:project-architecture` → `/create:project-epics`), specializes the agents for the new stack, and writes a project-context quick-reference.
 
-Intended as the FIRST command an adopter runs after cloning the template. Safe to re-run on a partially-initialized project — the scaffold step is idempotent (skips existing files) and every sub-command has its own hard gate that prevents overwriting filled docs.
+Intended as the FIRST command an adopter runs after installing Domdhi.Agents . Safe to re-run on a partially-initialized project — the scaffold step is idempotent (skips existing files) and every sub-command has its own hard gate that prevents overwriting filled docs.
 
 ## Telemetry (run first)
 
@@ -34,6 +36,10 @@ If `$ARGUMENTS` contains `--yolo`:
 - When YOLO_MODE is active, hard gates in sub-commands downgrade to warnings
 
 ## Workflow
+
+### 0. Bootstrap an application
+
+For a new application, generate the project with the chosen stack’s existing starter first, then install Domdhi.Agents into that checkout. Installation changes toolkit-owned paths and does not authorize rewriting the application. Record application gaps as separately scoped work.
 
 ### 1. Scaffold Docs Structure
 
@@ -138,6 +144,8 @@ Classify the project from the interview answers:
 
 Update the `## Derived routing` section of `new-project-interview.md` with the chosen tier and path before proceeding.
 
+**Runtime and verification.** The project's build and test gate (`gate.js`, configured by `/review:specialize`) runs the application's own commands and never the Domdhi.Agents toolkit suite, including after agent-file edits. In Codex, run each `.claude/core/` command in this workflow as `.codex/core/` with the same arguments, per `.agents/adapters/codex/execution.md`, and invoke each sub-command through its native skill. Discovery alone (an installed skill, a listed command or a loaded file) never proves a sub-command ran: count a phase complete only when its document exists and passes the real-document check (no `<!-- @@template -->` first line), and report the Step 10 commit hash.
+
 ### 5. Phase 1 — Analysis (complex projects only)
 
 1. Run `/brainstorm` with the project description
@@ -181,7 +189,7 @@ After readiness passes, specialize the generic agents and memory for this projec
 
 1. Run `/review:specialize --fix`
    - Extracts tech stack from `architecture/overview.md`
-   - Appends `## Project Context` to each default agent in `.claude/agents/*.md`
+   - Appends `## Project Context` to each canonical role in `.agents/roles/*.md` (the legacy `.claude/agents/*.md` only when no canonical source exists), then renders both native runtimes
    - Creates stack-specific agents (e.g., `db-architect.md`, `auth-builder.md`) based on architecture sections
    - Seeds the memory system with ADRs and architectural patterns (confidence 0.9)
    - Audits skills for relevance and flags framework gaps
@@ -196,17 +204,17 @@ This runs **after** `/review:specialize` deliberately — the stack and the proj
 
 Inspect whether a `CLAUDE.md` already exists at the project root.
 
-**Case 0 — CLAUDE.md exists but is the install stub:** the template installer may leave a minimal placeholder whose entire content points back here (it contains *"This project uses the Domdhi Agents template"* / *"Run `/onboard`"* / *"to complete setup"*). This is NOT a real adopter file to preserve. If the existing CLAUDE.md matches the install stub (short, and contains that "Run `/onboard`" / "to complete setup" marker), treat it as **Case A** — generate a fresh project CLAUDE.md and overwrite the stub (no diff-confirm needed; there is no user content to protect).
+**Case 0 — CLAUDE.md exists but is the install stub:** the template installer may leave a minimal placeholder whose entire content points back here (it contains *"Run `/onboard`"* / *"to complete setup"*; a legacy stub also says *"This project uses the Domdhi Agents template"*). This is NOT a real adopter file to preserve. If the existing CLAUDE.md matches the install stub (short, and contains that "Run `/onboard`" / "to complete setup" marker), treat it as **Case A** — generate a fresh project CLAUDE.md and overwrite the stub (no diff-confirm needed; there is no user content to protect).
 
 **Case A — No CLAUDE.md exists (or it is the install stub per Case 0):**
-Generate a new, **lean, project-specific** `CLAUDE.md` (NOT a copy of the full Domdhi.Agents template) grounded in the planning docs and the specialized stack:
+Generate a new, **lean, project-specific** `CLAUDE.md` (NOT a copy of the Domdhi.Agents workshop instructions) grounded in the planning docs and the specialized stack:
 - Short project description (1-2 sentences, from `product/brief.md` or the interview elevator pitch)
 - Tech stack (from `architecture/overview.md` / `/review:specialize`)
 - Build and test commands (the real commands resolved during specialize — what `gate.js` auto-detects for this stack)
 - Key file paths and entry points (from the architecture doc's structure section, if present)
 - Gate configuration note (point at `gate.js` or `gate.config.json`)
 
-Do NOT generate the full Domdhi.Agents template CLAUDE.md — generate a lean project-specific one that captures what was learned about *this* project.
+Do NOT copy the Domdhi.Agents workshop CLAUDE.md — generate a lean project-specific one that captures what was learned about *this* project.
 
 **Case B — A real CLAUDE.md exists (not the install stub):**
 Read the existing CLAUDE.md, then propose an **additive merge** — never clobber.
@@ -243,16 +251,17 @@ Write `docs/product/context.md`:
 **Initialized**: {date}
 **Phase**: Implementation Ready
 **Tech Stack**: {from architecture/overview.md}
+**Derived routing**: {complexity tier and pipeline path from Step 4}
 
 ## Quick Reference
-- **Brief**: [docs/product/brief.md](product/brief.md) (if created)
-- **PRD**: [docs/product/requirements.md](product/requirements.md)
-- **Architecture**: [docs/architecture/overview.md](architecture/overview.md)
-- **UX Design**: [docs/design/spec.md](design/spec.md) (if UI project)
-- **Wireframes**: [docs/design/wireframes.md](design/wireframes.md) (if UI project)
-- **Themes**: [docs/design/theme.light.md](design/theme.light.md) / [theme.dark.md](design/theme.dark.md) (if UI project)
-- **Mock Layout**: [docs/design/mock.html](design/mock.html) (if UI project)
-- **Backlog**: [docs/work/backlog.md](work/backlog.md)
+- **Brief**: [docs/product/brief.md](brief.md) (if created)
+- **PRD**: [docs/product/requirements.md](requirements.md)
+- **Architecture**: [docs/architecture/overview.md](../architecture/overview.md)
+- **UX Design**: [docs/design/spec.md](../design/spec.md) (if UI project)
+- **Wireframes**: [docs/design/wireframes.md](../design/wireframes.md) (if UI project)
+- **Themes**: [docs/design/theme.light.md](../design/theme.light.md) / [theme.dark.md](../design/theme.dark.md) (if UI project)
+- **Mock Layout**: [docs/design/mock.html](../design/mock.html) (if UI project)
+- **Backlog**: [docs/work/backlog.md](../work/backlog.md)
 
 ## Implementation Commands
 - `/create:module` — plan and document a new feature
@@ -283,10 +292,9 @@ Write `docs/product/context.md`:
 **What this step commits:** only the files NOT yet staged by any sub-command. In practice that's:
 - `docs/product/context.md` (written in Step 9)
 - `CLAUDE.md` (written or additively merged in Step 8b — only if it was created/modified, i.e. not when Case B was declined)
-- `docs/.output/.state/work/{date}/new-project-interview.md` (written in Step 3a)
 - Any scaffolded template files that were left empty and committed as-scaffolded (edge case — usually not applicable)
 
-Stage specifically those files; never use `git add .` (might pull in unrelated changes in the adopter's working tree).
+Stage specifically those files; never use `git add .` (might pull in unrelated changes in the adopter's working tree). The interview file under `docs/.output/.state/` is ignored scratch and is not staged (`git add` refuses it); the routing tier and answers that later steps rely on are recorded in `docs/product/context.md` (Step 9) and the planning documents.
 
 Write the commit message to `docs/.output/.state/.commit-msg` (Write tool — no shell escaping):
 
@@ -298,7 +306,7 @@ Then run:
 
 ```bash
 # Append CLAUDE.md to the staged set only if Step 8b created or merged it.
-git add docs/product/context.md docs/.output/.state/work/{date}/new-project-interview.md
+git add docs/product/context.md
 node .claude/core/commit.js
 ```
 

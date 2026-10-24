@@ -3,6 +3,8 @@ description: Triage a signal-intake file into the backlog — classify each sign
 argument-hint: [optional intake file path | {YYYY-MM-DD} | --dry-run]
 ---
 
+<!-- Generated from .agents/skills/triage/references/workflow.md; edit the canonical source, then run node .claude/core/render-shared-agents.js. -->
+
 # /triage — Signal → Backlog Decision Loop
 
 The second **post-MVP lifecycle** command (Tier 2). `/listen` gathers push-from-reality signals into a dated intake file but deliberately does **not** prioritize — it leaves every item un-ranked. `/triage` is the decision half: it reads the newest intake file **plus the `feature-ideas.md` inbox**, classifies each signal/idea, and converts the keepers into ranked backlog stories.
@@ -148,7 +150,7 @@ This is the **drain record** for `feature-ideas.md` — the inbox is never delet
 
 ### Step 8: Commit (main agent — skip if `--dry-run`)
 
-Follow the **Post-Command Commit Convention** in CLAUDE.md. Stage the backlog, the intake file, `feature-ideas.md` (if it was drained), and the triage run record + ledger. Write the message to `docs/.output/.state/.commit-msg`, then `node .claude/core/commit.js` (inline `git commit -m` is blocked).
+Follow the **Post-Command Commit Convention** in `.agents/startup-reference.md`. Stage the backlog, the intake file, `feature-ideas.md` (if it was drained), and the triage run record + ledger. Write the message to `docs/.output/.state/.commit-msg`, then `node .claude/core/commit.js` (inline `git commit -m` is blocked).
 Message: `docs: /triage — {P} promoted, {D} deferred, {K} killed ({YYYY-MM-DD})`.
 
 ### Step 9: Report

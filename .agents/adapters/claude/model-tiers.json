@@ -1,0 +1,18 @@
+{
+  "tiers": {
+    "fast": null,
+    "standard": "sonnet",
+    "deep": "opus",
+    "audit": "opus"
+  },
+  "notes": "Anthropic direct. Tiers resolve to model aliases. The fast tier remains unassigned until a bounded evaluation supports an assignment.",
+  "auditFallback": {
+    "environment": {
+      "CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK": "1"
+    },
+    "scope": "session-wide",
+    "documentation": "https://code.claude.com/docs/en/env-vars",
+    "behaviorReference": "https://code.claude.com/docs/en/model-config#ask-before-switching",
+    "notes": "For an audit that must retain its selected model, set this variable in the environment that launches Claude Code. The documented control disables automatic safety-classifier model switching for the session, including its subagents; it is not a per-role setting. A flagged request must be reported as refused, without an automatic retry on an older model. The interactive switchModelsOnFlag setting alone does not prevent subagent fallback. This records official documentation, not a live flagged-request probe, and no installed-version measurement. No environment or native settings are changed by this metadata."
+  }
+}

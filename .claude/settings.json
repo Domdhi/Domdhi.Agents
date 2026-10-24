@@ -17,7 +17,15 @@
       "Bash(git checkout*)",
       "Bash(git add*)",
       "Bash(curl:*)",
-      "Bash(node:*)"
+      "Bash(node:*)",
+      "PowerShell(git status)",
+      "PowerShell(git diff*)",
+      "PowerShell(git log*)",
+      "PowerShell(git branch*)",
+      "PowerShell(git checkout*)",
+      "PowerShell(git add*)",
+      "PowerShell(curl:*)",
+      "PowerShell(node:*)"
     ],
     "deny": []
   },
@@ -40,6 +48,28 @@
           {
             "type": "command",
             "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/session-end-doc-sync.cjs\""
+          }
+        ]
+      }
+    ],
+    "WorktreeCreate": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/worktree.cjs\""
+          }
+        ]
+      }
+    ],
+    "WorktreeRemove": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/worktree.cjs\""
           }
         ]
       }
@@ -98,7 +128,7 @@
         ]
       },
       {
-        "matcher": "Bash",
+        "matcher": "Bash|PowerShell",
         "hooks": [
           {
             "type": "command",
@@ -202,7 +232,7 @@
         ]
       },
       {
-        "matcher": "Bash",
+        "matcher": "Bash|PowerShell",
         "hooks": [
           {
             "type": "command",

@@ -150,6 +150,13 @@ These defect classes pass the build, pass the tests, and survive grep-based revi
 
 ---
 
+<!-- @@project-additions:start -->
+## Refusals and remediation changes
+
+- **A refusal returns before mutation.** Trace the rejected operation through its public caller. Its test must assert that existing values, files and external state remain unchanged, as well as checking the refusal and nonzero result where applicable. A conflict message followed by a write has not refused the operation.
+- **Review the remediation diff.** Fixes made during review or a retro are new code. Before the final verdict, inspect that diff for asymmetry: read versus write paths, in-memory versus persisted state, duplicated helpers and sibling queries. Re-running tests proves execution, not independent review; follow the existing review-pass budget.
+<!-- @@project-additions:end -->
+
 ## Review Output Format
 
 The playbook routes the review depth, but findings are reported using the `code-review` skill's report template. The playbook adds one section to the report:

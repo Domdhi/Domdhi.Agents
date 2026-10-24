@@ -1,0 +1,262 @@
+<!-- @@template -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{Project Name} — Layout Mock</title>
+    <style>
+        /* ========================================
+           {Project Name} Mock Layout
+           Generated from UX Spec + Theme Files
+           Self-contained — no external dependencies
+
+           This template mocks a full APPLICATION SHELL (header/sidebar/main/footer).
+           For a FOCUSED single screen/component (a popup, panel, modal, card),
+           keep the :root tokens but REPLACE the .app-shell markup + grid with just
+           that component, sized to its real surface (e.g. a 300px popup at 300px).
+           Don't ship an app grid around a single component.
+           ======================================== */
+
+        :root {
+            /* --- Brand --- */
+            --color-primary: {hex};
+            --color-secondary: {hex};
+            --color-accent: {hex};
+
+            /* --- Backgrounds --- */
+            --color-bg-page: {hex};
+            --color-bg-card: {hex};
+            --color-bg-sidebar: {hex};
+            --color-bg-header: {hex};
+
+            /* --- Text --- */
+            --color-text-primary: {hex};
+            --color-text-secondary: {hex};
+
+            /* --- Semantic --- */
+            --color-success: {hex};
+            --color-warning: {hex};
+            --color-danger: {hex};
+
+            /* --- Spacing --- */
+            --space-xs: 4px;
+            --space-sm: 8px;
+            --space-md: 16px;
+            --space-lg: 24px;
+            --space-xl: 32px;
+
+            /* --- Typography --- */
+            --font-family: {font}, system-ui, sans-serif;
+            --font-size-base: 14px;
+            --font-size-lg: 18px;
+            --font-size-xl: 24px;
+
+            /* --- Shadows --- */
+            --shadow-sm: 0 1px 3px rgba(0,0,0,0.12);
+            --shadow-md: 0 4px 6px rgba(0,0,0,0.15);
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: var(--font-family);
+            font-size: var(--font-size-base);
+            color: var(--color-text-primary);
+            background: var(--color-bg-page);
+        }
+
+        /* --- App Shell --- */
+        .app-shell {
+            display: grid;
+            grid-template-rows: auto 1fr auto;
+            grid-template-columns: 240px 1fr;
+            grid-template-areas:
+                "header header"
+                "sidebar main"
+                "footer footer";
+            min-height: 100vh;
+        }
+
+        .header {
+            grid-area: header;
+            background: var(--color-bg-header);
+            padding: var(--space-md);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            box-shadow: var(--shadow-sm);
+            z-index: 10;
+        }
+
+        .header .logo {
+            font-size: var(--font-size-xl);
+            font-weight: 700;
+            color: var(--color-primary);
+        }
+
+        .sidebar {
+            grid-area: sidebar;
+            background: var(--color-bg-sidebar);
+            padding: var(--space-md);
+            border-right: 1px solid var(--color-secondary);
+        }
+
+        .sidebar nav a {
+            display: block;
+            padding: var(--space-sm) var(--space-md);
+            color: var(--color-text-primary);
+            text-decoration: none;
+            border-radius: 4px;
+            margin-bottom: var(--space-xs);
+        }
+
+        .sidebar nav a:hover { background: var(--color-bg-card); }
+        .sidebar nav a.active { background: var(--color-primary); color: white; }
+
+        .main {
+            grid-area: main;
+            padding: var(--space-lg);
+            overflow-y: auto;
+        }
+
+        .page-title {
+            font-size: var(--font-size-xl);
+            margin-bottom: var(--space-lg);
+        }
+
+        .card {
+            background: var(--color-bg-card);
+            border-radius: 8px;
+            padding: var(--space-lg);
+            box-shadow: var(--shadow-sm);
+            margin-bottom: var(--space-md);
+        }
+
+        .card-title {
+            font-size: var(--font-size-lg);
+            margin-bottom: var(--space-md);
+        }
+
+        .card-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+            gap: var(--space-md);
+        }
+
+        .data-table { width: 100%; border-collapse: collapse; }
+        .data-table th, .data-table td {
+            padding: var(--space-sm) var(--space-md);
+            text-align: left;
+            border-bottom: 1px solid var(--color-secondary);
+        }
+        .data-table th { font-weight: 600; color: var(--color-text-secondary); }
+
+        .btn {
+            padding: var(--space-sm) var(--space-md);
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: var(--font-size-base);
+        }
+        .btn-primary { background: var(--color-primary); color: white; }
+        .btn-secondary {
+            background: transparent;
+            border: 1px solid var(--color-secondary);
+            color: var(--color-text-primary);
+        }
+
+        .footer {
+            grid-area: footer;
+            background: var(--color-bg-header);
+            padding: var(--space-md);
+            text-align: center;
+            color: var(--color-text-secondary);
+            font-size: 12px;
+        }
+
+        @media (max-width: 768px) {
+            .app-shell {
+                grid-template-columns: 1fr;
+                grid-template-areas: "header" "main" "footer";
+            }
+            .sidebar { display: none; }
+        }
+    </style>
+</head>
+<body>
+    <div class="app-shell">
+        <header class="header">
+            <div class="logo">{Project Name}</div>
+            <div><span>User Name</span></div>
+        </header>
+
+        <aside class="sidebar">
+            <nav>
+                <a href="#" class="active">Dashboard</a>
+                <a href="#">{Page 2}</a>
+                <a href="#">{Page 3}</a>
+                <a href="#">Settings</a>
+            </nav>
+        </aside>
+
+        <main class="main">
+            <h1 class="page-title">Dashboard</h1>
+            <div class="card-grid">
+                <div class="card">
+                    <div class="card-title">Metric 1</div>
+                    <div style="font-size: 32px; font-weight: 700;">42</div>
+                    <div style="color: var(--color-text-secondary);">Description</div>
+                </div>
+                <div class="card">
+                    <div class="card-title">Metric 2</div>
+                    <div style="font-size: 32px; font-weight: 700;">128</div>
+                    <div style="color: var(--color-text-secondary);">Description</div>
+                </div>
+                <div class="card">
+                    <div class="card-title">Metric 3</div>
+                    <div style="font-size: 32px; font-weight: 700;">97%</div>
+                    <div style="color: var(--color-text-secondary);">Description</div>
+                </div>
+            </div>
+            <div class="card" style="margin-top: var(--space-md);">
+                <div class="card-title">Recent Items</div>
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Name</th>
+                            <th>Status</th>
+                            <th>Date</th>
+                            <th>Action</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td>Item 1</td>
+                            <td>Active</td>
+                            <td>2025-01-01</td>
+                            <td><button class="btn btn-secondary">View</button></td>
+                        </tr>
+                        <tr>
+                            <td>Item 2</td>
+                            <td>Pending</td>
+                            <td>2025-01-02</td>
+                            <td><button class="btn btn-secondary">View</button></td>
+                        </tr>
+                        <tr>
+                            <td>Item 3</td>
+                            <td>Complete</td>
+                            <td>2025-01-03</td>
+                            <td><button class="btn btn-secondary">View</button></td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </main>
+
+        <footer class="footer">
+            &copy; {Year} {Project Name}. All rights reserved.
+        </footer>
+    </div>
+</body>
+</html>

@@ -3,6 +3,8 @@ description: Execute a manual/E2E testing checklist with parallel agents, screen
 argument-hint: [testing TODO file] [--baseline | --compare {baseline.json}] [--tolerance N]
 ---
 
+<!-- Generated from .agents/skills/run-tests/references/workflow.md; edit the canonical source, then run node .claude/core/render-shared-agents.js. -->
+
 # /run-tests — Manual Testing Executor
 
 Execute structured manual/E2E testing checklists against a running app. Main Agent owns the TaskList, triages results, and makes every judgment call. Playwright agents handle browser interactions. Main Agent handles non-browser checks directly — no delegation overhead for code/schema verification.
@@ -17,7 +19,7 @@ node .claude/core/telemetry-log.js run-tests
 
 ## Model Rule
 
-**All browser-facing agents (playwright or chrome MCP) MUST use `model: "sonnet"`.** Do NOT use Haiku for browser verification — it fabricates results, confidently reporting that an element exists or an interaction succeeded without actually reading the accessibility tree. Sonnet reliably verifies element existence, text content, disabled states, aria attributes, and interaction flows. Visual/design QA (spacing, alignment, color, responsive) is a separate human pass.
+**All browser-facing agents (playwright or chrome MCP) MUST use `model: "sonnet"`.** Do not dispatch the `fast` tier until its bounded evaluation passes. The recorded 2026-06-02 Haiku 4.5 trial fabricated results, claiming an element existed or an interaction succeeded without reading the accessibility tree. Browser agents must verify element existence, text content, disabled states, aria attributes, and interaction flows. Visual/design QA (spacing, alignment, color, responsive) is a separate human pass.
 
 ## Browser Tool Selection
 
@@ -48,7 +50,7 @@ Parallel is safe: up to 4 concurrent `claude` agents sharing one Chrome, each in
 
 ## Standing post-deploy gate
 
-A full-app browser pass is a **load-bearing gate layer, not optional QA**: it is the only layer that catches render-only defects — hydration mismatches, runtime-interpolated Tailwind classes the JIT never generated, blank-`<Outlet/>` routes — all of which pass typecheck/lint/build/unit-tests cleanly. (Evidence: a 2026-07-16 full-app pass on an adopter, 76/81 checkpoints, found 3 real bugs invisible to every static gate.) After any deploy that touches multiple modules (a remediation run, a sweep's fix batch, a route-config change), run at least the affected modules' checkpoints before declaring the deploy verified.
+A full-app browser pass is a **load-bearing gate layer, not optional QA**: it is the only layer that catches render-only defects — hydration mismatches, server-session state errors, runtime-interpolated Tailwind classes the JIT never generated (in a project that uses Tailwind), blank-`<Outlet/>` routes — all of which pass typecheck/lint/build/unit-tests cleanly. (Evidence: a 2026-07-16 full-app pass on an adopter, 76/81 checkpoints, found 3 real bugs invisible to every static gate.) After any deploy that touches multiple modules (a remediation run, a sweep's fix batch, a route-config change), run at least the affected modules' checkpoints before declaring the deploy verified.
 
 ## Repeated runs via `/loop`
 
@@ -66,7 +68,7 @@ A full-app browser pass is a **load-bearing gate layer, not optional QA**: it is
 | `30m`–`1h` | Mid-day polling on a busy branch — smoke checklist re-run |
 | `2h`–`6h` | Background canary — broader checklist, low-frequency assurance |
 
-Each iteration writes a fresh report to `docs/.output/.state/screenshots/{date}/{Task}/TEST-REPORT.md`, so subsequent loops overwrite prior reports for the same task. If you need history, vary the task slug per loop or copy reports out before the next fire. **Don't build a standalone `/canary` command or a `/run-tests --watch` flag** — the *scheduling* half of a canary is just a `/loop` wrapper, and re-implementing scheduling primitives we already have is duplication. The same applies to any future scheduled-command idea (cleanup, listen, monitor): start by trying `/loop /<command>` first.
+Each iteration writes a fresh, run-stamped tracked report (`docs/.output/findings/reviews/{YYMMDD-HHMM}-test-{task}.md`, Step 11), so history accumulates; its screenshots under `docs/.output/.state/screenshots/{date}/{Task}/` are ignored scratch that later loops overwrite. **Don't build a standalone `/canary` command or a `/run-tests --watch` flag** — the *scheduling* half of a canary is just a `/loop` wrapper, and re-implementing scheduling primitives we already have is duplication. The same applies to any future scheduled-command idea (cleanup, listen, monitor): start by trying `/loop /<command>` first.
 
 What `/loop` does **not** give you is the *stateful* half of a canary — capturing a known-good baseline, diffing live samples against it, and tolerating transient blips. That lives in **Canary Mode** below (`--baseline` / `--compare`), driven by `/loop` for the polling:
 
@@ -89,7 +91,7 @@ When the project has an E2E test framework (Playwright, Cypress, etc.):
 
 When no test framework exists:
 - Agents still write structured verification scripts or checklists
-- Screenshots and reports go to `docs/.output/.state/screenshots/{date}/{task}/`
+- Screenshots go to `docs/.output/.state/screenshots/{date}/{task}/` (ignored scratch); the run's report goes to the tracked path in Step 11
 
 The goal: every test run leaves behind artifacts that can be re-executed without Claude.
 
@@ -126,7 +128,7 @@ Severity tiers are the gstack monitors verbatim. "Breach" is always *relative to
 ### `--baseline` (capture, run once pre-deploy)
 
 1. Resolve the target page(s): the `TODO_FILE` target URL + its listed pages, or the URLs passed as args, or the app root. Pre-flight each with `curl` (HARD STOP if the app isn't running — same rule as Phase 0 Step 3).
-2. Dispatch a **sonnet** browser agent (chrome MCP preferred, playwright fallback — same selection rule as the checklist mode) to visit each page and record the four signals. Take one baseline screenshot per page into `docs/.output/evolution/canary/baseline/`.
+2. Dispatch a **standard** browser agent (chrome MCP preferred, playwright fallback — same selection rule as the checklist mode) to visit each page and record the four signals. Take one baseline screenshot per page into `docs/.output/evolution/canary/baseline/`.
 3. Write `docs/.output/evolution/canary/baseline-{slug}.json` (slug = project or feature name; **stable filename, not date-rotated**, so `--compare` can find it across days):
    ```json
    {
@@ -144,7 +146,7 @@ Severity tiers are the gstack monitors verbatim. "Breach" is always *relative to
 This is what `/loop` fires each interval. It samples **once** and persists state — **it does NOT loop internally** (looping is `/loop`'s job; smuggling a `while`/poll here is the exact duplication this design avoids).
 
 1. Read the baseline + the current streak file (`docs/.output/evolution/canary/{date}/_streak.json`, default `{}`).
-2. Dispatch the browser agent (sonnet) to re-sample the same pages — same signals.
+2. Dispatch the browser agent (standard) to re-sample the same pages — same signals.
 3. **Diff vs baseline.** For each page+signal, decide breached/clear:
    - availability false → CRITICAL breach
    - any error in current ∖ baseline (set difference) → HIGH breach
@@ -263,6 +265,8 @@ Main Agent handles these directly — no delegation overhead:
 
 Mark these categories `[x]` in the TODO file immediately after verification.
 
+**Runtime and verification.** This workflow tests the running application; it never runs the Domdhi.Agents toolkit suite, and any persistent spec it writes joins the application's own test command. In Codex, run each `.claude/core/` command in this workflow as `.codex/core/` with the same arguments, per `.agents/adapters/codex/execution.md`, and use the browser tools the Codex runtime provides. Discovery alone (an installed skill, a listed command or a loaded file) never proves this workflow ran: report results only from checkpoint evidence (screenshots, console reads, spec runs) and the Step 13 commit hash.
+
 `TaskUpdate: "Non-browser checks" → completed`
 
 ---
@@ -280,10 +284,10 @@ Mark these categories `[x]` in the TODO file immediately after verification.
 | Interaction Type | Who | Model | Rationale |
 |-----------------|-----|-------|-----------|
 | Code/file/schema verification | Main Agent (already done in Step 6) | — | No browser needed |
-| Page load + screenshot | `claude` agent (chrome MCP) | sonnet | Navigate, screenshot, read text — chrome MCP preferred |
-| Button click + form fill | `claude` agent (chrome MCP) | sonnet | Standard interaction via live Chrome |
-| Complex UI + code inspection | `claude` agent (chrome MCP) | sonnet | Combine browser MCP and grep/read |
-| Headless / CI environment | `playwright` agent | sonnet | Primary for headless/CI environments |
+| Page load + screenshot | `claude` agent (chrome MCP) | standard | Navigate, screenshot, read text — chrome MCP preferred |
+| Button click + form fill | `claude` agent (chrome MCP) | standard | Standard interaction via live Chrome |
+| Complex UI + code inspection | `claude` agent (chrome MCP) | standard | Combine browser MCP and grep/read |
+| Headless / CI environment | `playwright` agent | standard | Primary for headless/CI environments |
 
 **Prefer `claude` with chrome MCP over `playwright` agent.** The chrome MCP tools interact with the user's actual browser — same session, same auth state, same cookies. `playwright` is the fallback for headless environments. NEVER `general-purpose` for browser work — it has no MCP tools and no ToolSearch (see Browser Tool Selection).
 
@@ -301,6 +305,9 @@ CHECKLIST:
 
 TEST SELECTORS:
 {Selector map from Step 5 for this category's components}
+
+PROJECT CONSTRAINTS (when verified project instructions or source bind this category):
+{Reference paths and the verified project constraints that bind these checkpoints}
 
 SCREENSHOT FOLDER: docs/.output/.state/screenshots/{YYYY-MM-DD}/{Task}/cat-{N}/
 Create this directory first with mkdir.
@@ -338,7 +345,7 @@ If the project has an E2E test framework (check for playwright.config.*, cypress
 - The spec should be permanent, rerunnable, and committable to source control
 
 If no test framework exists:
-- Write TEST_REPORT.md in the screenshot folder with results
+- Write TEST_REPORT.md in the screenshot folder with results (ignored scratch; the Main Agent carries them into the tracked Step 11 report)
 
 STATUS — Report your completion status as ONE of:
 - DONE — all checkpoints passed
@@ -420,7 +427,7 @@ node .claude/core/status.js --regen-master
 
 `TaskUpdate: "Cleanup + final report" → completed`
 
-Write `docs/.output/.state/screenshots/{YYYY-MM-DD}/{Task}/TEST-REPORT.md`:
+Write the report to the tracked path `docs/.output/findings/reviews/{YYMMDD-HHMM}-test-{task}.md` (one run stamp per run). Reference screenshots by their paths under `docs/.output/.state/screenshots/{YYYY-MM-DD}/{Task}/`; that folder is ignored scratch, so the report itself must carry every result and finding:
 
 ```markdown
 ## Manual Test Report
@@ -468,7 +475,7 @@ Write `docs/.output/.state/screenshots/{YYYY-MM-DD}/{Task}/TEST-REPORT.md`:
 
 ### Step 12: Regenerate the session handoff — session-handoff skill
 
-After the TEST-REPORT.md is written, refresh the session handoff using the **`session-handoff`** skill (`.claude/skills/session-handoff/SKILL.md`). Resolve this run's path once and reuse it for the `git add` in Step 13:
+After the Step 11 report is written, refresh the session handoff using the **`session-handoff`** skill (`.claude/skills/session-handoff/SKILL.md`). Resolve this run's path once and reuse it for the `git add` in Step 13:
 
 ```bash
 HANDOFF=$(node .claude/core/handoff-path.js write run-tests)
@@ -476,7 +483,7 @@ HANDOFF=$(node .claude/core/handoff-path.js write run-tests)
 
 Read that skill for the template, rules, and `/run-tests`-specific tailoring (Step 4 in the skill).
 
-Why: bugs found during testing and blocked checkpoints are high-value context for the next session. They belong in the handoff's Decisions & Context and Blockers sections so `/prime` surfaces them immediately. The TEST-REPORT path goes in Key Files.
+Why: bugs found during testing and blocked checkpoints are high-value context for the next session. They belong in the handoff's Decisions & Context and Blockers sections so `/prime` surfaces them immediately. The tracked Step 11 report path goes in Key Files.
 
 ### Step 13: Commit test artifacts + handoff
 
@@ -493,14 +500,16 @@ Then run:
 ```bash
 # Permanent spec files, if any were written
 git add {test spec files — test/__test__/**, e2e/**, etc.}
-# Screenshots and test report
-git add docs/.output/.state/screenshots/{YYYY-MM-DD}/{Task}/
+# Tracked test report (Step 11)
+git add docs/.output/findings/reviews/{YYMMDD-HHMM}-test-{task}.md
 # TODO checkmark updates
 git add {TODO_FILE}
 # Handoff
 git add "$HANDOFF"
 node .claude/core/commit.js
 ```
+
+Screenshots under `docs/.output/.state/` are ignored scratch and are not staged (`git add` refuses them). Stage exactly these files and take no outward action (push, PR, publication) without explicit authorization.
 
 Skip the commit only if the user invoked `/run-tests` as a dry-run with no expectation of persisting findings.
 
@@ -509,7 +518,7 @@ Skip the commit only if the user invoked `/run-tests` as a dry-run with no expec
 ## Rules
 
 1. **TaskList is your spine.** Create it in Phase 0. Update at every step. It survives context compression.
-2. **All browser agents use sonnet and the `claude` agent type. No exceptions.** Both playwright and claude (chrome MCP) agents must specify `model: "sonnet"`. Never Haiku — it fabricates browser results instead of reading the DOM/a11y tree. Never `general-purpose` for chrome MCP — it has no browser tools and no ToolSearch. Visual/design QA is a separate human pass.
+2. **All browser agents use standard and the `claude` agent type. No exceptions.** Both playwright and claude (chrome MCP) agents must specify `model: "sonnet"`. Never Haiku — on the recorded evidence (2026-06-02, Haiku 4.5) it fabricated browser results instead of reading the DOM/a11y tree, and the rule stays in force until the bounded `fast`-tier eval passes. Never `general-purpose` for chrome MCP — it has no browser tools and no ToolSearch. Visual/design QA is a separate human pass.
 3. **Main Agent does non-browser checks directly.** Schema, seed data, code inspection, config — no delegation needed. Playwright agents handle browser interactions.
 4. **Status protocol is mandatory.** Every agent reports DONE / DONE_WITH_CONCERNS / BLOCKED / NEEDS_CONTEXT.
 5. **Don't trust agent reports — verify.** If an agent says DONE but the screenshot shows an error, it's not DONE.

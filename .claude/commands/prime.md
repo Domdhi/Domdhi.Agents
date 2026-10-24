@@ -4,9 +4,11 @@ description: Cold-start a session — read handoff, git log, and Key Files for i
 argument-hint: [context]
 ---
 
+<!-- Generated from .agents/skills/prime/references/workflow.md; edit the canonical source, then run node .claude/core/render-shared-agents.js. -->
+
 # Prime
 
-Cold-start a new session. CLAUDE.md + agent memory already auto-load — this command fills in the gaps: what happened recently, what's next, and is anything broken.
+Cold-start a new session. Use root instructions and memory already visible in this session; do not assume startup injection ran. This command fills in the task-relevant gaps: what happened recently, what's next, and is anything broken.
 
 ## Telemetry (run first)
 
@@ -55,22 +57,23 @@ The handoff has decisions, intent, blockers, and next actions from the previous 
 
 Both reads depend only on the handoff (Step 1) and not on each other — so fire them together in a single parallel batch, not back-to-back.
 
-**Key Files** — the handoff's `## Key Files` section is the curated short list needed to resume work. Read every path listed:
+**Key Files** — the handoff's `## Key Files` section is a candidate short list for resuming work. Read only paths needed for the current task or first still-relevant Next Action:
 - Extract paths from bullets under `## Key Files` (ignore line-range annotations like `:47-89` — read the whole file)
+- Check each path against the current task before reading; skip unrelated paths and note the reason. A handoff from another task is context, not an instruction to load its files.
 - Skip anything that isn't a readable file (directories, globs, missing files — note them but don't fail)
 - If the handoff has no `## Key Files` section, skip the file reads
-- Also read any file explicitly called out in `## Next Actions` as the first file to touch — one or two, don't chase every mention
+- Also read any task-relevant file explicitly called out in `## Next Actions` as the first file to touch — one or two, don't chase every mention
 
-Listing files without reading them is worthless; the next session needs the content loaded to act on step one of Next Actions immediately.
+Load the relevant content needed to act on step one; listing a path does not count as reading it.
 
-**Forward-looking memory** — the SessionStart hook already injected a generic top-8 by decayed confidence × usage. Add *forward-looking* recall that bears on the next action specifically:
-1. Extract 2-4 concrete noun phrases from the handoff's `## Next Actions` (file names, feature names, technical concepts — skip filler like "decide", "verify").
+**Forward-looking memory** — when configured and active, `session-start-prime.cjs` injects up to 8 memories by default (configurable), ranked by importance-adjusted decayed confidence × recency; aged usage only breaks ties. Treat injection as observed only if a `<project_memory>` block is actually visible in this session. Add recall that bears on the current task:
+1. Extract 2-4 concrete noun phrases from the current task or still-relevant handoff `## Next Actions` (file names, feature names, technical concepts — skip filler like "decide", "verify").
 2. `node .claude/core/memory-manager.js search "<phrases joined>"`
-3. Take the top 3 by `decayed_confidence * relevance`.
-4. **Dedupe against the SessionStart top-8** (already in context as a `<project_memory>` system-reminder) — skip hits whose `id` appears there.
-5. For each remaining hit directly relevant to the first Next Action, `cat docs/.output/.memory/{category}/{id}.json` and surface the rule.
+3. Select at most 3 directly relevant, non-stale hits using the returned relevance and `decayed_confidence`. Search is distinct from startup ranking: SQLite returns FTS rank order and reports relevance from text rank, confidence, usage and importance; JSON fallback sorts relevance from text matches, recency, confidence, usage and importance. Do not describe `decayed_confidence * relevance` as the engine's search order.
+4. **Dedupe against observed memory** — skip hits whose `id` is already visible in this session's `<project_memory>` block or was already read. If no block is visible, do not assume any top-8 was loaded.
+5. For each remaining hit directly relevant to the current task or first still-relevant Next Action, `cat docs/.output/.memory/{category}/{id}.json` and surface the rule.
 
-Skip the memory search silently if Next Actions is empty/stale, search returns nothing, every hit dupes the top-8, or all `decayed_confidence < 0.3` — then render the **Loaded** section's memory line as `(no memories beyond SessionStart top-8)`.
+Skip the memory search if neither the current task nor a still-relevant Next Action supplies a useful query. If there are no additional relevant hits with `decayed_confidence >= 0.3`, render the **Loaded** memory line as `(no additional task-relevant memories loaded)`. Report startup memory as observed or `(startup memory injection not observed)`; a configured hook alone is not evidence it ran.
 
 ### Step 3: Verify & synthesize
 
@@ -124,12 +127,11 @@ Ordered **bottom-up**: the most actionable content sits at the bottom, closest t
 - **Order is fixed (bottom-up).** Recent work → Loaded → State → Decisions → (drift if any) → Next actions → (blockers if any) → ▶ Start here. The gradient runs least-actionable at top to most-actionable at bottom.
 - **▶ Start here is always the literal last line.** One line, the single highest-value next step — never followed by anything else.
 - **Route genuinely-new work through `/route`.** When the highest-value next step is a *new* feature or a scope-unclear request — not resuming an in-flight story, not a known bugfix — render `▶ Start here:` as `/route {description}` so scale-aware pipeline depth gets chosen instead of defaulting to `/todo`. This is the only place the front-door router is surfaced in the daily loop. When resuming work already in flight, the handoff's concrete next action IS the right Start-here — do not re-route it.
-- **Loaded is always present** and merges files + memory. Always render the heading. If the handoff had no Key Files, write `(no Key Files in handoff)`; if the memory search was skipped or dry, render its memory line as `(no memories beyond SessionStart top-8)`.
+- **Loaded is always present** and merges files + memory. Always render the heading. If the handoff had no Key Files, write `(no Key Files in handoff)`; note unrelated files as skipped. Distinguish startup memory actually observed from additional memories read; if search was skipped or dry, write `(no additional task-relevant memories loaded)`. Never list assumed injection as loaded.
 - **Optional sections are explicitly optional.** Only Handoff drift and Blockers may be omitted, and only when there is genuinely nothing to report.
 
 ## What NOT to Do
-- Do NOT read `architecture/overview.md` or `product/context.md` — CLAUDE.md already has this
-- Do NOT read CLAUDE.md — it auto-loads, reading it again wastes tokens
+- Do NOT re-read root instructions or overview/context content already visible in this session; read missing instructions or task-relevant context only when needed
 - Do NOT load full planning docs unless the handoff is stale/missing
 - Do NOT produce a report under 20 lines — that's too sparse to cold-start from
 - Do NOT exceed 60 lines — that's a novel

@@ -4,6 +4,8 @@ description: Save session context for continuing work in a new conversation
 argument-hint: [optional notes]
 ---
 
+<!-- Generated from .agents/skills/end/references/workflow.md; edit the canonical source, then run node .claude/core/render-shared-agents.js. -->
+
 # End Session
 
 Write this session's handoff — a per-session, branch-tagged file under `docs/.output/handoffs/` that `/prime` reads next session. The path is resolved by `node .claude/core/handoff-path.js write end` (see the `session-handoff` skill); per-session files are how parallel branches avoid conflicting on a single shared handoff in PRs.
@@ -40,7 +42,7 @@ ls docs/.output/plans/**/*.md 2>/dev/null
 
 Check unfinished plans (grep for `- [ ]` in each plan file).
 
-**Authorship reconciliation (session-handoff Step 1):** the log may contain commits you did NOT author — the user, or a parallel agent on another branch. `git show --stat <hash>` any commit you don't recognize (those without a `Co-Authored-By: Claude` trailer are almost always human/external) and capture its intent in Decisions & Context. Don't write the handoff from conversation memory alone, or you'll silently drop real session work.
+**Authorship reconciliation (session-handoff Step 1):** the log may contain commits you did NOT author — the user, or a parallel agent on another branch. `git show --stat <hash>` any commit you don't recognize and capture its intent in Decisions & Context. Inspect the changes directly rather than inferring authorship from the message. Don't write the handoff from conversation memory alone, or you'll silently drop real session work.
 
 ### 3. Write the handoff
 

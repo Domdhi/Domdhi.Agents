@@ -43,7 +43,7 @@ The `Constraints → Technical` line is where tool picks leak in. Discipline it:
 | Keep (constraint — bounds the solution space) | Defer to architecture (pick — selects one option) |
 |---|---|
 | "no build step", "$0/month", "must work offline" | "use Vite", "deploy on Vercel" |
-| "must decouple from the Domdhi platform" | "use Cloudflare Pages Functions + D1" |
+| "must decouple from the legacy vendor platform" | "use Cloudflare Pages Functions + D1" |
 | "vanilla JS only, no framework" | "use Alpine.js for the form" |
 | "send the operator an email on each lead" | "use Resend for transactional email" |
 

@@ -95,5 +95,5 @@
 {Brief notes on alternatives/competitors if relevant}
 
 ### Related Documents
-- Brainstorming: [product/brainstorm.md](product/brainstorm.md)
-- Research: [product/research.md](product/research.md)
+- Brainstorming: [product/brainstorm.md](brainstorm.md)
+- Research: [product/research.md](research.md)

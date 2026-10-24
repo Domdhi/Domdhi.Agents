@@ -1,16 +1,16 @@
 # Contributing to the System
 
-This guide is for adopters who want to extend the `.claude/` system with a new agent, command, or skill. The template ships with 11 agents, 39 commands, and 23 skills as of this writing — enough for most projects to get moving. But every project eventually needs something the template doesn't have: a domain-specific skill, a specialist agent for an unusual stack, a workflow command unique to your team. This guide walks through how to add one without breaking the three-tier architecture.
+This guide is for adopters who want to extend the shared `.agents/` toolkit with a new agent, command, or skill. The template ships with 11 roles, 49 workflows, and 23 knowledge skills as of this writing — enough for most projects to get moving. But every project eventually needs something the template doesn't have: a domain-specific skill, a specialist agent for an unusual stack, a workflow command unique to your team. This guide walks through how to add one without breaking the three-tier architecture.
 
 For a tour of what already exists, see [`../concepts/commands.md`](../concepts/commands.md), [`../concepts/agents.md`](../concepts/agents.md), and [`../concepts/skills.md`](../concepts/skills.md). For the inventory and wiring map, see [`../system-map.md`](../system-map.md). For the abstract command reference, see [`../commands.md`](../commands.md).
 
 ## The Three-Tier Refresher
 
-Three kinds of files live under `.claude/` and each one has a specific job. Keeping the jobs separate is what makes the system work.
+Three kinds of authored files live under `.agents/` and each one has a specific job. Keeping the jobs separate is what makes the system work.
 
-- **Commands** (`.claude/commands/**/*.md`) — orchestration. A command is what the user types. It decides which gates run, which agents get dispatched, what gets validated, and what gets committed. Commands don't carry domain knowledge and they don't do implementation work themselves.
-- **Agents** (`.claude/agents/*.md`) — workers with personality. An agent is a sub-process Claude Code can delegate to. It has a soul zone (Identity, Decision Philosophy, Working Style, Quality Standards) and auto-loads skills via frontmatter. Agents don't orchestrate and they don't own reference material.
-- **Skills** (`.claude/skills/*/SKILL.md`) — domain knowledge. A skill is a Markdown file with a template, checklist, quality criteria, or reference material. Skills don't *do* anything on their own; they get loaded into the context of whatever agent or command already knows to use them.
+- **Workflows** (`.agents/skills/*/references/workflow.md`) — orchestration. A command is what the user types. It decides which gates run, which agents get dispatched, what gets validated, and what gets committed. Commands don't carry domain knowledge and they don't do implementation work themselves.
+- **Agents** (`.agents/roles/*.md`) — workers with personality. A role supplies behavior for native delegation; Claude and Codex deliver it through their own adapters. It has a soul zone (Identity, Decision Philosophy, Working Style, Quality Standards) and auto-loads skills via frontmatter. Agents don't orchestrate and they don't own reference material.
+- **Knowledge skills** (`.agents/skills/*/SKILL.md`) — domain knowledge. A skill is a Markdown file with a template, checklist, quality criteria, or reference material. Skills don't *do* anything on their own; they get loaded into the context of whatever agent or command already knows to use them.
 
 The no-duplication rule follows from these jobs: if the same checklist appears in three different commands, it belongs in a skill. If two commands keep copy-pasting the same agent-style persona into dispatch prompts, it belongs in an agent. If you find yourself teaching a skill how to orchestrate, you wrote it at the wrong tier.
 
@@ -23,7 +23,7 @@ Before you run `/create:component`, decide what you're actually creating. This i
 Ask two questions:
 
 1. **Does this role require a distinct point of view?** An agent has beliefs. Pilar (the security auditor) thinks like an attacker first, defender second. Murphy (the QA engineer) treats Murphy's Law as a design principle. If what you're adding is knowledge that any competent agent could apply, it's not an agent — it's a skill.
-2. **Should Claude auto-delegate to it?** Agents are discoverable via their `description` field. When the main agent sees a task matching an agent's description, it considers delegating. Skills don't get auto-delegated to; they get loaded into someone else's context. If you want the main agent to hand the whole task over, you want an agent. If you want existing agents to reach for a reference, you want a skill.
+2. **Should Claude auto-delegate to it?** Agents are discoverable via their `description` field. When the main agent sees a task matching an agent's description, it considers delegating. Knowledge skills do not get auto-delegated to; they get loaded into someone else's context. If you want the main agent to hand the whole task over, you want an agent. If you want existing agents to reach for a reference, you want a skill.
 
 Both yes → agent. Either no → skill.
 
@@ -66,28 +66,21 @@ After `/create:component` runs, you still need to:
 - **Flesh out the body.** The scaffolding gives you correct structure and placeholder content. Replace the placeholders with real domain expertise.
 - **Run `/review:check-templates`** to verify wiring (see Verification below).
 
-You can also skip the command and write the file by hand. That's legitimate for experienced contributors — the convention rules live in the per-type creator skills (`.claude/skills/agent-creator/SKILL.md`, `.claude/skills/command-creator/SKILL.md`, and `.claude/skills/skill-authoring/SKILL.md`). But the command catches naming mistakes and wiring gaps that are easy to miss when hand-rolling.
+You can also skip the command and write the file by hand. That's legitimate for experienced contributors — the convention rules live in the per-type creator skills (`.agents/skills/agent-creator/SKILL.md`, `.agents/skills/command-creator/SKILL.md`, and `.agents/skills/skill-authoring/SKILL.md`). But the command catches naming mistakes and wiring gaps that are easy to miss when hand-rolling.
 
 ## Where Files Go
 
 ```
-.claude/
-├── agents/
-│   └── {name}.md                     — one file per agent, kebab-case name
-├── commands/
-│   ├── {name}.md                     — build-loop commands at the top level
-│   ├── create/
-│   │   └── {name}.md                 — setup/project-pipeline commands
-│   └── review/
-│       └── {name}.md                 — review/audit commands
-└── skills/
-    └── {name}/
-        └── SKILL.md                  — one directory per skill; supplementary
-                                        files (references/, examples/) go
-                                        alongside SKILL.md in the same directory
+.agents/
+├── roles/{name}.md                    — shared role behavior
+├── skills/{name}/SKILL.md             — knowledge skill or workflow selector
+│   └── references/workflow.md          — workflow body, where applicable
+└── adapters/
+    ├── workflows.json                — native command mapping
+    └── claude/workflow-metadata.json  — Claude command frontmatter
 ```
 
-Command categories matter for invocation. A command at `.claude/commands/do.md` is invoked as `/do`. A command at `.claude/commands/create/component.md` is invoked as `/create:component`. A command at `.claude/commands/review/check-sync.md` is invoked as `/review:check-sync`. Pick the directory that matches the category; the namespace in the invocation follows from it.
+Command categories matter for invocation. A command at `.claude/commands/do.md` is invoked as `/do`. A command at `.claude/commands/create/component.md` is invoked as `/create:component`. A command at `.claude/commands/review/check-sync.md` is invoked as `/review:check-sync`. These paths are generated outputs. Author `.agents/skills/{native-skill-name}/references/workflow.md` and its selector, with native mapping in `.agents/adapters/workflows.json` and Claude frontmatter in `.agents/adapters/claude/workflow-metadata.json`. Namespaced commands use hyphenated skill names (e.g. `create-component`). Render with `node .claude/core/render-shared-agents.js`.
 
 ## Naming Conventions
 
@@ -111,16 +104,13 @@ Each tier has a required frontmatter shape. The full field tables live in the pe
 name: {kebab-case}
 nickname: {Short-Name}
 aliases: [{alias1}, {alias2}, ...]
-model: {inherit|sonnet|haiku}
 description: {What it does. When to use it.}
-tools: {comma-separated tool list}
 skills:
   - {skill-name}
-memory: project
 ---
 ```
 
-The `model` field matters for cost and capability. Use `inherit` for planning/strategy/design agents (stays on Opus for complex reasoning). Use `sonnet` for implementation, code review, and testing (fast and capable). Use `haiku` for documentation (cheapest option, sufficient quality for wayfinding docs).
+Canonical roles do not contain runtime model/tool/memory fields. Workshop defaults belong in `.agents/adapters/{runtime}/shared-agents.json`; adopter overrides belong in native `.claude/shared-agents.json` or `.codex/shared-agents.json`. Claude uses a Sonnet floor, pinned Opus security-auditor and policy-driven escalation. Codex uses configured native models; do not pass Claude identifiers to it.
 
 A new agent ships with **soul only** — no `## Project Context` section. That section is owned by `/review:specialize` and added per-project when the agent is deployed against a real architecture. See [`./specialize.md`](./specialize.md) and [`./personalize.md`](./personalize.md) for how the two zones work and why contribution stops at the soul.
 
@@ -150,7 +140,7 @@ allowed-tools: {tool list}
 ---
 ```
 
-**The description field must start with `Use WHEN`.** This is not optional, and the reason is mechanical: Claude Code reads the description to decide whether to load the skill. Descriptions that summarize the workflow ("Dispatches subagent per task...") get followed as shortcuts instead of triggering a skill read. Descriptions that describe triggering conditions ("Use WHEN tests have race conditions...") force a full skill-body read. The `skill-authoring` skill has the detail at `.claude/skills/skill-authoring/SKILL.md` under "Claude Search Optimization (CSO)."
+**The description field must start with `Use WHEN`.** This is not optional, and the reason is mechanical: Claude Code reads the description to decide whether to load the skill. Descriptions that summarize the workflow ("Dispatches subagent per task...") get followed as shortcuts instead of triggering a skill read. Descriptions that describe triggering conditions ("Use WHEN tests have race conditions...") force a full skill-body read. The `skill-authoring` skill has the detail at `.agents/skills/skill-authoring/SKILL.md` under "Claude Search Optimization (CSO)."
 
 `user-invocable: false` is the default — it means the skill is used by agents or commands but doesn't appear in the `/skill-name` slash-command list. Set it to `true` only if you genuinely want users to invoke the skill directly (like `/simplify` or `/skill-authoring`).
 
@@ -164,7 +154,7 @@ Your project uses PostgreSQL. You've noticed that every time `/do` touches a mig
 /create:component skill postgres-patterns Use WHEN implementing Postgres-backed features, writing migrations, or tuning query performance — covers CONCURRENTLY indexes, partial indexes, JSONB, and migration safety
 ```
 
-The command creates `.claude/skills/postgres-patterns/SKILL.md` with correct frontmatter and a placeholder body. It also asks you which agent should auto-load this skill. You pick `general-purpose` because Forge is the one implementing migrations. The agent's `skills:` list gets updated to include `postgres-patterns`.
+The command creates `.agents/skills/postgres-patterns/SKILL.md` with correct frontmatter and a placeholder body. It also asks you which agent should auto-load this skill. You pick `general-purpose` because Forge is the one implementing migrations. The agent's `skills:` list gets updated to include `postgres-patterns`.
 
 ### Step 2 — Replace the placeholders
 
@@ -180,7 +170,9 @@ The scaffolded body will have headings like `## Quality Criteria` and `## Refere
   in a transaction.
 
 ## Index Strategy
-...
+
+- Measure a query with EXPLAIN before adding an index.
+- Document the query and workload an index is intended to support.
 ```
 
 Domain knowledge only — no orchestration, no "first do X then do Y." That's command territory.
@@ -195,15 +187,15 @@ This command reads every agent, command, skill, and hook; checks frontmatter; ve
 
 ### Step 4 — Use it
 
-Next time Forge runs a migration story, it auto-loads `postgres-patterns/SKILL.md` before its first turn. The skill is in its context; the rules apply without anyone telling Forge to read a file.
+In Claude, next time Forge runs a migration story, it auto-loads `postgres-patterns/SKILL.md` before its first turn. In Codex, use native role dispatch when supported; otherwise the worker reads the canonical role and declared skills and reports that distinction.
 
 Adding an agent or a command follows the same four-step shape — scaffold with `/create:component`, replace placeholders, verify with `/review:check-templates`, use it. The details differ (agents need a soul zone; commands need gates and a report section) but the loop is identical.
 
 ## Anti-Patterns to Avoid
 
-- **Generic agent personality.** "I am a helpful assistant focused on X." Every agent needs a distinct worldview. Read Murphy's soul at `.claude/agents/qa-engineer.md` or Pilar's at `.claude/agents/security-auditor.md` as calibration — if your new agent doesn't read like someone with opinions, rewrite it.
+- **Generic agent personality.** "I am a helpful assistant focused on X." Every agent needs a distinct worldview. Read Murphy's soul at `.agents/roles/qa-engineer.md` or Pilar's at `.agents/roles/security-auditor.md` as calibration — if your new agent doesn't read like someone with opinions, rewrite it.
 - **Overlapping agents.** If your new agent's description could match an existing agent's description, you don't need a new agent — extend the existing one with a skill. Check the 11-agent inventory in [`../concepts/agents.md`](../concepts/agents.md) before adding.
-- **Orchestration logic in skills.** Skills carry knowledge; they do not orchestrate. "Step 1: Run the linter. Step 2: If errors, dispatch the fix-agent..." belongs in a command, not a skill.
+- **Orchestration logic in knowledge skills.** Knowledge skills carry reference material; workflow skills select authored procedures. "Step 1: Run the linter. Step 2: If errors, dispatch the fix-agent..." belongs in a command, not a skill.
 - **Domain knowledge in commands.** Commands orchestrate; they do not own reference material. If your command's workflow has a 40-line checklist of rules, extract the checklist into a skill and have the command reference it by name.
 - **Unwired skills.** Every new skill must be loaded by at least one agent, referenced by at least one command, or have `user-invocable: true`. A skill that nothing reads is dead weight — `/review:check-templates` will flag it.
 - **Skill descriptions that summarize workflows.** `description: "Dispatches subagent per task"` — Claude will follow that sentence instead of reading the skill. Use `description: "Use WHEN ..."` with triggering conditions only.
@@ -217,31 +209,33 @@ Every contribution ends with this command.
 /review:check-templates
 ```
 
-It audits the entire `.claude/` system: orphaned agents (no command dispatches to them), unused skills (no agent loads them, no command references them), missing hooks referenced in settings.json, frontmatter drift, broken wiring. Anything your new component touched that isn't quite right will show up in the report at `docs/.output/findings/reviews/{date}-check-templates.md`.
+It audits canonical/native toolkit wiring: orphaned agents (no command dispatches to them), unused skills (no agent loads them, no command references them), missing hooks referenced in settings.json, frontmatter drift, broken wiring. Anything your new component touched that isn't quite right will show up in the report at `docs/.output/findings/reviews/{date}-check-templates.md`.
 
 If the report is clean, commit. If it's not, fix what it flagged and re-run. Do not ship contributions that the template audit flags — other adopters inherit your additions, and drift compounds.
 
 ## Release Cadence
 
-This repo (`Domdhi.Agents`) is the **public storefront**. The authoring happens in a separate private workshop that publishes a curated subset here via `tools/publish.js` driven by the allowlist at `tools/publish-manifest.json` (workshop-only tooling, kept outside `.claude/` so it never accidentally ships to adopters). A hardcoded `DEFAULT_EXCLUDES` list in `publish.js` always strips working state — handoffs, `.output/`, TODO checklists, per-project research, agent-memory stores, the `tools/` directory itself — even if a manifest include would otherwise match them. The manifest is the allowlist; `DEFAULT_EXCLUDES` is the safety rail; both apply on every publish.
+The private workshop repository is where shared roles, skills, workflows and helpers are authored. The public Domdhi.Agents distribution uses the explicit allowlist in `tools/publish-manifest.json` and tracked-file selection in `tools/publish.js`. Working state, local settings and project-owned configuration never ship; publisher tests and toolkit tests remain workshop verification, while adopter gates remain application-only.
 
-Releases are cut on natural milestones — when a meaningful batch of agent/skill/command work has landed and been audited — not on a fixed schedule. The `.claude/version.json` field tracks the release version, and each public commit corresponds to one publish. Contributions merged into the private workshop show up here at the next cut.
+Domdhi.Agents maintainers cut releases on natural milestones — when a meaningful batch of agent/skill/command work has landed, been reviewed and passed the workshop checks — not on a fixed schedule. The canonical version lives in `.agents/config/version.json` and is rendered to `.claude/version.json`; each adopter records the release it installed. Merged contributions reach projects at the next pinned release.
 
-**To propose a change:** the upstream private repo accepts PRs against `main`. Keep the change focused on template-level value that other adopters benefit from; project-specific customizations stay in your own fork. See `./specialize.md` for the line between template additions and project specialization.
+**To propose a change:** open a pull request against the Domdhi.Agents repository through the repository’s review process; the maintainers own review and release. Keep the change focused on toolkit-level value that other projects benefit from; project-specific customizations stay in your own repository. See `./specialize.md` for the line between template additions and project specialization.
 
 ## What's Next
 
 - **New baseline agent?** Run [`/review:personalize`](./personalize.md) on it to give it a name and a soul that matches the project's voice.
 - **New skill wired to an existing baseline agent?** Next `/do` will pick it up automatically — auto-load via frontmatter is how skills reach agents.
 - **New command?** Test it on a representative task. Commands benefit from one or two dry-runs before they become muscle memory.
-- **Contributing back to the template?** If the component is generic enough that other projects would benefit, open a PR against the template repo with the new file + a short rationale in the PR description.
+- **Contributing back to the toolkit?** If the component is generic enough that other projects would benefit, propose it to the Domdhi.Agents maintainers with the new file and a short rationale.
 
 ## See Also
 
-- [`../concepts/commands.md`](../concepts/commands.md) — the 39 commands and the 4-category taxonomy
+- [`../concepts/commands.md`](../concepts/commands.md) — the 49 workflows and their native invocation routes
 - [`../concepts/agents.md`](../concepts/agents.md) — the 11 baseline agents, model hierarchy, dispatch mechanics
 - [`../concepts/skills.md`](../concepts/skills.md) — the 23 skills and the three consumption paths
 - [`../system-map.md`](../system-map.md) — full inventory and wiring map
 - [`../commands.md`](../commands.md) — abstract reference for every command, including `/create:component` and `/review:check-templates`
 - [`./specialize.md`](./specialize.md) — layering tech-stack context on top of baseline agents
 - [`./personalize.md`](./personalize.md) — giving agents names and soul-level identity
+
+For the independent nested public mirror, tracked-source selection and local prepared-version release procedure, see [v6 migration](../migration-v6.md#local-release-preparation-and-later-distribution).

@@ -3,11 +3,13 @@ description: Reverse-engineer the doc chain from an existing codebase — brownf
 argument-hint: "[--yolo]"
 ---
 
+<!-- Generated from .agents/skills/onboard/references/workflow.md; edit the canonical source, then run node .claude/core/render-shared-agents.js. -->
+
 # Onboard
 
 Bootstrap the Domdhi.Agents doc chain from an existing codebase. Produces `docs/architecture/overview.md` and `docs/product/context.md` from reality — no brief required, no templates to fill, no vision interview. Chains `/review:specialize` once the architecture doc exists.
 
-Intended as the FIRST command when dropping this template into a project that already has code. Where `/create:new-project` starts with a blank slate and interviews the user forward, `/onboard` starts with the codebase and reads backward.
+Intended as the FIRST command after installing Domdhi.Agents into a project that already has code. Where `/create:new-project` starts with a blank slate and interviews the user forward, `/onboard` starts with the codebase and reads backward.
 
 **Hard-gate posture:** `/onboard` has NO doc prerequisites — it is the bootstrapper. It refuses only when there is no detectable source at all (in that case point at `/create:new-project`).
 
@@ -135,6 +137,10 @@ Write the codebase map to `docs/.output/.state/work/{YYYY-MM-DD}/onboard-scan.md
 - Scale: {answer or "inferred: {inference}"}
 ```
 
+#### 4b. Project constraints and verification
+
+**Runtime and verification.** The `gate.js` build and test commands this workflow records and configures are the application's own and never the Domdhi.Agents toolkit suite, including after agent-file edits. In Codex, run each `.claude/core/` command in this workflow as `.codex/core/` with the same arguments, per `.agents/adapters/codex/execution.md`, and dispatch the `architect` and `doc-writer` roles as that adapter describes. Discovery alone (an installed skill, a listed command or a loaded file) never proves this workflow ran: report completion only from the written `docs/architecture/overview.md` and `docs/product/context.md` passing their Step 5 and Step 6 validation, and the commit hash.
+
 ### 5. Generate Architecture Doc
 
 Delegate to the `architect` agent to write `docs/architecture/overview.md` from the scanned reality.
@@ -151,6 +157,7 @@ The `architect` agent auto-loads the `architecture` skill via frontmatter — do
 5. Instruction to mark every ADR as `Status: Inferred` rather than `Status: Accepted` — these are reverse-engineered decisions, not conscious decisions being documented for the first time
 6. Path: `docs/architecture/overview.md`
 7. Mode: **Reverse-Engineering Mode** — document what exists, not what is ideal
+8. Project constraints from Step 4b, only when they apply: the selected reference paths, the verified project constraints, and the instruction to record differences from them as application tasks rather than as defects the doc silently fixes
 
 **Validate** after delegation: read `docs/architecture/overview.md` and check that:
 - The `## Tech Stack` section is present and populated
@@ -173,6 +180,7 @@ The `doc-writer` agent auto-loads `project-planning` and `documentation` skills 
 3. Path to the completed architecture doc (`docs/architecture/overview.md`)
 4. Path to output: `docs/product/context.md`
 5. Instruction to write current state, not aspirational state — this is a quick-reference for the next agent that opens the repo
+6. Project constraints from Step 4b, only when they apply: the selected reference paths and the verified project constraints
 
 **Context doc structure the delegate should produce:**
 
@@ -184,7 +192,7 @@ The `doc-writer` agent auto-loads `project-planning` and `documentation` skills 
 **Tech Stack**: {one-line from architecture doc}
 
 ## Quick Reference
-- **Architecture**: [docs/architecture/overview.md](architecture/overview.md)
+- **Architecture**: [docs/architecture/overview.md](../architecture/overview.md)
 - **Context**: this file
 
 ## Entry Points
@@ -213,6 +221,8 @@ The `doc-writer` agent auto-loads `project-planning` and `documentation` skills 
 - `/end` — save session state
 ```
 
+**Validate** after delegation: read `docs/product/context.md` and check that its Build & Test commands match Step 2, its first line is not `<!-- @@template -->`, and no unfilled `{placeholder}` values remain. If validation fails and YOLO_MODE is false, re-delegate with the gap named.
+
 ### 6b. Reconcile Legacy Docs & Stray Tracked Files
 
 Brownfield repos often already have planning docs under OLD names (`_architecture.md`, `_prd.md`), a root `_backlog.md` beside `work/backlog.md`, or duplicate `_feature-ideas.md`. The create-chain is blind to these and they silently become drift (two PRDs, two backlogs). **Reconcile them now** — do not leave both the legacy reals and the new domain docs (`product/`, `architecture/`, `work/`, …) in place (F2). <!-- migrate:keep (legacy-name examples retain the old underscore form) -->
@@ -227,7 +237,7 @@ node .claude/core/_lib/doc-drift.js
 - Legacy doc, no canonical → you already wrote the canonical in Steps 5–6; archive the legacy.
 - Duplicate basename (root vs `todo/`) → keep the canonical (`todo/`), remove the root copy.
 
-**3. Untrack stray ignored files (F7):** files committed BEFORE the `.gitignore` managed block existed stay tracked even though they now match an ignore rule (e.g. a root `domdhi.db`, `docs/.output/.state/` artifacts — but NOT `docs/.output/.memory/`, which is intentionally tracked). Untrack them so they stop versioning:
+**3. Untrack stray ignored files (F7):** files committed BEFORE the `.gitignore` managed block existed stay tracked even though they now match an ignore rule (e.g. a legacy root `domdhi.db` from an upstream-era install, `docs/.output/.state/` artifacts — but NOT `docs/.output/.memory/`, which is intentionally tracked). Untrack them so they stop versioning:
 ```bash
 git ls-files -ci --exclude-standard          # lists tracked-but-now-ignored files
 git ls-files -ci --exclude-standard -z | xargs -0 -r git rm --cached
@@ -238,7 +248,7 @@ Leave the files on disk (`--cached`); they're working state, not deletions. Repo
 
 Inspect whether a `CLAUDE.md` already exists at the project root.
 
-**Case 0 — CLAUDE.md exists but is the install stub (C6):** the brownfield installer writes a minimal placeholder whose entire content points back here (it contains *"This project uses the Domdhi Agents template"* / *"Run `/onboard`"*). This is NOT a real adopter file to preserve — additively merging around it would leave a stale "Run /onboard" instruction after onboard has already run. If the existing CLAUDE.md matches the install stub (short, and contains that "Run `/onboard`" / "to complete setup" marker), treat it as **Case A** — generate a fresh project CLAUDE.md and overwrite the stub (no diff-confirm needed; there is no user content to protect).
+**Case 0 — CLAUDE.md exists but is the install stub (C6):** the brownfield installer writes a minimal placeholder whose entire content points back here (it contains *"Run `/onboard`"*; a legacy stub also says *"This project uses the Domdhi Agents template"*). This is NOT a real adopter file to preserve — additively merging around it would leave a stale "Run /onboard" instruction after onboard has already run. If the existing CLAUDE.md matches the install stub (short, and contains that "Run `/onboard`" / "to complete setup" marker), treat it as **Case A** — generate a fresh project CLAUDE.md and overwrite the stub (no diff-confirm needed; there is no user content to protect).
 
 **Case A — No CLAUDE.md exists (or it is the install stub per Case 0):**
 Generate a new `CLAUDE.md` grounded in the onboard scan:
@@ -248,7 +258,7 @@ Generate a new `CLAUDE.md` grounded in the onboard scan:
 - Key file paths and entry points (from Thread A)
 - Gate configuration note (point at `gate.js` or `gate.config.json`)
 
-Do NOT generate the full Domdhi.Agents template CLAUDE.md — generate a lean project-specific one that captures what was learned.
+Do NOT copy the Domdhi.Agents workshop CLAUDE.md — generate a lean project-specific one that captures what was learned.
 
 **Case B — CLAUDE.md exists:**
 Read the existing CLAUDE.md, then propose an **additive merge** — never clobber.
@@ -256,7 +266,7 @@ Read the existing CLAUDE.md, then propose an **additive merge** — never clobbe
 Diff what Domdhi.Agents conventions would add:
 - Gate configuration (build/test commands) if absent
 - Key file paths if absent
-- A note that `.claude/` conventions are now active (if the file doesn't already describe them)
+- A note that the Domdhi.Agents conventions (`.agents/` sources with `.claude/` and `.codex/` runtimes) are now active (if the file doesn't already describe them)
 
 Produce a diff-style proposal:
 
@@ -277,7 +287,7 @@ This step is **self-contained** — it does NOT call the built-in `/init` comman
 
 ### 8. Specialize Agents
 
-Now that `docs/architecture/overview.md` exists, chain `/review:specialize` to customize the generic agents for this stack.
+Now that `docs/architecture/overview.md` exists, chain `/review:specialize` (canonical workflow: `.agents/skills/review-specialize/SKILL.md`) to customize roles for this stack. Migrated roles/skills are edited in `.agents/roles` and `.agents/skills`, then rendered with `node .claude/core/render-shared-agents.js`. Native settings stay in their adapters; generated native files are not authoring targets. Root `CLAUDE.md` retains only application instructions from Step 7.
 
 ```bash
 # Invoked as a sub-command, not a bash command — triggers the specialize workflow
@@ -292,13 +302,14 @@ After specialization completes, mention optionally running `/review:personalize`
 
 ### 9. Commit
 
-Follow the **Post-Command Commit Convention** in CLAUDE.md.
+Follow the **Post-Command Commit Convention** in `.agents/startup-reference.md`.
 
 Stage the files created or modified by this run specifically:
 - `docs/architecture/overview.md`
 - `docs/product/context.md`
-- `docs/.output/.state/work/{date}/onboard-scan.md`
 - `CLAUDE.md` (only if it was modified in Step 7)
+
+Do not stage `docs/.output/.state/work/{date}/onboard-scan.md`: `docs/.output/.state/` is ignored scratch and `git add` refuses it. Anything from the scan that the docs rely on belongs in `overview.md` or `context.md`.
 
 Write the commit message to `docs/.output/.state/.commit-msg` (Write tool — no shell escaping):
 
@@ -356,7 +367,7 @@ Recommended next commands:
 
 **Effort level.** Commands like `/do` and `/run-todo` orchestrate multiple sub-agents. If you see delegation steps being skipped or plans cut short, raise effort to `high` or above (`/config set effort high`) before continuing.
 
-**Troubleshooting bisect.** If something looks wrong and you can't tell whether it's Domdhi.Agents or Claude Code itself, run `claude --safe-mode` (if available in your version) to start a session with extensions disabled — a clean reproduction there rules out this template. If that flag isn't available, temporarily rename `.claude/` to `_claude_disabled/` and test in a plain session; rename it back when done. Either way the goal is the same: disable all of Domdhi.Agents to isolate the problem.
+**Troubleshooting bisect.** If something looks wrong and you can't tell whether it's Domdhi.Agents or the runtime itself, start a session with extensions disabled (in Claude Code, `claude --safe-mode` if your version has it) — a clean reproduction there rules out the toolkit. Otherwise temporarily rename the runtime folder (`.claude/` to `_claude_disabled/`, or `.codex/` to `_codex_disabled/`) and test in a plain session; rename it back when done. Either way the goal is the same: disable Domdhi.Agents to isolate the problem.
 ```
 
 ## Anti-Patterns

@@ -1,0 +1,37 @@
+{
+  "roles": {
+    "qa-engineer": {
+      "tier": "standard"
+    },
+    "architect": {
+      "tier": "standard"
+    },
+    "code-reviewer": {
+      "tier": "standard"
+    },
+    "doc-writer": {
+      "tier": "standard"
+    },
+    "general-purpose": {
+      "tier": "standard"
+    },
+    "playwright": {
+      "tier": "standard"
+    },
+    "product-strategist": {
+      "tier": "standard"
+    },
+    "project-planner": {
+      "tier": "standard"
+    },
+    "security-auditor": {
+      "tier": "audit"
+    },
+    "shadow": {
+      "tier": "standard"
+    },
+    "ux-designer": {
+      "tier": "standard"
+    }
+  }
+}

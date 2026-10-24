@@ -3,6 +3,8 @@ description: Create a Product Requirements Document (PRD) with functional and no
 argument-hint: [project name or project-brief path] [--yolo]
 ---
 
+<!-- Generated from .agents/skills/create-project-requirements/references/workflow.md; edit the canonical source, then run node .claude/core/render-shared-agents.js. -->
+
 # Create PRD
 
 Create a comprehensive Product Requirements Document. Produces `docs/product/requirements.md`.
@@ -72,6 +74,8 @@ Synthesize a requirements brief from upstream docs:
 
 ### 5. Delegate to Agent
 
+**Runtime and verification.** In Codex, run each `.claude/core/` command in this workflow (`telemetry-log.js` and `_lib/doc-drift.js grade`) as `.codex/core/` with the same arguments, per `.agents/adapters/codex/execution.md`. This workflow has no build or test gate; in an adopter any later gate is the application's own and never the Domdhi.Agents toolkit suite. Its evidence is `docs/product/requirements.md` passing the real-document check (no `<!-- @@template -->` first line), the Step 6 checklist and the `doc-drift.js grade` exit 0, plus the hash of a commit that stages only the files this command wrote; discovery alone (an installed skill, a listed command or a loaded file) never proves this workflow ran.
+
 Use the Task tool with `subagent_type: "product-strategist"` to generate the PRD.
 
 **Task prompt must include**:
@@ -80,6 +84,7 @@ Use the Task tool with `subagent_type: "product-strategist"` to generate the PRD
 3. User's answers from interview rounds (if any)
 4. Feature ideas from `feature-ideas.md` (if available)
 5. Mode (Context/Interview/Reverse-Engineering)
+7. The grounding rule: never invent or fabricate project business requirements, personas, targets or constraints; trace each requirement to the user's statements, the upstream documents or verified source, and record anything unknown as an open question or assumption for the Step 5b clarify pass
 
 The `product-strategist` agent auto-loads the `project-planning` skill via frontmatter — do NOT tell it to read the skill file.
 
@@ -110,7 +115,7 @@ node .claude/core/_lib/doc-drift.js grade docs/product/requirements.md
 
 ### 7. Commit (main agent)
 
-Follow the **Post-Command Commit Convention** in CLAUDE.md. Stage all files created or modified by this command and commit with a descriptive message.
+Follow the **Post-Command Commit Convention** in `.agents/startup-reference.md`. Stage all files created or modified by this command and commit with a descriptive message.
 
 ### 8. Report (main agent)
 

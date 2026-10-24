@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Trigger Eval Review — __SKILL_NAME_PLACEHOLDER__</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: system-ui, sans-serif; font-size: 14px; color: #1a1a1a; background: #f5f5f5; padding: 24px; }
+  h1 { font-size: 1.4rem; margin-bottom: 6px; }
+  .meta { color: #666; font-size: 0.85rem; margin-bottom: 20px; }
+  .desc-box { background: #fff; border: 1px solid #ddd; border-radius: 6px; padding: 12px 16px; margin-bottom: 20px; }
+  .desc-box label { font-weight: 600; font-size: 0.85rem; color: #444; display: block; margin-bottom: 6px; }
+  .desc-box textarea { width: 100%; min-height: 80px; font-family: inherit; font-size: 0.9rem; border: 1px solid #ccc; border-radius: 4px; padding: 8px; resize: vertical; }
+  table { width: 100%; border-collapse: collapse; background: #fff; border-radius: 8px; overflow: hidden; box-shadow: 0 1px 4px rgba(0,0,0,.08); }
+  thead th { background: #f0f0f0; padding: 8px 12px; text-align: left; font-weight: 600; font-size: 0.85rem; }
+  tbody td { padding: 8px 12px; border-top: 1px solid #eee; vertical-align: middle; font-size: 0.85rem; }
+  tbody tr:hover td { background: #fafafa; }
+  .query-cell { width: 60%; }
+  .trigger-cell { width: 20%; text-align: center; }
+  .action-cell { width: 20%; text-align: center; }
+  .toggle { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; }
+  .toggle input[type="checkbox"] { width: 16px; height: 16px; cursor: pointer; accent-color: #0070f3; }
+  .query-input { width: 100%; border: 1px solid #ccc; border-radius: 4px; padding: 5px 8px; font-family: inherit; font-size: 0.85rem; }
+  .query-input:focus { outline: 2px solid #0070f3; border-color: transparent; }
+  .remove-btn { background: none; border: 1px solid #e0e0e0; border-radius: 4px; padding: 4px 10px; color: #c0392b; cursor: pointer; font-size: 0.8rem; }
+  .remove-btn:hover { background: #fff0f0; border-color: #c0392b; }
+  .add-btn { margin-top: 12px; background: #fff; border: 1px dashed #0070f3; border-radius: 5px; padding: 7px 16px; color: #0070f3; cursor: pointer; font-size: 0.85rem; display: inline-block; }
+  .add-btn:hover { background: #e8f0fe; }
+  .export-btn { margin-top: 20px; display: inline-block; background: #0070f3; color: #fff; border: none; border-radius: 5px; padding: 9px 20px; font-size: 0.9rem; cursor: pointer; }
+  .export-btn:hover { background: #005cc5; }
+  .actions { margin-top: 20px; display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+  .badge { display: inline-block; border-radius: 10px; padding: 2px 8px; font-size: 0.75rem; font-weight: 600; }
+  .badge-yes { background: #d4edda; color: #155724; }
+  .badge-no  { background: #f8d7da; color: #721c24; }
+  .count-label { font-size: 0.8rem; color: #666; }
+</style>
+</head>
+<body>
+<h1>Trigger Eval Review</h1>
+<p class="meta">Skill: <strong>__SKILL_NAME_PLACEHOLDER__</strong></p>
+
+<div class="desc-box">
+  <label for="skill-description">Skill description (edit to test a new candidate)</label>
+  <textarea id="skill-description">__SKILL_DESCRIPTION_PLACEHOLDER__</textarea>
+</div>
+
+<p class="count-label" id="row-count"></p>
+
+<table id="eval-table">
+  <thead>
+    <tr>
+      <th class="query-cell">Query</th>
+      <th class="trigger-cell">Should trigger?</th>
+      <th class="action-cell">Remove</th>
+    </tr>
+  </thead>
+  <tbody id="eval-body">
+    <!-- rows injected by JS from __EVAL_DATA_PLACEHOLDER__ -->
+  </tbody>
+</table>
+
+<button class="add-btn" id="add-row">+ Add row</button>
+
+<div class="actions">
+  <button class="export-btn" id="export-btn">Export eval_set.json</button>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  // ── Seed data injected by the command ───────────────────────────────────
+  var seedData = __EVAL_DATA_PLACEHOLDER__;
+
+  // ── State ───────────────────────────────────────────────────────────────
+  var rows = [];
+
+  function makeRow(query, shouldTrigger) {
+    return { id: Math.random().toString(36).slice(2), query: query || '', shouldTrigger: !!shouldTrigger };
+  }
+
+  function init() {
+    if (Array.isArray(seedData) && seedData.length > 0) {
+      rows = seedData.map(function (item) {
+        return makeRow(item.query, item.should_trigger);
+      });
+    } else {
+      rows = [makeRow('', true)];
+    }
+    render();
+  }
+
+  // ── DOM rendering ───────────────────────────────────────────────────────
+  function render() {
+    var tbody = document.getElementById('eval-body');
+    tbody.innerHTML = '';
+    rows.forEach(function (row) {
+      var tr = document.createElement('tr');
+      tr.dataset.id = row.id;
+
+      // Query cell
+      var tdQuery = document.createElement('td');
+      tdQuery.className = 'query-cell';
+      var inp = document.createElement('input');
+      inp.type = 'text';
+      inp.className = 'query-input';
+      inp.value = row.query;
+      inp.setAttribute('aria-label', 'Query text');
+      inp.addEventListener('input', function () {
+        var r = findRow(tr.dataset.id);
+        if (r) r.query = inp.value;
+      });
+      tdQuery.appendChild(inp);
+      tr.appendChild(tdQuery);
+
+      // Toggle cell
+      var tdToggle = document.createElement('td');
+      tdToggle.className = 'trigger-cell';
+      var lbl = document.createElement('label');
+      lbl.className = 'toggle';
+      var cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.checked = row.shouldTrigger;
+      cb.setAttribute('aria-label', 'Should trigger');
+      cb.addEventListener('change', function () {
+        var r = findRow(tr.dataset.id);
+        if (r) r.shouldTrigger = cb.checked;
+        updateBadge(badge, cb.checked);
+      });
+      var badge = document.createElement('span');
+      badge.className = 'badge';
+      updateBadge(badge, row.shouldTrigger);
+      lbl.appendChild(cb);
+      lbl.appendChild(badge);
+      tdToggle.appendChild(lbl);
+      tr.appendChild(tdToggle);
+
+      // Remove cell
+      var tdAct = document.createElement('td');
+      tdAct.className = 'action-cell';
+      var rmBtn = document.createElement('button');
+      rmBtn.className = 'remove-btn';
+      rmBtn.textContent = 'Remove';
+      rmBtn.addEventListener('click', function () {
+        rows = rows.filter(function (r) { return r.id !== tr.dataset.id; });
+        render();
+      });
+      tdAct.appendChild(rmBtn);
+      tr.appendChild(tdAct);
+
+      tbody.appendChild(tr);
+    });
+    updateCount();
+  }
+
+  function updateBadge(badge, val) {
+    badge.textContent = val ? 'Yes' : 'No';
+    badge.className = 'badge ' + (val ? 'badge-yes' : 'badge-no');
+  }
+
+  function findRow(id) {
+    return rows.find(function (r) { return r.id === id; }) || null;
+  }
+
+  function updateCount() {
+    var el = document.getElementById('row-count');
+    if (el) el.textContent = rows.length + ' row' + (rows.length === 1 ? '' : 's');
+  }
+
+  // ── Add row ─────────────────────────────────────────────────────────────
+  document.getElementById('add-row').addEventListener('click', function () {
+    rows.push(makeRow('', true));
+    render();
+    // Focus the new row's input.
+    var inputs = document.querySelectorAll('#eval-body .query-input');
+    if (inputs.length) inputs[inputs.length - 1].focus();
+  });
+
+  // ── Export ───────────────────────────────────────────────────────────────
+  document.getElementById('export-btn').addEventListener('click', function () {
+    var exported = rows.map(function (r) {
+      return { query: r.query, should_trigger: r.shouldTrigger };
+    });
+    var blob = new Blob([JSON.stringify(exported, null, 2)], { type: 'application/json' });
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'eval_set.json';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(function () { URL.revokeObjectURL(a.href); }, 60000);
+  });
+
+  // ── Boot ─────────────────────────────────────────────────────────────────
+  init();
+}());
+</script>
+</body>
+</html>

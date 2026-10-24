@@ -8,22 +8,22 @@ If you just want to try it, skip everything on this page and open [`getting-star
 
 Start here if you've just landed and want the shape of the system before committing to adopt it.
 
-1. [`getting-started.md`](./reference/agents/getting-started.md) — Clone to implementation-ready in 30 minutes, via `/create:new-project`. The one-page walkthrough.
+1. [`getting-started.md`](./reference/agents/getting-started.md) — Install to implementation-ready, via `/create:new-project`. The one-page walkthrough.
 2. [`concepts/commands.md`](./reference/agents/concepts/commands.md) — The orchestration tier. What slash commands are, how they decide what to gate, what to delegate, and what to commit.
-3. [`concepts/agents.md`](./reference/agents/concepts/agents.md) — The 11 specialists. Model hierarchy — Opus plans and verifies, Sonnet implements, Haiku documents.
-4. [`concepts/skills.md`](./reference/agents/concepts/skills.md) — Domain knowledge that auto-loads via agent frontmatter. User-invocable (`/skill-name`) vs. implicit (agents reach for them).
+3. [`concepts/agents.md`](./reference/agents/concepts/agents.md) — The 11 specialists. Model hierarchy — Claude uses Sonnet floors and pinned/escalated Opus; Codex uses configured native models.
+4. [`concepts/skills.md`](./reference/agents/concepts/skills.md) — Canonical knowledge skills, workflow selectors and runtime-specific loading/discovery.
 
 Four docs. Read in order. By the end you know what the system is and what role each tier plays.
 
 ## For Adopters — Using It Day to Day
 
-Read these once you've initialized a project and want to use it well.
+Read these once you've initialized a project and want to use it well. For an existing installation, start with [v6 migration](./reference/agents/migration-v6.md).
 
-1. [`reference/commands.md`](./reference/agents/commands.md) — Canonical reference for every slash command. Alphabetical; skimmable.
+1. [`reference/commands.md`](./reference/agents/commands.md) — Complete 49-workflow reference with Claude/Codex names and authored procedures.
 2. [`guides/specialize.md`](./reference/agents/guides/specialize.md) — `/review:specialize --fix` walkthrough. Appends project context to the baseline agents and generates stack-specific agents from your architecture doc.
 3. [`guides/personalize.md`](./reference/agents/guides/personalize.md) — `/review:personalize` walkthrough. Gives agents names, personas, and soul-level identities. Cosmetic until you work at scale — then it becomes how you think about the team.
 4. [`concepts/memory.md`](./reference/agents/concepts/memory.md) — How memories compound across sessions. Active-work-day decay (idle projects don't rot), confidence tiers, the session-handoff write path.
-5. [`concepts/hooks.md`](./reference/agents/concepts/hooks.md) — The 12 automated hooks. Secret scanning, guardrails, session memory capture — what happens without you asking.
+5. [`concepts/hooks.md`](./reference/agents/concepts/hooks.md) — The 16 Claude handlers and supported Codex adaptation. Secret scanning, guardrails, session memory capture — what happens without you asking.
 
 ## For Contributors — Extending the System
 
@@ -40,12 +40,13 @@ If you came here from a search engine or a link and just need to find a specific
 
 | Doc | Path | What's in it |
 |-----|------|--------------|
-| Getting Started | [`getting-started.md`](./reference/agents/getting-started.md) | First 30 minutes — clone, `/create:new-project`, specialize, commit |
+| v6 Migration | [`migration-v6.md`](./reference/agents/migration-v6.md) | Canonical sources, native limits and prepared-release distribution |
+| Getting Started | [`getting-started.md`](./reference/agents/getting-started.md) | Pinned install, `/create:new-project`, specialize, commit |
 | Commands (concept) | [`concepts/commands.md`](./reference/agents/concepts/commands.md) | Orchestration tier explainer |
 | Agents (concept) | [`concepts/agents.md`](./reference/agents/concepts/agents.md) | The 11 baseline agents + model hierarchy |
-| Skills (concept) | [`concepts/skills.md`](./reference/agents/concepts/skills.md) | Auto-load, user-invocable, the 26-skill catalog |
+| Skills (concept) | [`concepts/skills.md`](./reference/agents/concepts/skills.md) | Auto-load, user-invocable, the 23-knowledge-skill catalog and 49 workflow selectors |
 | Memory (concept) | [`concepts/memory.md`](./reference/agents/concepts/memory.md) | Compounding, confidence, decay, the session-handoff write path |
-| Hooks (concept) | [`concepts/hooks.md`](./reference/agents/concepts/hooks.md) | The 12 hooks and their trigger taxonomy |
+| Hooks (concept) | [`concepts/hooks.md`](./reference/agents/concepts/hooks.md) | Claude handler inventory, Codex adaptation and trust limits |
 | Commands (reference) | [`reference/commands.md`](./reference/agents/commands.md) | Every slash command, alphabetical |
 | System Map | [`reference/system-map.md`](./reference/agents/system-map.md) | Full inventory and wiring |
 | Customization | [`reference/customization.md`](./reference/agents/customization.md) | Zone map for safe editing |
@@ -63,4 +64,4 @@ A few things live in `docs/` but are out of scope for adopters reading this inde
 - `docs/modules/`, `docs/.output/` (incl. `.output/findings/research/`) — working surfaces that each project fills as it runs.
 - `docs/CLAUDE.md` — conventions for the docs folder structure itself; auto-loaded by Claude Code when it works inside `docs/`.
 
-For the folder-layout conventions that govern all of the above, see [`../CLAUDE.md`](../CLAUDE.md) at the repo root (the auto-loaded project instructions) and [`./CLAUDE.md`](./CLAUDE.md) (the docs-local conventions).
+For the folder-layout conventions that govern all of the above, see the project's root `CLAUDE.md` (the auto-loaded project instructions) and [`./CLAUDE.md`](./CLAUDE.md) (the docs-local conventions).

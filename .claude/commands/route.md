@@ -4,6 +4,8 @@ description: Assess a request's scale and route it to the right pipeline depth �
 argument-hint: [what you want to build or change]
 ---
 
+<!-- Generated from .agents/skills/route/references/workflow.md; edit the canonical source, then run node .claude/core/render-shared-agents.js. -->
+
 # Route — Scale-Adaptive Planning-Depth Router
 
 The front door. Given any request — a one-line bugfix, a feature, a new module, or a whole new product — this command assesses its **scale** and routes you to the right **pipeline depth**, so a typo fix doesn't walk brief→PRD→architecture while greenfield still gets the full planning walk.

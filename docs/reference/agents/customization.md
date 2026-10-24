@@ -1,140 +1,80 @@
 # Customization Zones
 
-When updating the template (via subtree, copy, or future update mechanism), some files are safe to overwrite and some contain project-specific content that must be preserved. This file maps the zones.
+Updates refresh the shared toolkit while preserving project instructions, role identity, Project Context, bespoke skills and local configuration. Author changes under `.agents/`; generated `.claude/` and `.codex/` files are delivery surfaces. See [v6 migration](migration-v6.md) before updating an older installation.
 
-## Zone Map
+## Ownership map
 
-| Path | Zone | Update Strategy |
-|------|------|-----------------|
-| `.claude/commands/**/*.md` | Template | **Overwrite** — commands are orchestration, never project-specific |
-| `.claude/core/*.js` | Template | **Overwrite** — scripts are project-agnostic |
-| `.claude/hooks/*.cjs` | Template | **Overwrite** — hooks are project-agnostic (project-specific hooks preserved) |
-| `.claude/skills/**` | Template | **Overwrite** — entire skills tree (SKILL.md + references/, examples/, `assets/`, sibling `.md`/`.ts`/`.dot`/`.sh`) except `brand-guidelines/**` (see below). **Skill `.md` escape hatch under `--merge`:** a file carrying a `<!-- @@project-additions -->` tail is **merged** (template head refreshed, adopter tail preserved) — see Skill Exceptions. **Skill-owned document templates live here** (`<skill>/assets/*`, the scaffold source of record via `SKILL_TEMPLATE_MANIFEST`) |
-| `.claude/skills-optional/` | Template | **Overwrite** (gitignored — local-only aesthetic skills) |
-| `.claude/templates/` | Template | **Overwrite** — residual no-owner templates only (CLAUDE.md docs-guide + `root/`); doc templates moved to skill `assets/` |
-| `.claude/version.json` | Template | **Overwrite** — template version metadata (changelog capped to the newest 3 releases by `fleet:release`) |
-| `CHANGELOG.md` (root) | **Workshop-only** | **Not propagated** — archive of older release notes demoted out of `version.json` by `fleet:release`; not in the publish allowlist, not a `.claude/` subtree, so adopters never receive it |
-| `.claude/agents/*.md` (11 base) | **Mixed** | **Merge** — see Agent File Zones below |
-| `.claude/agents/*.md` (project-added) | **Project** | **Preserve** — agents added by `/specialize` or manually |
-| `.claude/settings.json` | **Project** | **Preserve** — project-specific permissions, env vars, hook paths |
-| `.claude/update-config.json` | **Project** | **Preserve** — per-project updater config (`skillExclude`); read by the updater to skip opted-out skills |
-| `docs/reference/agents/customization.md` | Template | **Overwrite** — this file |
-| `CLAUDE.md` (target's root) | **Project** | **Never touch** — projects own their root Claude Code instructions |
-| Source `CLAUDE.md` → target `.claude/README.md` | Doc redirect | **Overwrite** — template self-documentation co-located with the files it documents |
-| `.githooks/` | Template | **Overwrite** |
-| `docs/` | **Project** | **Never touch** — all project content |
+| Authored or project path | Ownership | Default update behavior |
+| --- | --- | --- |
+| `.agents/skills/` | Shared, with project exceptions | Refresh shared knowledge/workflow assets; merge marked Markdown additions; preserve project-added skills |
+| `.agents/roles/*.md` | Shared behavior and project identity/context | Merge canonical roles; preserve nickname, aliases, personalized soul, tuned description, Project Context and eligible bespoke skills |
+| `.agents/core/`, `hooks/`, `templates/`, `config/`, `adapters/` | Shared | Refresh managed sources; refuse conflicting local changes |
+| `.agents/render-state.json` | Generated ownership ledger | Record canonical/native ownership through the renderer; retain it with the delivered sources |
+| `.claude/`, `.codex/` managed projections | Generated | Render from canonical sources; edited managed files require reconciliation |
+| `.claude/shared-agents.json`, `.codex/shared-agents.json` | Project | Preserve native role overrides; workshop defaults originate in `.agents/adapters/{runtime}/shared-agents.json` |
+| `.agents/gate.config.json` | Project | Preserve application gate overrides; render compatible native config |
+| `.claude/settings.json` | Shared wiring and project settings | Section-aware merge, described below |
+| `.claude/settings.local.json`, `.claude/update-config.json`, `.codex/config.toml` | Project | Preserve; local Codex config is not a canonical or rendered asset |
+| `.claude/guardrail-rules.project.yaml` | Project | Preserve project path-tier overrides; not distributed from the workshop |
+| Root `CLAUDE.md`, `AGENTS.md` | Project with managed startup block | Preserve project prose and update only toolkit-managed directives |
+| `docs/` | Project | Update does not deliver project docs; install/scaffold only seeds missing documents |
+| `docs/reference/agents/` | Publish bundle | Install/update do not deliver it; read the workshop or published reference artifact |
+| Root `CHANGELOG.md` | Workshop archive | Not published or synced; inline release notes live in canonical version metadata |
 
-## Agent File Zones
+Classification is implemented in [zone-classifier.js](../../../.agents/core/_lib/zone-classifier.js), not read from this table. Bespoke native helpers/hooks and unmapped legacy components keep their existing project ownership. Do not copy an entire native tree over an adopter.
 
-Agent files have three zones with clear ownership. `/personalize` and `/specialize` already respect these boundaries:
+## Role zones
 
-```
----                              FRONTMATTER (Template)
-name: agent-name                   Overwrite on update — except:
-nickname: {name}                     nickname  → Preserve (set by /personalize)
-aliases: [...]                       aliases   → Preserve (set by /personalize)
-model: sonnet                        model     → Overwrite
-description: ...                     description → Preserve if personalized/specialized; else Overwrite
-tools: ...                           tools     → Overwrite
-skills: ...                          skills    → Overwrite
-memory: project                      memory    → Overwrite
+Canonical `.agents/roles/{name}.md` frontmatter contains identity, description and declared skills:
+
+```yaml
 ---
-
-# {Name} — {Role Title}         SOUL ZONE (Project — /personalize)
-                                   Preserve on update.
-Identity, Decision Philosophy,     Written by /personalize with project-specific
-Working Style, Quality Standards   personality. If never personalized, contains
-                                   thin template defaults (safe to overwrite).
-...
-
-## Skills                        SKILLS ZONE (Template)
-                                   Overwrite on update.
-Read these files at the start...   Auto-generated from frontmatter skills list.
-
-## Project Context               SPECIALIZE ZONE (Project — /specialize)
-                                   Preserve on update.
-> Specialized for {Project}...     Written by /specialize with project tech stack,
-                                   ADRs, and conventions. If never specialized,
-Tech Stack, ADRs, Conventions      this section doesn't exist (nothing to preserve).
+name: data-engineer
+nickname: River
+aliases: [data, pipelines]
+description: Data modeling and ETL implementation.
+skills:
+  - project-planning
+---
 ```
 
-**Update algorithm for agents:**
-1. Overwrite frontmatter (except `nickname` and `aliases`, always preserved; plus `description` and the `skills:` list per steps 2 and 5)
-2. If the agent is personalized (`nickname`) or specialized (`## Project Context`) → also preserve its `description` — it's tuned by `/personalize`, `/specialize`, and `/optimize-agents`, and the generic template description would otherwise clobber routing-critical text
-3. If Soul Zone was personalized (not thin defaults) → preserve it
-4. Overwrite the `## Skills` prose section (template-owned)
-5. **Union project-specific skills into the frontmatter `skills:` list** — a `skills:` entry that is NOT a template skill (not shipped by the source) but DOES exist as a skill dir in the target is a `/review:specialize` addition and is preserved; template-renamed/consolidation orphans (no target dir) are dropped. Distinct from step 4: the `## Skills` *prose* is template-owned, but the frontmatter `skills:` *list* can carry project specializations. (Before this, the merge silently stripped specialized agents' domain skills on every update.)
-6. If Project Context section exists → preserve it
-7. If neither personalized nor specialized → full overwrite is safe (so thin agents still pick up template description improvements)
+The body separates the persona/soul, shared `## Skills` guidance and optional project-owned `## Project Context`. The merger preserves personalized soul and context, preserves tuned descriptions when personalized/specialized, refreshes shared Skills prose and retains eligible project-added skill references. Shared renames can leave legacy directories; reconcile declared skills with installed directories after updating.
 
-## Skill Exceptions
+Runtime model/tool/memory settings belong in the applicable native `shared-agents.json` override; workshop defaults are authored in adapters. The renderer emits Claude Markdown and Codex TOML. [Personalize](guides/personalize.md) edits the canonical soul; [specialize](guides/specialize.md) edits canonical context and skill wiring. A legacy `.claude/agents/` role is an authoring fallback only when no canonical counterpart exists.
 
-Most skills are template content. Two ways a project keeps its own skill content across updates:
+## Keeping project skill additions
 
-| Skill | Zone | Notes |
-|-------|------|-------|
-| `brand-guidelines/**` (whole tree) | **Project** | Customized per-project with brand colors, typography, visual identity, logo assets, palette files. Whole subtree preserved on update — any sub-docs added in the target stay project-owned. (The crude, whole-subtree precedent for the section-level marker below.) |
-| Any skill `.md` with a `<!-- @@project-additions -->` tail | Template head + **Project** tail | **Section-level escape hatch (under `--merge`).** Everything below the marker is adopter-owned and preserved; the template head above it still refreshes. The skill analog of the agent Soul-Zone/Project-Context merge. Logic: `_lib/skill-merger.js`. Commands that add project content to a template skill (`/review:specialize`, `/sweep`, `/review:evolve-skills`) write it below the marker. |
-| All others (including `references/`, `assets/`, `scripts/`, `examples/`) | Template | Overwrite on update. SKILL.md **and** its support files (`references/*`, `scripts/*`, `assets/*`, etc.) propagate together — they're authored as a unit in the template, so partial propagation leaves SKILL.md pointing at missing references. |
+`brand-guidelines/**` is project-owned. For another shared skill's Markdown, use one of the two markers outside code fences:
 
-### Opting out of template skills
+- `<!-- @@project-additions -->`: everything below the marker is a preserved project tail.
+- `<!-- @@project-additions:start -->` through `<!-- @@project-additions:end -->`: preserve an inline block under its nearest preceding heading.
 
-A project can permanently decline template skills it doesn't use — e.g. `tailwind-css-patterns` in a DevExpress/Blazor project, or the atomic workflow skills in a project that consolidated them — by listing the skill directory names in `.claude/update-config.json`:
+The shared head refreshes under default merging. Inline blocks are reanchored to their headings; if an upstream heading disappears, the merger recovers the block at EOF and reports the orphan. Marker examples inside fenced code do not create ownership boundaries. Substantial project knowledge belongs in a separate project-added skill directory. See [skill-merger.js](../../../.agents/core/_lib/skill-merger.js) and [skill authoring](../../../.agents/skills/skill-authoring/SKILL.md).
+
+To opt out of shared skill delivery, configure the target project's `.claude/update-config.json`:
 
 ```json
-{ "skillExclude": ["tailwind-css-patterns", "design-taste-frontend", "redesign-existing-projects"] }
+{ "skillExclude": ["tailwind-css-patterns", "design-taste-frontend"] }
 ```
 
-`template-updater.js` reads this file from the **target** project and skips any listed skill on every update, so skills a project deliberately removed don't silently return on the next sync. The config is Project zone — the updater never overwrites it. (Description preservation, above, prevents the parallel problem of `/optimize-agents`-tuned descriptions reverting on update.)
+Exclusions apply to canonical sources and native projections. Invalid project update configuration refuses mutation. Existing project files are not implicitly disposable because a skill is excluded.
 
-## Detection Heuristics
+## Settings merge
 
-To detect whether a file has been customized:
+Default updates refresh managed `hooks`, `plansDirectory` and `statusLine` wiring while preserving project `permissions`, `env`, `$schema` and unknown top-level keys. Custom hook entries survive when they reference an adopter-owned installed hook; inline commands survive unless identical to a template command. Missing-script fossil registrations are dropped. Preserved entries follow shared entries in their matcher group. Custom status lines belong in `settings.local.json`.
 
-| Check | Means |
-|-------|-------|
-| Agent has `nickname:` in frontmatter | Personalized — preserve Soul Zone |
-| Agent has `## Project Context` section | Specialized — preserve that section |
-| Agent `skills:` entry is a non-template skill with a target dir | Specialized skill — preserve (union back in) |
-| `brand-guidelines/SKILL.md` differs from template | Customized — preserve |
-| `settings.json` exists | Project-specific — always preserve |
-| Target's root `CLAUDE.md` | Always project-specific — never touched by updater |
+The policy is implemented by [settings-merger.js](../../../.agents/core/_lib/settings-merger.js). `--merge` remains a compatible spelling for the default; `--no-merge` skips these merges with warnings. It is not a command to overwrite personalized roles or local settings.
 
-## Project-Specific Agents
+## Update and verify
 
-Projects can add agents beyond the 11 base template agents. These are **Project zone** — template updates will never touch them. Name them by role (e.g., a compliance-reviewer for a regulated-industry project, a growth-experiment-designer for a SaaS product) and give them personas via `/review:personalize`.
+Run from the pinned toolkit checkout, choosing the active runtime's helper:
 
-These agents follow the same frontmatter format as base agents. The template updater detects them by comparing against the base agent list and skips them entirely.
-
-## Settings.json Merging
-
-`settings.json` is always **Preserve** — never overwritten. When the template adds new hooks, they must be manually wired into project settings. Key areas that differ per project:
-
-- `env` — project-specific environment variables and feature flags
-- `permissions.allow` — project-specific tool permissions (npm, supabase, wrangler, etc.)
-- `hooks` — project-specific hooks (auto-formatting, linting, typecheck, migration timestamps)
-
-When updating a project, compare the template's `settings.json` hooks section against the project's to find missing entries. Add new template hooks without removing project-specific ones.
-
-## Template Update Mechanism
-
-`template-updater.js` implements the zone-aware merge strategy defined above. Field-tested and manually verified against multiple downstream projects (April 2026).
-
-```bash
-node .claude/core/template-updater.js update <target-path> [--merge] [--dry-run]
+```sh
+# Codex; Claude uses .claude/core/ with the same arguments.
+node .codex/core/template-updater.js update /path/to/project --merge --dry-run
+node .codex/core/template-updater.js update /path/to/project --merge
 ```
 
-Behavior:
-1. Reads this file's zone map to determine template vs project ownership
-2. **Overwrite** zones: replaces entirely
-3. **Preserve** zones: skips entirely (includes project-specific agents, settings.json, and the target's root CLAUDE.md)
-4. **Merge** zones: uses agent zone boundaries (Soul Zone, Project Context preserved)
-5. **Doc redirect**: source `CLAUDE.md` is copied to target's `.claude/README.md` as template self-documentation; target's root `CLAUDE.md` is never touched
-6. **New files** in template: copies them in
-7. **Deleted files** from template: warns but doesn't auto-delete
-8. `--dry-run` previews changes without writing; `--merge` enables zone-aware agent merging
+Review refusals, warnings and changed-path output. Move intended shared edits into their canonical source and render; do not force over unknown managed-output changes. Managed root directives are merged additively. The legacy source-CLAUDE redirect remains a compatibility document, not authority to replace adopter root instructions.
 
-### Manual Steps After Template Update
-1. Compare `settings.json` hooks — add any new template hooks to project settings
-2. Run `node .claude/core/memory-manager.js lint` — verify memory system health
-3. Run `/review:check-templates` — verify system wiring integrity
+After an update, inspect native settings and role skill resolution, run the installed `$review-check-templates` or Claude `/review:check-templates`, and verify the application's build/test gates. Toolkit tests belong only in Domdhi.Agents. [Migration v6](migration-v6.md) separates local metadata, verification and later authorized publication/fleet operations.

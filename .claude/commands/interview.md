@@ -4,6 +4,8 @@ description: Ask interactive questions to gather requirements, preferences, or d
 argument-hint: <topic to discuss>
 ---
 
+<!-- Generated from .agents/skills/interview/references/workflow.md; edit the canonical source, then run node .claude/core/render-shared-agents.js. -->
+
 # Interview
 
 Ask the user interactive questions to gather information before taking action. Use `AskUserQuestion` tool for structured multi-choice questions, not open-ended text prompts.

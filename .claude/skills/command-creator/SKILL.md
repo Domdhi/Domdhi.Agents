@@ -1,6 +1,6 @@
 ---
 name: command-creator
-description: "Use WHEN creating a new slash command in .claude/commands/ — provides this toolkit's command template, namespacing, gate/commit/telemetry house-style, obligation language, and the command-vs-inline decision rule. Triggers: create command, new command, slash command, command frontmatter, command gate, command commit"
+description: "Use WHEN creating a shared workflow in .agents/skills/ — provides this toolkit's command template, namespacing, gate/commit/telemetry house-style, obligation language, and the command-vs-inline decision rule. Triggers: create command, new command, slash command, command frontmatter, command gate, command commit"
 metadata:
   version: 1.0.0
   author: Domdhi.Agents
@@ -9,9 +9,11 @@ user-invocable: false
 allowed-tools: Read Write Edit Grep Glob
 ---
 
+<!-- Generated from .agents/skills/command-creator/SKILL.md; edit the canonical source, then run node .claude/core/render-shared-agents.js. -->
+
 # Command Creator
 
-Template, decision gates, and quality criteria for creating a new slash command (`.claude/commands/{name}.md`) that follows this toolkit's conventions. A command owns **orchestration** — gates, delegation, validation, commit logic — and never inlines skill domain knowledge. See the three-tier architecture + "no duplication between layers" rule in CLAUDE.md; for agents use `agent-creator`, for skills use `skill-creator` + `skill-authoring`.
+Template, decision gates, and quality criteria for creating a shared workflow (`.agents/skills/{native-skill-name}/references/workflow.md`) that follows this toolkit's conventions. A command owns **orchestration** — gates, delegation, validation, commit logic — and never inlines skill domain knowledge. See the three-tier architecture + "no duplication between layers" rule in CLAUDE.md; for agents use `agent-creator`, for skills use `skill-creator` + `skill-authoring`.
 
 **Namespacing:** a command's slash name comes from its path. `commands/create/project-brief.md` → `/create:project-brief`; `commands/review/code-review.md` → `/review:code-review`; a top-level `commands/sweep.md` → `/sweep`. Put setup commands in `create/`, periodic/maintenance commands in `review/`, daily build-loop commands at the top level.
 
@@ -49,7 +51,7 @@ Before finishing a command, ask: **"Would this hold under production pressure?"*
 Before writing a new command, read existing commands as calibration:
 - **Complex pipeline commands**: read `do.md` — size-aware delegation, multi-step verification, failure handling
 - **Simple utility commands**: read `review/organize.md` — minimal steps, clear output
-- **Always Glob first**: `Glob .claude/commands/**/*.md` — never duplicate an existing command
+- **Always Glob first**: `Glob .agents/skills/*/references/workflow.md` and inspect `.agents/adapters/workflows.json` — never duplicate an existing command
 
 Know when to break the template. Complex commands need inline pipeline stages with explicit failure paths. Simple commands need a checklist output pattern. Fit the format to the work.
 
@@ -66,6 +68,8 @@ node .claude/core/telemetry-log.js {command-name}
 ```
 
 ### Frontmatter
+
+Keep this raw YAML string in `.agents/adapters/claude/workflow-metadata.json` keyed by the native skill name. Register the corresponding `.claude/commands/` output path in `.agents/adapters/workflows.json`. Author the body separately in `references/workflow.md`, and copy the small `SKILL.md` selector structure from an existing workflow such as `do`. Render with `node .claude/core/render-shared-agents.js`; never author generated command files directly.
 
 ```yaml
 ---
@@ -99,7 +103,7 @@ VARIABLE_NAME: $ARGUMENTS
 
 ### Step N: Commit (main agent)
 
-Follow the **Post-Command Commit Convention** in CLAUDE.md.
+Follow the **Post-Command Commit Convention** in `.agents/startup-reference.md`.
 
 ### Step N+1: Report
 
@@ -114,13 +118,13 @@ Follow the **Post-Command Commit Convention** in CLAUDE.md.
 
 | Convention | Rule |
 |-----------|------|
-| Location | `.claude/commands/` for build loop, `create/` for setup, `review/` for review |
+| Location | `.agents/skills/{native-skill-name}/references/workflow.md`; native command path is adapter metadata |
 | Gates | Check prerequisites exist before proceeding (use `constants.js` for paths) |
 | Delegation | Spawn agents via `Task(agent-name, ...)` — never inline agent work |
-| Commit | Stage specific files, commit with convention from CLAUDE.md, include hash in report |
+| Commit | Stage specific files, commit per the Post-Command Commit Convention in `.agents/startup-reference.md`, include hash in report |
 | Read-only commands | review commands that don't modify files should NOT have a commit step |
 | `$ARGUMENTS` | Always captured in a named variable at the top of the workflow |
-| Run-stamp | Fresh-each-run output files carry a `{YYMMDD-HHMM}` prefix, computed once per run (see CLAUDE.md) |
+| Run-stamp | Fresh-each-run output files carry a `{YYMMDD-HHMM}` prefix, computed once per run (see the Run-Stamp Convention in `.agents/startup-reference.md`) |
 
 ### Commands That Commit vs Read-Only
 
@@ -149,12 +153,14 @@ Both rules apply at *dispatch time* — a parser-implementing story's prompt sho
 ## Wiring Checklist (New Command)
 
 After creating the command, verify the wiring:
-- [ ] File at `.claude/commands/{name}.md` or `create/{name}.md` or `review/{name}.md`
+- [ ] Canonical workflow body and selector under `.agents/skills/{native-skill-name}/`
+- [ ] Native command mapping and Claude frontmatter registered in adapters
+- [ ] Rendered outputs checked with `node .claude/core/render-shared-agents.js --check`
 - [ ] Frontmatter has `description` and `argument-hint`
 - [ ] Telemetry self-log is the first workflow step
 - [ ] Gates check prerequisites before proceeding
 - [ ] Agents delegated to actually exist
-- [ ] Commit step follows CLAUDE.md convention (if not read-only)
+- [ ] Commit step follows the Post-Command Commit Convention in `.agents/startup-reference.md` (if not read-only)
 - [ ] Report section shows structured output
 
 ## Related Skills

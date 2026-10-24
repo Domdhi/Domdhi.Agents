@@ -1,12 +1,12 @@
 # Engineering Conventions
 
-Durable engineering rules for **contributors to this toolkit** (the `.claude/core/` Node code and its tests). These are NOT adopter-facing guidance — they describe how the toolkit's own internals are built and tested. Promoted from the agent-memory store (`/sweep` 2026-06-06) so they survive memory decay and are discoverable in review.
+Durable engineering rules for **contributors to this toolkit** (the `.agents/core/` Node code and tests under `.agents/core/__tests__/`). These are NOT adopter-facing guidance — they describe how the toolkit's own internals are built and tested. Promoted from the agent-memory store (`/sweep` 2026-06-06) so they survive memory decay and are discoverable in review.
 
 ## Code patterns
 
 ### Constants stay static — override at the call site, identically
 
-Never read `process.env` inside a constants module (e.g. `.claude/core/constants.js`). A `process.env` read at module-load time makes `require()` of that module non-deterministic across tests — the value is captured once at first load and frozen.
+Never read `process.env` inside a constants module (e.g. `.agents/core/constants.js`). A `process.env` read at module-load time makes `require()` of that module non-deterministic across tests — the value is captured once at first load and frozen.
 
 When a constant needs an env override:
 - Define the **static default** in the constants module.
@@ -32,6 +32,24 @@ Do not trust a clean union merge of `.claude` files. After any union-merged sync
 *Why:* surfaced consolidating divergent template trees; the gate's green is a false-negative here because duplication is behavior-preserving (memory `union-merge-duplicates-idempotent-code`).
 
 ## Testing conventions
+
+### Focused feedback and full checkpoints
+
+In this workshop, run exact focused test files with:
+
+~~~bash
+node tools/run-toolkit-tests.cjs focused .agents/core/__tests__/learning-intake.test.js
+~~~
+
+Focused feedback is partial. Map each changed behavior to its affected callers, sibling tests and architecture guards; use the full suite when that map cannot be bounded safely. The runner accepts 1–16 exact ordinary test paths, isolates one worker, verifies the machine-readable report and refuses wildcard/zero-collection runs. Quick mode is also partial.
+
+The run-todo cadence retains full baseline and final gates; runs of three or more waves also run the full suite after the middle wave. An explicit request for a full suite each wave wins. Every wave still needs its build, affected checks and required integration/E2E legs. Review/source changes invalidate affected proof. Same-source full evidence may be reused only when the workflow's checkpoint and scope rules permit it.
+
+Canonical verification remains native gate test and npm run test:coverage. Coverage measures authored .agents implementations: existing global and per-tree floors remain 70% lines/functions/statements and 60% branches. Child-only execution is not measured implementation coverage. Keep package test scripts independent of the workshop-only tools runner.
+
+The runner and toolkit test requirement are not installed into adopters. Their Build/Test/PR gates remain application-only after agent-file changes. Offline fixtures, generated discovery and live service delivery are distinct evidence.
+
+Toolkit contributors need Node 22.12+ for Vitest 5; Node 24 is recommended. Keep Vitest and its V8 coverage provider on matching versions. The optional better-sqlite3 13 driver requires Node 22+; earlier runtimes retain JSON memory search. Coverage artifacts belong under `docs/.output/.state/telemetry/coverage/`.
 
 ### A stub must assert the real subsystem's contract, not just the call
 
@@ -59,20 +77,20 @@ Notes:
 ### `publish.js` ships `__tests__/`; `template-updater.js` skips them — a one-way trapdoor
 
 The two propagation paths have **asymmetric coverage of test sources**:
-- **First publish** (`publish:public` / `tools/publish.js`) is a full copy and **ships test files** (so adopters can run `npm test`).
-- **Incremental sync** (`template-updater.js update --merge`) **excludes `__tests__/` and `_helpers/`** (`ALWAYS_SKIP_DIRS`) to protect adopter customizations.
+- **Public artifact** (`publish:public` / `tools/publish.js`) selects tracked allowlisted files and **ships toolkit test files** for workshop/artifact verification. It does not add toolkit tests to adopter application gates.
+- **Application install/update** (`template-updater.js update --merge`) **excludes `__tests__/` and `_helpers/`** (`ALWAYS_SKIP_DIRS`) to protect adopter customizations.
 
 Consequence: anything hardcoded in a `__tests__/` file — an absolute path, a username, a secret, a machine-specific value — **leaks into every first-published adopter and is never overwritten by later syncs.** It persists until hand-fixed in each adopter.
 
-*Rules:* never put a personal/absolute path, real secret, or machine-specific value in a test fixture — use `/home/user/...`, `~/...`, tmp dirs, or env. When you fix such a leak in the workshop, remember a plain `template-updater` sync will **not** carry the fix to adopters that already have the stale test; fix those by hand. (Field-proven 2026-06-07: `guardrail.test.js` carried `/home/<user>/...` into two adopters.)
+*Rules:* never put a personal/absolute path, real secret, or machine-specific value in a test fixture — use `~/...`, tmp dirs, or env. When you fix such a leak in the workshop, remember a plain `template-updater` sync will **not** carry the fix to adopters that already have the stale test; fix those by hand. (Field-proven 2026-06-07: `guardrail.test.js` carried `/home/<user>/...` into two adopters.)
 
 *Why:* surfaced during the v4.71/v4.72 fleet work — the strip-personal-paths fix reached the storefront via publish but not the already-synced adopters via `template-updater`.
 
-### `version.json` changelog is capped; older entries live in workshop-only `CHANGELOG.md`
+### Canonical version changelog is capped; older entries live in workshop-only `CHANGELOG.md`
 
-`version.json` ships to every adopter on every `fleet:sync`, so an ever-growing inline changelog bloats the propagated file. `fleet:release` keeps only the newest `CHANGELOG_INLINE_CAP` (3) releases inline and demotes older entries to root `CHANGELOG.md`.
+Canonical `.agents/config/version.json` and rendered `.claude/version.json` travel with toolkit updates, so an ever-growing inline changelog bloats the propagated file. `fleet:release` keeps only the newest `CHANGELOG_INLINE_CAP` releases inline and demotes older entries to root `CHANGELOG.md`.
 
-*Rules:* `CHANGELOG.md` is **workshop-only** — it is not in the publish allowlist (`tools/publish-manifest.json`) and not a `.claude/` subtree, so neither `publish.js` nor `template-updater.js` carries it. Adopters see only the newest 3 releases in the `version.json` they sync; the full history lives in the workshop's `CHANGELOG.md`. The cap is enforced in `tools/fleet.js` (`capChangelog` / `mergeChangelogArchive`) — don't hand-edit `version.json` to re-stack old entries.
+*Rules:* `CHANGELOG.md` is **workshop-only** — it is not in the publish allowlist (`tools/publish-manifest.json`) and not a `.claude/` subtree, so neither `publish.js` nor `template-updater.js` carries it. Adopters see only the capped newest releases in the `version.json` they sync; the full history lives in the workshop's `CHANGELOG.md`. The cap is enforced in `tools/fleet.js` (`capChangelog` / `mergeChangelogArchive`) — don't hand-edit `version.json` to re-stack old entries.
 
 *Why:* the inline changelog had grown to span v4.59→v4.80 in one string (2026-06-14), bloating every adopter's `version.json`.
 
@@ -85,7 +103,7 @@ Consequence: anything hardcoded in a `__tests__/` file — an absolute path, a u
 
 *Rules:* after any `template-updater`/`fleet:sync` pass — (1) set-diff the target's `skills/` and `commands/` against the source to surface orphans (`fleet:sync` reports them; `--prune-orphans` deletes), (2) verify every agent `skills:` entry resolves to a real dir (`/review:check-templates` checks this).
 
-*Why:* field-proven twice on 2026-06-07 (Doomstick + Platform: agents carried both `architecture` and `architecture-writer` after `--merge`) and 2026-06-06 (Dispatch v4.46→4.47: `--merge` historically REBUILT frontmatter and silently stripped `/review:specialize`-added skills — the union behavior is the fix, the reconcile pass is its cost). Promoted from memories `template-updater-merge-unions-agent-skills` + `reconcile-agent-skills-after-template-sync` (/sweep 2026-07-02).
+*Why:* field-proven twice on 2026-06-07 (two adopters: agents carried both `architecture` and `architecture-writer` after `--merge`) and 2026-06-06 (an adopter at v4.46→4.47: `--merge` historically REBUILT frontmatter and silently stripped `/review:specialize`-added skills — the union behavior is the fix, the reconcile pass is its cost). Promoted from memories `template-updater-merge-unions-agent-skills` + `reconcile-agent-skills-after-template-sync` (/sweep 2026-07-02).
 
 ## Shell-instruction conventions (command prose)
 
@@ -126,7 +144,7 @@ A Windows checkout with `core.autocrlf=true` and no override leaves `\r` on ever
 
 ### `fileURLToPath(import.meta.url)`, never `new URL(import.meta.url).pathname`
 
-On Windows the latter returns `/C:/Users/...` (leading slash), which `path.resolve` turns into the bogus `C:\C:\...`. **Rule:** always `import { fileURLToPath } from 'node:url'` and use `fileURLToPath(import.meta.url)`. *Field case:* `guardrail.test.js` failed to load its rules file with `ENOENT C:\C:\...`. (Also documented in `qa-engineer/SKILL.md`.)
+On Windows the latter returns `/C:/Users/<name>/...` (leading slash), which `path.resolve` turns into the bogus `C:\C:\...`. **Rule:** always `import { fileURLToPath } from 'node:url'` and use `fileURLToPath(import.meta.url)`. *Field case:* `guardrail.test.js` failed to load its rules file with `ENOENT C:\C:\...`. (Also documented in `qa-engineer/SKILL.md`.)
 
 ### Prefer built-in `node:sqlite` on Node 24+; PROBE a native backend, don't trust `require()`
 
@@ -134,8 +152,20 @@ On Windows the latter returns `/C:/Users/...` (leading slash), which `path.resol
 
 ### Canonicalize paths with `fs.realpathSync.native` before string-comparing
 
-`os.tmpdir()` can return an 8.3 short path (`C:\Users\DBACA~1.NMM\...`) while `git --git-common-dir` returns the long form (`dbaca.NMMFA`). Same directory, different strings → a `toBe` comparison fails. **Rule:** run both sides through `fs.realpathSync.native()` before comparing paths. *Field case:* the `resolveProjectRoot` worktree test.
+`os.tmpdir()` can return an 8.3 short path with a shortened directory segment, while `git --git-common-dir` returns its long spelling. Same directory, different strings → a `toBe` comparison fails. **Rule:** run both sides through `fs.realpathSync.native()` before comparing paths. *Field case:* the `resolveProjectRoot` worktree test.
 
 ### Close SQLite handles before `rmSync` of a temp dir
 
 Windows refuses to delete a directory containing a file with an open handle (`EPERM`); POSIX allows it. A test that opens a DB and `rmSync`s its dir in `finally` must close **every** handle first. **Rule:** track and close all managers/handles a fixture opens before removing its directory — not just the ones the assertion used. *Field case:* a `seedTempStores` helper opened two managers; the test closed one, and the leaked second handle locked the `.db` against cleanup.
+
+## Source ownership after universal migration
+
+Author workflows and knowledge in `.agents/skills/`, roles in `.agents/roles/`, shared helpers/hooks/templates in their matching `.agents/` directories, and runtime metadata in `.agents/adapters/`. Native helper paths remain compatibility entry points; edit the source named in their generated notice. Keep tests in the existing `.agents/**/__tests__/` locations. Test imports and source inspections should target canonical implementations; native entry behavior requires subprocess checks of the generated files.
+
+Reuse inherited behavior and assertions during compatibility migrations. Trace conditional consumers and source/shared-state root semantics. Verify changed seams and the final gate; do not expand a source move into helper redesign or repeat unchanged broad proofs. Generated parity, offline execution, native discovery and trusted model-visible hook execution are separate evidence.
+
+## Native helpers and prepared release delivery
+
+Use `.codex/core/` helpers in Codex and `.claude/core/` in Claude; implementations are canonical under `.agents/core/`. Preserve source/native/ledger completeness in commits and keep direct helper runtime context separate from hook subprocess context. Source checkout and ignored shared state follow the [context contract](../../.agents/adapters/codex/README.md#context-contract).
+
+The public storefront is the independent nested `_Domdhi.Agents/` repository. Publisher selection is tracked-only in a checkout and follows the manifest/exclusions, containment and own-root checks. Failed source selection or copy/prune must not become a committed/pushed release. A local prepared version is distinct from authorized publication/fleet sync; see [v6 migration](../reference/agents/migration-v6.md#local-release-preparation-and-later-distribution).

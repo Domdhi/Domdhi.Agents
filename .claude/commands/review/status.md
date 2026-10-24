@@ -3,6 +3,8 @@ description: Show project status — parse TODO files, display progress, generat
 argument-hint: [--text-only to skip HTML generation]
 ---
 
+<!-- Generated from .agents/skills/review-status/references/workflow.md; edit the canonical source, then run node .claude/core/render-shared-agents.js. -->
+
 # /review:status — Project Status Dashboard
 
 Parse all TODO files in `docs/` and show progress. Generates an HTML dashboard at `docs/.output/.state/status.html`.

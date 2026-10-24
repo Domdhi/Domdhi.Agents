@@ -52,7 +52,7 @@ Lives in the **target skill directory** (e.g. `.claude/skills/my-skill/evals/eva
 
 ## 2. `eval_metadata.json`
 
-Written by `skill-eval.js run` once per eval, in the eval directory. Summarises the eval and carries the grader's per-assertion results for the viewer.
+Written by `skill-eval.js run` once per eval, in the eval directory. Summarizes the eval and carries the grader's per-assertion results for the viewer.
 
 ```json
 {

@@ -5,7 +5,7 @@ adopter, so the template stays the single source of truth. The cost: any project
 guidance written *into* a template skill is clobbered on the next sync (the reason the
 crude `skills/brand-guidelines/**` project-zone exception exists). Two sentinel forms,
 both opt-in, both implemented in `_lib/skill-merger.js` and wired into
-`template-updater.js`'s template-zone branch (no sentinel, or no `--merge` → plain
+`template-updater.js`'s template-zone branch (no sentinel, or `--no-merge` → plain
 overwrite, exactly as before) — pick the one that matches the shape of the addition.
 
 **Form 1 — whole-tail marker, for a new section appended at the end of the file:**
@@ -14,7 +14,7 @@ overwrite, exactly as before) — pick the one that matches the shape of the add
 <!-- @@project-additions -->
 ```
 
-Everything **below** it is adopter-owned and **preserved under `--merge`**; everything
+Everything **below** it is adopter-owned and **preserved by the default merge**; everything
 above is template-owned and refreshed from source.
 
 **Form 2 — anchored inline fence, for a bullet or paragraph inserted INSIDE an existing

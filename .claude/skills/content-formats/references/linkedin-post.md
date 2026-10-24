@@ -90,6 +90,4 @@ LinkedIn posts perform better when they end with an invitation to conversation r
 
 ## Voice Calibration
 
-This skill teaches LinkedIn-specific structure and platform mechanics. Voice comes from the writer agent. For voice-matched LinkedIn content, load both:
-- This skill: hook discipline, structure, platform mechanics
-- The relevant writer skill (ghostwriting / shadow): voice rules and anti-patterns
+This reference supplies platform structure. Load `ghostwriting` for the author’s voice, verified claims and writing conventions. Publishing or sending requires the owner’s explicit authorization.

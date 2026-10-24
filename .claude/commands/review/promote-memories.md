@@ -2,6 +2,8 @@
 description: Surface high-confidence memory concepts for promotion into templates, skills, and agents
 ---
 
+<!-- Generated from .agents/skills/review-promote-memories/references/workflow.md; edit the canonical source, then run node .claude/core/render-shared-agents.js. -->
+
 # Promote Memories
 
 Scan compiled concept articles for promotion candidates and guide the user through accepting, rejecting, or skipping each one. Accepted promotions are applied to target files and committed.
@@ -75,19 +77,19 @@ For each candidate (in rank order):
 
 For each accepted candidate:
 
-1. **Identify the target file.** The suggested target is a starting point — the user may specify a different file. Confirm the target with the user if ambiguous.
+1. **Identify the target file.** The suggested target is a starting point — the user may specify a different file. Resolve any migrated native role/skill to its `.agents` source before drafting; generated projections and root instructions are not shared-behavior authoring targets. Confirm the target with the user if ambiguous.
 
 2. **Read the target file** to understand where the promoted content should go.
 
 3. **Draft the addition.** Based on the concept category:
-   - `decisions` → Add to CLAUDE.md under the relevant section (Build & Test, Key File Paths, or a new section)
+   - `decisions` → Add shared behavior to its existing canonical `.agents/skills` or `.agents/roles` source when present; application decisions stay in the existing project architecture guidance. Root runtime instructions are not a shared-behavior promotion target
    - `patterns` → Add as a checklist item or guideline in the relevant SKILL.md
    - `constraints` → Add to a template's constraints or requirements section
-   - `workflows` → Add to an agent's Project Context zone in its frontmatter
+   - `workflows` → Add to a role's Project Context in its Markdown body, using `.agents/roles/{name}.md` when canonical (otherwise the legacy native source)
 
 4. **Show the user the proposed change** before applying it. Wait for confirmation.
 
-5. **Apply the change** to the target file using Edit.
+5. **Apply the change** to the source file using Edit. For migrated skills, target `.agents/skills`, use project-additions tail/inline markers for adopter guidance, and never edit a generated native file. Run `node .claude/core/render-shared-agents.js` after canonical changes and include the projections in the commit.
 
 6. **Mark the concept as promoted:**
    ```bash

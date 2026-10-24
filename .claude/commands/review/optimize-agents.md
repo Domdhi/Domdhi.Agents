@@ -3,6 +3,8 @@ description: Re-align agents, skills, and memory with the actual codebase during
 argument-hint: "[--dry-run | --fix | --report-only]"
 ---
 
+<!-- Generated from .agents/skills/review-optimize-agents/references/workflow.md; edit the canonical source, then run node .claude/core/render-shared-agents.js. -->
+
 # Optimize Agents
 
 Re-align the `.claude/` system with the **actual codebase** during Phase 4 implementation. While `/specialize` sets up agents from planning docs, `/optimize-agents` keeps them aligned as the codebase evolves.
@@ -69,7 +71,7 @@ Delegate codebase scanning to the `architect` agent via Task tool with `subagent
 
 ### 2. Compare Against Current Agent Context
 
-For each `.claude/agents/*.md`:
+For each `.agents/roles/*.md`, plus legacy `.claude/agents/*.md` with no canonical equivalent:
 
 1. Read the current `## Project Context` section from the markdown body (after frontmatter `---`), if it exists from `/specialize`
 2. Compare against the scanned codebase:
@@ -132,7 +134,7 @@ These are the **explicit recommendations** from previous retrospectives that hav
 
 ### 6. Update Agent Context (if --fix)
 
-For each agent that is DRIFTED or MISSING, update the `## Project Context` section in the flat `.claude/agents/*.md` file. Append after the YAML frontmatter closing `---`:
+For each agent that is DRIFTED or MISSING, update the `## Project Context` section in its canonical `.agents/roles/*.md` source when present, otherwise its legacy `.claude/agents/*.md`. Append at EOF, after the existing Skills and operating sections. Never edit a generated native role or root instructions to optimize shared behavior. Render after canonical writes with `node .claude/core/render-shared-agents.js`:
 
 ```markdown
 ## Project Context
@@ -169,7 +171,7 @@ Delegate skill audit to the `code-reviewer` agent via Task tool with `subagent_t
 
 **Task prompt must include**:
 1. The `DETECTED_STACK` from Step 1 (architect agent's output)
-2. List of all skill directories: `Glob: .claude/skills/*/SKILL.md`
+2. List of skill sources: `.agents/skills/*/SKILL.md`, plus legacy `.claude/skills/*/SKILL.md` without a canonical equivalent. Edit the source and preserve project-additions markers; never edit generated native skills
 3. Instruction to classify each skill: `ACTIVE` (covers tech in codebase), `NOT_USED` (covers tech not in codebase)
 4. Instruction to identify gaps: technologies in `DETECTED_STACK` with no corresponding skill
 5. Instruction to cross-reference retro findings from `Glob: docs/.output/findings/reviews/retro-*.md` for skill improvement recommendations
@@ -221,7 +223,7 @@ File format:
 
 ### 10. Commit (main agent)
 
-Follow the **Post-Command Commit Convention** in CLAUDE.md. Stage all files created or modified by this command — including `docs/.output/findings/reviews/{YYMMDD-HHMM}-agent-optimization.md` — and commit with a descriptive message.
+Follow the **Post-Command Commit Convention** in `.agents/startup-reference.md`. Stage all files created or modified by this command — including `docs/.output/findings/reviews/{YYMMDD-HHMM}-agent-optimization.md` — and commit with a descriptive message.
 
 ### 11. Report (main agent)
 

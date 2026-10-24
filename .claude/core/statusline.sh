@@ -6,7 +6,7 @@
 # Dependencies: bash, jq, curl
 # License: MIT
 #
-# Default: 🌿 main★ │ S 4.6 │ 🟢 Ctx ▓▓▓░░░ 42% │ ⏳ 🟡 ▓▓░░░░ 35% ↻ 2h30m │ $0.12 ⏱ 1h4m
+# Default: 🌿 main★ │ S 4.6 │ 🟢 Ctx 42% │ ⏳ 🟡 35% ↻ 2h30m │ $0.12 ⏱ 1h4m
 # ════════════════════════════════════════════════════════════════════════════
 
 # ── Configuration (override via environment variables) ────────────────────────
@@ -58,17 +58,11 @@ cache_age_sec() {
     echo "$age"
 }
 
-# make_bar <percent> → sets BAR_COLOR and BAR_STR (6-block bar)
+# make_bar <percent> → sets BAR_COLOR (traffic-light dot)
 make_bar() {
     local pct="$1"
     [ "$pct" -lt 0 ] 2>/dev/null && pct=0
     [ "$pct" -gt 100 ] 2>/dev/null && pct=100
-    local filled=$(( (pct + 16) / 17 )); [ $filled -gt 6 ] && filled=6
-    local empty=$(( 6 - filled ))
-    BAR_STR=""
-    local i
-    for ((i=0; i<filled; i++)); do BAR_STR+="▓"; done
-    for ((i=0; i<empty;  i++)); do BAR_STR+="░"; done
     if   [ "$pct" -lt 35 ]; then BAR_COLOR="🟢"
     elif [ "$pct" -lt 50 ]; then BAR_COLOR="🟡"
     elif [ "$pct" -lt 80 ]; then BAR_COLOR="🟠"
@@ -80,7 +74,7 @@ make_bar() {
 JSON=$(cat)
 
 # ── Parse all stdin fields in a single jq call ───────────────────────────────
-IFS='|' read -r J_MODEL_DISPLAY J_MODEL_RAW J_CTX_PCT J_CTX_SIZE J_COST J_DURATION J_CWD J_TRANSCRIPT \
+IFS='|' read -r J_MODEL_DISPLAY J_MODEL_RAW J_CTX_PCT J_CTX_SIZE J_COST J_DURATION J_CWD J_TRANSCRIPT J_EFFORT \
     < <(echo "$JSON" | jq -r '[
         (if .model | type == "object" then .model.display_name // "" else "" end),
         (if .model | type == "string" then .model else "" end),
@@ -89,7 +83,8 @@ IFS='|' read -r J_MODEL_DISPLAY J_MODEL_RAW J_CTX_PCT J_CTX_SIZE J_COST J_DURATI
         (.cost.total_cost_usd // ""),
         (.cost.total_duration_ms // ""),
         (.workspace.current_dir // ""),
-        (.transcript_path // "")
+        (.transcript_path // ""),
+        (.effort.level // "")
     ] | join("|")' 2>/dev/null | tr -d '\r')
 
 # ── Model ─────────────────────────────────────────────────────────────────────
@@ -104,19 +99,27 @@ case "$MODEL" in
   claude-opus-4-6*|Opus\ 4.6*)     MODEL="O 4.6" ;;
   claude-opus-4-5*|Opus\ 4.5*)     MODEL="O 4.5" ;;
   claude-haiku-4-5*|Haiku\ 4.5*)       MODEL="H 4.5" ;;
+  claude-sonnet-5-5*|Sonnet\ 5.5*) MODEL="S 5.5" ;;
+  claude-opus-5-5*|Opus\ 5.5*)     MODEL="O 5.5" ;;
+  claude-haiku-5-5*|Haiku\ 5.5*)   MODEL="H 5.5" ;;
+  claude-fable-5-1*|Fable\ 5.1*)   MODEL="F 5.1" ;;
 esac
 
-# ── Effort level (from settings.json — not yet in stdin JSON) ────────────────
+# ── Effort level (live value from stdin; settings.json only as a fallback) ───
 EFFORT_LABEL=""
-SETTINGS_FILE="$HOME/.claude/settings.json"
-if [ -f "$SETTINGS_FILE" ]; then
-    case "$(jq -r '.effortLevel // empty' "$SETTINGS_FILE" 2>/dev/null)" in
-        low)    EFFORT_LABEL="lo" ;;
-        medium) EFFORT_LABEL="md" ;;
-        high)   EFFORT_LABEL="hi" ;;
-        max)    EFFORT_LABEL="mx" ;;
-    esac
+EFFORT_RAW="$J_EFFORT"
+if [ -z "$EFFORT_RAW" ]; then
+    SETTINGS_FILE="$HOME/.claude/settings.json"
+    [ -f "$SETTINGS_FILE" ] && EFFORT_RAW=$(jq -r '.effortLevel // empty' "$SETTINGS_FILE" 2>/dev/null | tr -d '
+')
 fi
+case "$EFFORT_RAW" in
+    low)    EFFORT_LABEL="lo" ;;
+    medium) EFFORT_LABEL="md" ;;
+    high)   EFFORT_LABEL="hi" ;;
+    xhigh)  EFFORT_LABEL="xh" ;;
+    max)    EFFORT_LABEL="mx" ;;
+esac
 
 # ── Subscription type ─────────────────────────────────────────────────────────
 SUBSCRIPTION=""
@@ -149,7 +152,7 @@ CTX_LABEL="Ctx"
 [ -n "$USED_K" ] && CTX_LABEL="${USED_K}k/${WINDOW_LABEL}"
 
 make_bar "$CTX_PERCENT"
-CTX_COLOR="$BAR_COLOR" CTX_BAR="$BAR_STR"
+CTX_COLOR="$BAR_COLOR"
 
 # ── Session cost + duration ───────────────────────────────────────────────────
 COST_STR="" DURATION_STR=""
@@ -261,9 +264,9 @@ if [ -f "$USAGE_FILE" ]; then
             fi
             make_bar "$SESS_INT"
             if [ -n "$REMAIN_STR" ]; then
-                BLOCK_DISPLAY="⏳${BAR_COLOR} ${BAR_STR} ${SESS_INT}% ↻ ${REMAIN_STR}"
+                BLOCK_DISPLAY="⏳${BAR_COLOR} ${SESS_INT}% ↻ ${REMAIN_STR}"
             else
-                BLOCK_DISPLAY="⏳${BAR_COLOR} ${BAR_STR} ${SESS_INT}%"
+                BLOCK_DISPLAY="⏳${BAR_COLOR} ${SESS_INT}%"
             fi
         fi
 
@@ -318,7 +321,7 @@ if [ -n "$MODEL" ]; then
     [ -n "$SUBSCRIPTION" ] && MODEL_LABEL+=" [$SUBSCRIPTION]"
     PARTS+=("$MODEL_LABEL")
 fi
-[ -n "$CTX_PERCENT" ]         && PARTS+=("$CTX_COLOR $CTX_LABEL $CTX_BAR ${CTX_PERCENT}%")
+[ -n "$CTX_PERCENT" ]         && PARTS+=("$CTX_COLOR $CTX_LABEL ${CTX_PERCENT}%")
 [ -n "$BLOCK_DISPLAY" ]       && PARTS+=("$BLOCK_DISPLAY")
 # Cost + duration (only if non-zero)
 if [ -n "$COST_STR" ] && [ -n "$DURATION_STR" ]; then

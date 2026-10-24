@@ -2,6 +2,8 @@
 description: Organize plan files and verification screenshots into date folders
 ---
 
+<!-- Generated from .agents/skills/review-organize/references/workflow.md; edit the canonical source, then run node .claude/core/render-shared-agents.js. -->
+
 # Organize
 
 Organize loose files into structured date/session folders.

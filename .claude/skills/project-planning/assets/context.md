@@ -13,16 +13,16 @@
 
 | Document | Path | Status |
 |----------|------|--------|
-| Project Brief | [product/brief.md](product/brief.md) | {status} |
-| PRD | [product/requirements.md](product/requirements.md) | {status} |
-| UX Spec | [design/spec.md](design/spec.md) | {status} |
-| Wireframes | [design/wireframes.md](design/wireframes.md) | {status} |
-| Light Theme | [design/theme.light.md](design/theme.light.md) | {status} |
-| Dark Theme | [design/theme.dark.md](design/theme.dark.md) | {status} |
-| Mock Layout | [design/mock.html](design/mock.html) | {status} |
-| Architecture | [architecture/overview.md](architecture/overview.md) | {status} |
-| Epics | [work/backlog.md](work/backlog.md) | {status} |
-| Feature Ideas | [work/todo/feature-ideas.md](work/todo/feature-ideas.md) | {status} |
+| Project Brief | [product/brief.md](brief.md) | {status} |
+| PRD | [product/requirements.md](requirements.md) | {status} |
+| UX Spec | [design/spec.md](../design/spec.md) | {status} |
+| Wireframes | [design/wireframes.md](../design/wireframes.md) | {status} |
+| Light Theme | [design/theme.light.md](../design/theme.light.md) | {status} |
+| Dark Theme | [design/theme.dark.md](../design/theme.dark.md) | {status} |
+| Mock Layout | [design/mock.html](../design/mock.html) | {status} |
+| Architecture | [architecture/overview.md](../architecture/overview.md) | {status} |
+| Epics | [work/backlog.md](../work/backlog.md) | {status} |
+| Feature Ideas | [work/todo/feature-ideas.md](../work/todo/feature-ideas.md) | {status} |
 
 ---
 

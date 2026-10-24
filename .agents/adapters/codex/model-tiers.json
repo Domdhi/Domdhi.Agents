@@ -1,0 +1,9 @@
+{
+  "tiers": {
+    "fast": null,
+    "standard": null,
+    "deep": null,
+    "audit": null
+  },
+  "notes": "OpenAI direct. All tiers inherit the native session model until actual availability is verified. No model identifiers are shipped here."
+}

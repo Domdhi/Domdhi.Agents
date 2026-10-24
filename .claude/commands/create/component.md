@@ -3,9 +3,11 @@ description: Create a new agent, command, or skill following established convent
 argument-hint: [agent|command|skill] [name] [description]
 ---
 
+<!-- Generated from .agents/skills/create-component/references/workflow.md; edit the canonical source, then run node .claude/core/render-shared-agents.js. -->
+
 # Create Component
 
-Create a new agent, command, or skill in the `.claude/` system. Ensures proper structure, frontmatter, wiring, and consistency with the three-tier architecture.
+Create a new agent, command, or skill in the shared toolkit. Roles, workflows and knowledge skills are authored in `.agents/` and rendered for Claude and Codex. Ensures proper structure, frontmatter, wiring, and consistency with the three-tier architecture.
 
 ## Telemetry (run first)
 
@@ -35,9 +37,9 @@ If any part is ambiguous, ask with `AskUserQuestion`.
 Then load the creator skill for that type (each owns its template, field rules, and wiring checklist):
 
 ```
-agent   → Read .claude/skills/agent-creator/SKILL.md
-command → Read .claude/skills/command-creator/SKILL.md
-skill   → Read .claude/skills/skill-authoring/SKILL.md   (doctrine + toolkit conventions; use skill-creator for the create→eval→improve loop)
+agent   → Read .agents/skills/agent-creator/SKILL.md
+command → Read .agents/skills/command-creator/SKILL.md
+skill   → Read .agents/skills/skill-authoring/SKILL.md   (doctrine + toolkit conventions; use skill-creator for the create→eval→improve loop)
 ```
 
 The shared three-tier architecture + "no duplication between layers" rule lives in CLAUDE.md.
@@ -46,18 +48,22 @@ The shared three-tier architecture + "no duplication between layers" rule lives 
 
 **For agents:**
 ```
-Read .claude/agents/{name}.md — must NOT exist
-Glob .claude/agents/*.md — check for role overlap
+Read .agents/roles/{name}.md — must NOT exist
+Read .claude/agents/{name}.md — check for a legacy or generated role
+Glob .agents/roles/*.md — check for role overlap
+Glob .claude/agents/*.md — check legacy names with no canonical equivalent
 ```
 
 **For commands:**
 ```
+Read .agents/skills/{name}/SKILL.md — check canonical names first
 Read .claude/commands/{name}.md OR .claude/commands/create/{name}.md OR .claude/commands/review/{name}.md — must NOT exist
 ```
 
 **For skills:**
 ```
-Read .claude/skills/{name}/SKILL.md — must NOT exist
+Read .agents/skills/{name}/SKILL.md — must NOT exist
+Read .claude/skills/{name}/SKILL.md — check native or project-owned conflicts
 ```
 
 If a conflict exists, report it and ask the user whether to update the existing component or create with a different name.
@@ -65,7 +71,7 @@ If a conflict exists, report it and ask the user whether to update the existing 
 ### Step 3: Gather Context
 
 **For agents** — determine:
-- Model tier: planning (`inherit`), implementation (`sonnet`), or documentation (`sonnet`)?
+- Native runtime policy: Claude model floor/escalation and tool permissions, plus any Codex-specific settings? Keep these in runtime adapters; use the configured Codex model, never a Claude model identifier.
 - Tools needed: implementation set, research set, or read-only set?
 - Existing skills to wire, or does a new skill need to be created too?
 - Which commands will delegate to this agent?
@@ -87,9 +93,9 @@ If the description doesn't make the answers obvious, ask with `AskUserQuestion` 
 
 Follow the template in the type-specific creator skill loaded in Step 1 exactly. Write the file:
 
-- **Agent** → `.claude/agents/{name}.md`
-- **Command** → `.claude/commands/{name}.md` (or `create/` or `review/` based on category)
-- **Skill** → `.claude/skills/{name}/SKILL.md`
+- **Agent** → `.agents/roles/{name}.md`, with runtime settings in `.claude/shared-agents.json` and `.codex/shared-agents.json`; render with `node .claude/core/render-shared-agents.js`
+- **Command** → `.agents/skills/{native-skill-name}/references/workflow.md` plus its `SKILL.md` selector; register the native command path in `.agents/adapters/workflows.json` and Claude frontmatter in `.agents/adapters/claude/workflow-metadata.json`
+- **Skill** → `.agents/skills/{name}/SKILL.md`
 
 The generated content must:
 - Use the exact frontmatter field order from the skill template
@@ -97,6 +103,8 @@ The generated content must:
 - Have a distinct personality/perspective (agents) — not generic
 - Reference real file paths and agent names (commands) — not placeholders
 - Contain domain knowledge, not orchestration (skills) — not process steps
+
+Render all source additions with `node .claude/core/render-shared-agents.js`. Native `.claude/` and `.codex/` files are generated outputs. Namespaced commands use hyphenated skill names, e.g. `/review:example` → `review-example`.
 
 ### Step 5: Wire It Up
 
@@ -109,7 +117,7 @@ The generated content must:
 - If the command uses a new agent, note it in the report.
 
 **For skills:**
-- Update the agent(s) that should load this skill — add the skill name to their frontmatter `skills:` list.
+- Update canonical `.agents/roles/` sources (legacy `.claude/agents/` only when no canonical role exists), then render; add the skill name to their frontmatter `skills:` list.
 
 ### Step 6: Verify
 
@@ -117,7 +125,7 @@ Run the wiring checklist from the type-specific creator skill (loaded in Step 1)
 
 ### Step 7: Commit
 
-Follow the **Post-Command Commit Convention** in CLAUDE.md. Stage all files created or modified.
+Follow the **Post-Command Commit Convention** in `.agents/startup-reference.md`. Stage all files created or modified.
 
 ### Step 8: Report
 

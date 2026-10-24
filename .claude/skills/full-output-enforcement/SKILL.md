@@ -9,6 +9,8 @@ user-invocable: false
 allowed-tools: Read
 ---
 
+<!-- Generated from .agents/skills/full-output-enforcement/SKILL.md; edit the canonical source, then run node .claude/core/render-shared-agents.js. -->
+
 # Full-Output Enforcement
 
 ## Baseline

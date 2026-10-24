@@ -8,7 +8,7 @@
 
 Fresh subagent per task + two-stage review (spec then quality) = high quality, fast iteration.
 
-**Stage 1 — Coverage (Spec Compliance + Candidate Findings):** Did they build what was requested (nothing more, nothing less)? While reading the diff, surface every candidate code finding — including low-confidence ones — each labelled with confidence and severity. Do not filter; discovery is the goal.
+**Stage 1 — Coverage (Spec Compliance + Candidate Findings):** Did they build what was requested (nothing more, nothing less)? While reading the diff, surface every candidate code finding — including low-confidence ones — each labeled with confidence and severity. Do not filter; discovery is the goal.
 **Stage 2 — Adjudicate (Code Quality):** Is it well-built (clean, tested, maintainable)? Receive the candidate findings from stage 1 and apply severity and escalation rules to decide what blocks merge. (Adjudication ranks findings; it is not the ship-level judge — that gate lives in verification-before-completion.)
 
 Always run spec compliance before code quality. Never run code quality review if spec compliance has open issues.
@@ -23,9 +23,10 @@ Always run spec compliance before code quality. Never run code quality review if
 3. If implementer has questions → answer before they proceed
 4. Implementer implements, tests, commits, self-reviews, reports back
 5. Dispatch spec compliance reviewer
-6. If spec reviewer finds issues → implementer fixes → spec reviewer re-reviews
+6. If spec reviewer finds issues → implementer fixes → spec reviewer verifies only the listed fixes (one closure pass)
 7. Once spec compliance passes → dispatch code quality reviewer
-8. If code quality reviewer finds issues → implementer fixes → re-reviews
+8. If code quality reviewer finds issues → implementer fixes → the same reviewer verifies only the listed fixes (one closure pass)
+   - Each reviewer gets at most three passes: the review, its closure, and one more only for a CRITICAL or MAJOR a fix introduced. New MINOR/NIT findings are fixed and proven by a test, not re-reviewed.
 9. Once both pass → mark task complete
 10. Repeat for next task
 11. After all tasks → dispatch final code reviewer for entire implementation

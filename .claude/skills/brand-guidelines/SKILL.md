@@ -9,6 +9,8 @@ user-invocable: false
 allowed-tools: Read Write Edit Grep Glob
 ---
 
+<!-- Generated from .agents/skills/brand-guidelines/SKILL.md; edit the canonical source, then run node .claude/core/render-shared-agents.js. -->
+
 # Brand Guidelines
 
 ## Overview

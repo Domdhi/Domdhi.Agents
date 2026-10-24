@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
 [![Built for Claude Code](https://img.shields.io/badge/Built_for-Claude_Code-orange.svg)](https://claude.com/claude-code)
 
-A portable `.claude/` directory that turns Claude Code into a full development lifecycle system. Drop it into any project for structured workflows from brainstorm to deployment — slash commands, 11 specialized agents, 23 skill modules, and a memory system that compounds across sessions.
+A portable toolkit authored in `.agents/`, with generated Claude Code and Codex entry points. Install it into any project for structured workflows from brainstorm to deployment — 49 workflows, 11 specialized roles, 23 knowledge skills, and a memory system that compounds across sessions.
 
 **Tech-agnostic by default.** Works with any stack. Run `/review:specialize` to generate project-specific agents from your architecture doc.
 
@@ -19,63 +19,48 @@ A portable `.claude/` directory that turns Claude Code into a full development l
 ## Repo Layout
 
 ```
-.claude/                     Template runtime — this is what you're adopting
-├── agents/                  11 agent definitions (extensible)
-├── commands/                Slash commands — setup, build loop, review
-├── skills/                  23 domain-knowledge modules
-├── hooks/                   14 event-driven hooks
-├── core/                    Runtime scripts (gate, scaffold, memory, status)
-├── templates/               Blank doc templates with marker convention
-└── settings.json            Permissions, hook wiring, plan directory
+.agents/                     Canonical authored toolkit
+├── roles/                   11 shared role definitions
+├── skills/                  49 workflows and 23 knowledge skills/assets
+├── core/ and hooks/         Shared executable helpers and lifecycle behavior
+├── adapters/                Claude/Codex protocol, model and native metadata
+├── templates/ and config/   Shared document templates and policy
+└── startup.md               Required shared guidance; reference is conditional
 
-docs/                        Adopter-facing documentation + generated planning docs
-CLAUDE.md                    Auto-loaded project instructions for Claude Code
+.claude/                     Generated Claude commands, roles, hooks and wrappers
+.codex/                      Generated Codex roles, hook config and wrappers
+docs/                        Adopter-facing documentation + planning outputs
+CLAUDE.md and AGENTS.md       Project-owned instructions with managed startup directives
 ```
 
 ## Install
 
-**Prerequisites.** Claude Code installed and working in your terminal. If `claude` doesn't launch, start with the [Claude Code install docs](https://docs.claude.com/claude-code) before adopting this template. **Node 24+ is recommended** — its built-in `node:sqlite` gives the memory system FTS5 search with zero dependencies. The toolkit still works on older Node (JSON-scan fallback, or `npm install` for the optional `better-sqlite3`), and the hooks need no Node at all.
+**Prerequisites.** Claude Code or Codex installed and working in your terminal. If `claude` doesn't launch, start with the [Claude Code install docs](https://docs.claude.com/claude-code) before adopting this template. **Node 24+ is recommended** — its built-in `node:sqlite` gives the memory system FTS5 search with zero dependencies. On Node 22–23, the optional `better-sqlite3` package supplies SQLite; earlier Node versions retain the JSON-scan fallback. Toolkit contributors running Vitest 5 need Node 22.12+ (Node 24 recommended). Runtime hooks and helpers require Node and have no mandatory npm dependencies.
 
-There are two ways to adopt the template, depending on whether you're starting fresh or adding it to an existing project.
+Install from a pinned toolkit checkout into your application's own repository. Keep the toolkit's history separate from application history.
 
-### New project (greenfield)
-
-```bash
-# Clone the template into a fresh project directory
-git clone https://github.com/Domdhi/Domdhi.Agents.git my-project
-cd my-project
-rm -rf .git && git init
-
-# Open in Claude Code
-claude
+```sh
+# Codex helper; Claude uses .claude/core/ with the same arguments.
+node .codex/core/install.js /path/to/your-project --dry-run
+node .codex/core/install.js /path/to/your-project
 ```
 
-Inside Claude Code, run:
+For a new application with no filled planning docs, launch your runtime in the application checkout and run Claude `/create:new-project` or Codex `$create-new-project`. It scaffolds missing docs, interviews you, chains the planning pipeline, specializes roles and writes project context. Existing application code uses `/onboard` or `$onboard` to derive architecture/context from reality before specialization.
 
-```
-/create:new-project
-```
+Ordinary install/update requires no organization declaration. Existing settings, project instructions, role identity/context, bespoke skills and marked additions use the established preservation/merge path. Preview later updates before applying:
 
-That's the one command to get from zero to implementation-ready. It scaffolds the `docs/` tree, interviews you, chains the planning pipeline (brief → PRD → architecture → epics), specializes the agents for your stack, and commits the whole initialization.
-
-### Existing codebase (brownfield)
-
-Don't run `/create:new-project` in a project that already has code — it's built for an empty repo. Instead, use the one-command installer to copy `.claude/` in (it has zero runtime dependencies and prompts on any conflict):
-
-```bash
-# From a clone of this template, install .claude/ into your existing project
-node .claude/core/install.js /path/to/your-project
+```sh
+node .codex/core/template-updater.js update /path/to/your-project --merge --dry-run
+node .codex/core/template-updater.js update /path/to/your-project --merge
 ```
 
-This preserves your `settings.json`, agent personalities, and any local customizations while bringing in the commands, agents, skills, and hooks. Then open your project in Claude Code and run:
+See [v6 migration](./docs/reference/agents/migration-v6.md) for canonical authoring, native helpers, conflicts, runtime limits and the distinction between local release preparation and publication.
 
-```
-/onboard
-```
+### Codex workflows
 
-`/onboard` is the brownfield analog of `/create:new-project` — it reverse-engineers `architecture/overview.md` and `product/context.md` from your existing code, merges `CLAUDE.md` additively (never clobbering your instructions), and chains `/review:specialize` to tailor the agents to your stack.
+The same install/update path supplies native repository skills under `.agents/skills`. Launch Codex in the installed project and select `$todo`, `$run-todo`, `$prime`, or another workflow through `$` or `/skills`. Namespaced Claude commands use hyphenated Codex names: `/review:qa` becomes `$review-qa`; `/create:module` becomes `$create-module`. If an existing session does not show newly installed skills, start a fresh session.
 
-**To update an existing install later, run the zone-aware updater — don't re-clone:** `node .claude/core/template-updater.js update /path/to/your-project --merge`.
+Most workflow bodies live in `.agents/skills/{name}/references/workflow.md` (review-specialize keeps its body in `SKILL.md`); knowledge and assets live beside their canonical skill. Roles, helpers, hooks and templates are also authored under `.agents/`, with runtime-specific metadata in `.agents/adapters/`. Run `node .claude/core/render-shared-agents.js --check` to inspect generated output, or omit `--check` to render. Existing helper and Claude command paths remain compatible. Root `CLAUDE.md` and `AGENTS.md` load a small required policy; detailed references load for the current task. Ordinary updates retain project root prose, marked additions and local settings. Toolkit tests colocate under `.agents/**/__tests__/` and workshop `tools/__tests__/`; they run only in Domdhi.Agents. Adopter Build/Test/PR gates remain application-only.
 
 ## Configuration
 
@@ -89,19 +74,11 @@ Domdhi.Agents commands like `/do`, `/run-todo`, and `/onboard` orchestrate multi
 
 (Or use the Claude Code settings UI. This is a per-session setting.)
 
-### Troubleshooting: isolating Domdhi.Agents from Claude Code itself
+### Troubleshooting runtime behavior
 
-If something goes wrong and you can't tell whether the issue is in Domdhi.Agents or in Claude Code's built-in behavior, the fastest bisect is to disable the template entirely and reproduce in a bare session.
+Check the actual runtime, installed helper path, discovered workflow and trusted hook definitions first. Inspect registered handlers and their output rather than infer execution from matching generated bytes. The [hook guide](./docs/reference/agents/concepts/hooks.md) documents supported events, post-output redaction, plain-terminal gaps and native trust limits.
 
-Claude Code's `--safe-mode` flag (if available in your version) disables extensions when starting a session — use it to rule out the `.claude/` hooks and commands:
-
-```bash
-claude --safe-mode
-```
-
-If the problem disappears in safe mode, it originates in Domdhi.Agents (hooks, commands, or agents). If it persists, the issue is in Claude Code itself.
-
-**If `--safe-mode` is not available in your version**, the same bisect works manually: temporarily rename `.claude/` to `_claude_disabled/`, open a plain Claude Code session, reproduce the issue, then rename the directory back. The goal is the same — remove all of Domdhi.Agents and confirm whether the problem follows.
+Codex optional memory inference is unavailable; session handoff and explicit curated-memory helpers remain supported. Current local v6 preparation does not establish fresh live Windows or trusted native-model execution. The [migration guide](./docs/reference/agents/migration-v6.md) preserves those evidence boundaries.
 
 ### Domdhi.Agents vs first-party Claude Code extensions
 

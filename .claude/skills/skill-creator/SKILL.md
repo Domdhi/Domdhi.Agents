@@ -9,6 +9,8 @@ user-invocable: false
 allowed-tools: Read Write Edit Bash Grep Glob
 ---
 
+<!-- Generated from .agents/skills/skill-creator/SKILL.md; edit the canonical source, then run node .claude/core/render-shared-agents.js. -->
+
 # Skill Creator
 
 A skill for **creating new skills and iteratively improving them with measured evidence.** Ported and tuned from Anthropic's official `skill-creator` (anthropics/skills) for this toolkit: **zero-dependency Node** instead of Python, this repo's **subagent dispatch**, and workspaces under `docs/.output/evolution/skills/`.

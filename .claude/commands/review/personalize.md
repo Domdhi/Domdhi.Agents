@@ -3,6 +3,8 @@ description: Give agents names, personas, and soul-level identity. Works before 
 argument-hint: "[agent name | --all]"
 ---
 
+<!-- Generated from .agents/skills/review-personalize/references/workflow.md; edit the canonical source, then run node .claude/core/render-shared-agents.js. -->
+
 # Personalize Agents
 
 Walk through agents interactively to assign names, personas, and soul-level identity. Each agent gets a unique personality that influences how it approaches work while preserving its technical capabilities.
@@ -43,7 +45,7 @@ memory: project
 ```
 
 **Boundary rules:**
-- `/personalize` writes between the closing `---` of frontmatter and `## Project Context` (or EOF if no Project Context exists)
+- `/personalize` writes between the closing `---` of frontmatter and `## Skills` (or `## Project Context` / EOF when no Skills section exists)
 - `/specialize` writes from `## Project Context` to EOF
 - Neither command touches the other's zone
 
@@ -57,7 +59,7 @@ TARGET: $ARGUMENTS (default: `--all`)
 
 ### 1. Discover Agents (main agent)
 
-Scan `.claude/agents/*.md` and for each agent, determine:
+Scan `.agents/roles/*.md` first, plus `.claude/agents/*.md` only for names with no canonical role. Use the selected source for every write; native model/tool/memory metadata stays in `.claude/shared-agents.json` or `.codex/shared-agents.json`. Never edit generated native roles or root instructions to personalize a migrated role. For each role, determine:
 
 **1a. Read frontmatter:**
 - `name` — the agent identifier
@@ -137,10 +139,10 @@ For each agent that needs a soul written, use the Task tool with `subagent_type:
 1. The agent's `name`, chosen `nickname`, and `aliases`
 2. The agent's current `description` from frontmatter (preserve this — it drives auto-delegation)
 3. The chosen persona direction and name
-4. The agent's `tools` and `skills` from frontmatter (so the soul references real capabilities)
-5. The agent's `disallowedTools` if any (e.g., code-reviewer is write-restricted (Write allowed to review artifacts only, Edit disallowed) — the soul should reflect this)
+4. The agent's canonical `skills` and native adapter `tools` (so the soul references real capabilities)
+5. The native adapter's `disallowedTools` if any (e.g., code-reviewer is write-restricted (Write allowed to review artifacts only, Edit disallowed) — the soul should reflect this)
 6. Reference examples: provide 2 existing soul-level agents as style reference (e.g., Murphy and Pilar)
-7. Instruction to read the reference agents from `.claude/agents/qa-engineer.md` and `.claude/agents/security-auditor.md`
+7. Instruction to read the reference agents from `.agents/roles/qa-engineer.md` and `.agents/roles/security-auditor.md`
 8. Instruction to produce ONLY the soul zone content (from `# {Name} — {Role Title}` heading through `## Quality Standards`), NOT frontmatter, NOT Project Context
 
 **Required soul sections (in order):**
@@ -172,7 +174,7 @@ For each agent:
 
 **6a. Update frontmatter** — Add or update `nickname` and `aliases` fields in the YAML frontmatter block. Do NOT change `name`, `description`, `tools`, `skills`, `memory`, or `model`.
 
-**6b. Replace soul zone** — Replace everything between the closing `---` of frontmatter and `## Project Context` (or EOF) with the new soul content.
+**6b. Replace soul zone** — Replace everything between the closing `---` of frontmatter and `## Skills` (or `## Project Context` / EOF when no Skills section exists) with the new soul content.
 
 **6c. Preserve Project Context** — If `## Project Context` exists in the file, ensure it remains intact after the soul content. Append a blank line between the soul and Project Context.
 
@@ -181,9 +183,11 @@ For each agent:
 - If identical → report "No changes needed" and skip the write
 - If different → replace and report "Updated"
 
-### 7. Commit (main agent)
+### 7. Render and Commit (main agent)
 
-Follow the **Post-Command Commit Convention** in CLAUDE.md. Stage all modified agent files and commit with a descriptive message.
+After canonical edits run `node .claude/core/render-shared-agents.js`; review conflicts and move intended edits to the canonical source. Preserve both the Skills zone and Project Context. Stage canonical files and generated projections together.
+
+Follow the **Post-Command Commit Convention** in `.agents/startup-reference.md`. Stage all modified agent files and commit with a descriptive message.
 
 ### 8. Report
 

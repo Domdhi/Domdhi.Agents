@@ -3,6 +3,8 @@ description: Run a guided brainstorming session to explore the problem space and
 argument-hint: [topic or problem statement]
 ---
 
+<!-- Generated from .agents/skills/brainstorm/references/workflow.md; edit the canonical source, then run node .claude/core/render-shared-agents.js. -->
+
 # Brainstorm
 
 Facilitate a structured brainstorming session. Output is **context-bundled** — if brainstorming a specific feature/module, output goes to `docs/modules/{feature}/brainstorm.md`. If project-wide, output goes to `docs/.output/findings/research/{YYMMDD-HHMM}-brainstorm-{slug}.md`. Also captures ideas into `docs/work/todo/feature-ideas.md` (living backlog).
@@ -73,6 +75,8 @@ If unclear whether it's feature-scoped or project-wide, ask with AskUserQuestion
 
 ### 5. Delegate to Agent
 
+**Runtime and verification.** In Codex, run each `.claude/core/` command in this workflow (such as `telemetry-log.js`) as `.codex/core/` with the same arguments, per `.agents/adapters/codex/execution.md`. This workflow has no build or test gate; in an adopter any later gate is the application's own and never the Domdhi.Agents toolkit suite. Its evidence is the written `{OUTPUT_PATH}` document, the updated `feature-ideas.md` and the hash of a commit that stages only the files this command wrote; discovery alone (an installed skill, a listed command or a loaded file) never proves this workflow ran.
+
 Use the Task tool with `subagent_type: "product-strategist"` to generate the brainstorm analysis.
 
 **Task prompt must include**:
@@ -82,7 +86,7 @@ Use the Task tool with `subagent_type: "product-strategist"` to generate the bra
 4. The `product-strategist` agent auto-loads the `project-planning` skill via frontmatter.
 5. Instruction to: frame the problem, explore 3-5 solution directions, evaluate each on Feasibility/Impact/Effort/Risk, create evaluation matrix, recommend a direction
 
-### 5. Capture Ideas to Feature Backlog (main agent)
+### 6. Capture Ideas to Feature Backlog (main agent)
 
 After the brainstorm agent completes, read the output and capture ideas into `docs/work/todo/feature-ideas.md`:
 
@@ -97,11 +101,11 @@ For each idea explored:
 
 Also add raw ideas from the interview to the **Parking Lot** section.
 
-### 6. Commit (main agent)
+### 7. Commit (main agent)
 
-Follow the **Post-Command Commit Convention** in CLAUDE.md. Stage all files created or modified by this command and commit with a descriptive message.
+Follow the **Post-Command Commit Convention** in `.agents/startup-reference.md`. Stage all files created or modified by this command and commit with a descriptive message.
 
-### 7. Report (main agent)
+### 8. Report (main agent)
 
 ```markdown
 ## Brainstorm Complete

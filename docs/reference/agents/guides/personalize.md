@@ -6,7 +6,7 @@ This guide walks through it end-to-end. For the abstract command reference, see 
 
 ## Before You Run
 
-Unlike `/review:specialize`, `/review:personalize` has no hard phase gate. It doesn't need your architecture doc, your PRD, or any planning artifact. It only needs the template's 11 agent files to exist under `.claude/agents/`. You can run it on day zero of a new project, or years in — the only input is your taste.
+Unlike `/review:specialize`, `/review:personalize` has no hard phase gate. It doesn't need your architecture doc, your PRD, or any planning artifact. It only needs the template's 11 agent files to exist under `.agents/roles/`. You can run it on day zero of a new project, or years in — the only input is your taste.
 
 If you've already run `/review:specialize`, the Project Context sections on each agent will be preserved — personalize touches only the Soul Zone above them. Run order does not matter.
 
@@ -24,13 +24,10 @@ Agent files have three zones with different owners. Understanding them is the wh
 ```
 ---                              FRONTMATTER
 name: code-reviewer                /personalize updates nickname + aliases only
-nickname: Gavel                    (name, description, tools, skills, model stay
-aliases: [reviewer, judge]          as the template sets them)
-model: sonnet
+nickname: Gavel                    (name, description and skills stay
+aliases: [reviewer, judge]          unchanged by this workflow; runtime metadata is separate)
 description: ...
-tools: Read, Grep, Glob, Bash, Write
 skills: [code-review]
-memory: project
 ---
 
 # Gavel — Code Reviewer         SOUL ZONE — /personalize owns this
@@ -44,7 +41,7 @@ I am the magistrate of the merge...   Identity, Decision Philosophy,
 > Specialized for {Project} ...       Tech Stack, ADRs, Conventions
 ```
 
-`/review:personalize` writes between the closing `---` of frontmatter and either `## Project Context` (if specialize has already run) or end-of-file (if it hasn't). That's it. It does not touch `name`, `description`, `tools`, `skills`, `model`, `memory`, or the Project Context section below.
+`/review:personalize` writes between the closing `---` of frontmatter and `## Skills`, with `## Project Context` or EOF as the fallback when no Skills section exists. That's it. It does not touch `name`, `description`, `tools`, `skills`, `model`, `memory`, or the Project Context section below.
 
 The full zone map and the template-update merge strategy live in [`../customization.md`](../customization.md).
 
@@ -88,7 +85,7 @@ You pick "Gavel." Short, memorable, drops naturally into conversation ("what did
 
 ### Step 3 — Soul writing (delegated to doc-writer)
 
-Main Agent now delegates the actual soul-zone authoring to the `doc-writer` agent (Haiku), with enough context to keep the voice consistent: the agent's description, tools, skills, the chosen persona direction, the chosen name, and two reference souls (`.claude/agents/qa-engineer.md` and `.claude/agents/security-auditor.md`) as style anchors.
+Main Agent now delegates the actual soul-zone authoring to the `doc-writer` agent (Claude Sonnet floor; Codex uses its configured model), with enough context to keep the voice consistent: the agent's description, tools, skills, the chosen persona direction, the chosen name, and two reference souls (`.agents/roles/qa-engineer.md` and `.agents/roles/security-auditor.md`) as style anchors.
 
 Doc-writer produces the Soul Zone content — from the `# Gavel — Code Reviewer` heading through `## Quality Standards` — and returns it. Main Agent writes it into the file between the frontmatter's closing `---` and the `## Skills` section (or `## Project Context` if specialize had already run).
 
@@ -136,13 +133,13 @@ wave things through because the author is in a hurry.
 
 The frontmatter also gets two updates: `nickname: Gavel` and `aliases: [reviewer, gavel, judge]`. Those aliases are what lets you address the agent conversationally without memorizing the full `code-reviewer` identifier.
 
-For full examples of what a finished soul looks like, read [`.claude/agents/qa-engineer.md`](../../../../.claude/agents/qa-engineer.md) (Murphy — the QA engineer whose namesake is a design principle, not a pessimist) and [`.claude/agents/security-auditor.md`](../../../../.claude/agents/security-auditor.md) (Pilar — the predator auditing the fences). Those two are the style references the command points doc-writer at.
+For full examples of what a finished soul looks like, read [`.agents/roles/qa-engineer.md`](../../../../.agents/roles/qa-engineer.md) (Murphy — the QA engineer whose namesake is a design principle, not a pessimist) and [`.agents/roles/security-auditor.md`](../../../../.agents/roles/security-auditor.md) (Pilar — the predator auditing the fences). Those two are the style references the command points doc-writer at.
 
 ## The Persona Library
 
 The command ships with starter persona directions for the roles most likely to benefit from a strong identity: `product-strategist`, `code-reviewer`, `doc-writer`, `playwright`, `shadow`. Other agents get options generated on the fly from their role. Every option list always ends with "Other — describe your own," so the library is a starting point, never a cage.
 
-Full list lives in `.claude/commands/review/personalize.md` under "Persona Library."
+Full list lives in `.agents/skills/review-personalize/references/workflow.md` under "Persona Library."
 
 ### Picking a direction
 
@@ -158,9 +155,9 @@ These two commands own non-overlapping zones. The practical consequence:
 
 - **Either order works.** Personalize first, then specialize — the new Project Context section gets appended below the Soul. Specialize first, then personalize — the Soul gets inserted above the existing Project Context.
 - **Neither command erases the other's zone.** Re-running `/review:specialize` replaces only the Project Context section; your Soul stays. Re-running `/review:personalize` replaces only the Soul; the Project Context stays.
-- **Both commands are safe on fresh files.** If you've never run either, the agent files have thin template defaults (everything below frontmatter is a placeholder); either command can run cleanly.
+- **Both commands are safe on fresh files.** If you've never run either, the commands select the existing canonical role and preserve its other zones; either can run before the other.
 
-The zone boundaries `/review:specialize` respects are documented in [`./specialize.md`](./specialize.md) under "Soul Zone preservation." The reverse — which frontmatter fields `/review:personalize` *doesn't* touch — is the mirror rule: everything except `nickname` and `aliases` is template-owned.
+The zone boundaries `/review:specialize` respects are documented in [`./specialize.md`](./specialize.md) under "Soul Zone preservation." The reverse — which frontmatter fields `/review:personalize` *doesn't* touch — is the mirror rule: this workflow changes only `nickname`, `aliases` and soul prose; update-time ownership is defined in [customization](../customization.md).
 
 ## Idempotency and When to Re-Run
 
@@ -194,3 +191,7 @@ If both have run and you're ready to actually use the personalized team, start a
 - [`../customization.md`](../customization.md) — full zone map and template-update merge strategy
 - [`../concepts/agents.md`](../concepts/agents.md) — the 11 baseline agents that come out of the box
 - [`../commands.md`](../commands.md) — the abstract reference for `/review:personalize` and every other command
+
+## Native source and runtime
+
+Use canonical `.agents/roles/` and skills first. Legacy `.claude/` components are authoring fallbacks only without a canonical counterpart. After edits, render native roles through the active helper: `node .codex/core/render-shared-agents.js` in Codex or the compatible `.claude/core/` path in Claude. Workshop runtime metadata stays in adapters; adopter model/tool/memory overrides stay in native `shared-agents.json`. Codex invokes `$review-specialize` / `$review-personalize` through its discovered skills. See [migration v6](../migration-v6.md) for conflicts and execution limits.

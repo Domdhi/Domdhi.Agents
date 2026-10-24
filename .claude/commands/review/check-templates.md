@@ -2,9 +2,11 @@
 description: Audit .claude/ system health — orphaned agents, unused skills, missing hooks, broken wiring
 ---
 
+<!-- Generated from .agents/skills/review-check-templates/references/workflow.md; edit the canonical source, then run node .claude/core/render-shared-agents.js. -->
+
 # Check Templates
 
-Self-diagnostic for the `.claude/` system. Scans agents, skills, hooks, commands, and settings for orphans, gaps, and broken cross-references. Read-only — reports findings without making changes.
+Self-diagnostic for canonical `.agents/` sources and the installed Claude/Codex projections. Scans agents, skills, hooks, commands, and settings for orphans, gaps, and broken cross-references. Read-only — reports findings without making changes.
 
 ## Telemetry (run first)
 
@@ -28,26 +30,36 @@ ELSE:
 
 ### 1. Scan Agent Inventory
 
-Read all `.claude/agents/*.md` files. For each agent, extract:
-- `name` from frontmatter
-- `skills` array from frontmatter
-- `tools` and `disallowedTools` from frontmatter
+Read canonical `.agents/roles/*.md` first, plus legacy native roles without canonical equivalents. Extract identity and declared `skills` from source frontmatter. Read generated Claude frontmatter/Codex TOML and each runtime's project-owned `shared-agents.json` for actual tools, model and permission wiring; those fields do not belong in canonical role frontmatter.
 
 ### 2. Scan Skill Inventory
 
-```
-Glob: .claude/skills/*/SKILL.md
-```
+Enumerate `.agents/skills/*/SKILL.md` (legacy native skills only where canonical sources are absent). Partition the inventory using `.agents/adapters/workflows.json`: registered explicit workflow selectors and conditional knowledge skills have different description and wiring contracts.
 
-For each skill, record the skill directory name.
-
-**CSO linter** — every skill's `description:` field must start with `"Use WHEN"` to satisfy the Conditional Skill Orchestration rule (see `skill-authoring/SKILL.md`). Shell check:
+**CSO check** — only conditional knowledge skills require a `Use WHEN` triggering clause. Registered workflow selectors intentionally use explicit invocation descriptions; do not classify them as violations or unused knowledge. The following read-only check implements the partition (use the active runtime's native helper prefix):
 
 ```bash
-grep -L "^description: \"Use WHEN" .claude/skills/*/SKILL.md
+node - <<'NODE'
+const fs = require('node:fs');
+const path = require('node:path');
+const { parseFrontmatter } = require('./.claude/core/_lib/frontmatter');
+const selectors = new Set(Object.keys(require('./.agents/adapters/workflows.json')));
+const root = '.agents/skills';
+let errors = 0;
+for (const name of fs.readdirSync(root)) {
+  const file = path.join(root, name, 'SKILL.md');
+  if (!fs.existsSync(file) || selectors.has(name)) continue;
+  const fm = parseFrontmatter(fs.readFileSync(file, 'utf8'));
+  if (!fm || !/Use WHEN/.test(fm.description || '')) {
+    console.error('CSO VIOLATION: ' + file);
+    errors++;
+  }
+}
+process.exitCode = errors ? 1 : 0;
+NODE
 ```
 
-Any file returned by that command violates the rule and MUST be flagged in Step 9's Issues Found section as **CSO VIOLATION**. Skills whose descriptions merely summarize capability ("X expert. Triggers: ...") cause Claude to follow the description as a shortcut and skip reading the skill body.
+For a legacy-only installation, use its actual knowledge inventory; do not infer missing selector registration from an older source layout. Flag genuine knowledge violations in Step 9.
 
 ### 2b. Skill Spec Conformance
 
@@ -57,7 +69,7 @@ Run the deterministic conformance check against the Agent Skills open standard:
 node .claude/core/skill-conformance.js
 ```
 
-The script scans every `.claude/skills/*/SKILL.md` and applies three rules:
+The current CLI scans the installed Claude skill projections and applies three rules. Keep the canonical inventory/CSO checks above separate, and compare Codex entry points through their adapter:
 
 - **Body budget** — `SKILL.md` > 500 lines → **WARN: OVER_BUDGET** (activation cost; advisory, does not fail the gate)
 - **Name match** — `name:` frontmatter ≠ parent directory name → **ERROR: NAME_MISMATCH**
@@ -73,7 +85,7 @@ Assert the project's operating standard ("resolve it or don't report it" — the
 node .claude/core/operating-standard.js
 ```
 
-It scans every `.claude/agents/*.md` and applies role-routed rules:
+The current CLI scans installed Claude role projections and applies role-routed rules. Repair any underlying canonical source selected in Step 1 and render; the CLI result verifies that native surface:
 - **Acting** agents (write code/docs) MUST load `verification-before-completion` in frontmatter **and** carry an `## Operating Standard` section.
 - **Report-only** agents (`disallowedTools: Edit` — `code-reviewer`, `security-auditor`) MUST carry an `## Operating Standard` section in its **report-only** translation (exhaustive/precise/fix-ready findings, hand the orchestrator the fix). They are NOT required to load the skill — that would imply they write fixes.
 - **`shadow`** is exempt — its prose persona is its convention (the documented Shadow exception); it carries the doctrine in its own idiom.
@@ -88,8 +100,8 @@ Assert every skill an agent declares in frontmatter **actually preloads**. Subag
 node .claude/core/skill-resolution.js
 ```
 
-It scans every `.claude/agents/*.md` frontmatter `skills:` list against the `.claude/skills/` tree and flags two silent failure modes:
-- **BROKEN_SKILL_REF** — a listed skill has no `.claude/skills/<name>/SKILL.md` (typo, renamed/removed skill) → preload loads nothing.
+The current CLI scans installed Claude frontmatter `skills:` against installed Claude skill directories and flags two silent failure modes. The canonical and Codex inventories remain the separate checks above:
+- **BROKEN_SKILL_REF** — a listed skill has no installed `.claude/skills/<name>/SKILL.md` (typo, missing projection or renamed/removed source) → Claude preload loads nothing. Repair the selected canonical/legacy source and render.
 - **UNPRELOADABLE** — a listed skill sets `disable-model-invocation: true` → cannot be preloaded, silently skipped.
 
 Exit code is 0 when clean, non-zero on any ERROR. This is the tool-checkable form of the manual "BROKEN SKILL REF" check in Step 6 — same operating standard applies: fold output into Step 9's Issues Found as **BROKEN SKILL REF**, **fix it in place** (correct the agent's frontmatter or add/restore the skill), then re-run to confirm green.
@@ -118,7 +130,7 @@ Assert every raw filesystem write/delete in a module that crosses the adopter tr
 node .claude/core/fs-safe-lint.js
 ```
 
-It scans a hardcoded fileset — `install.js`, `template-updater.js`, `scaffold.js`, `_lib/{skill,agent}-merger.js`, `_lib/zone-copy.js`, `_lib/settings-merger.js`, `tools/fleet.js`, `tools/publish.js` — the confirmed adopter-trust-boundary-crossing modules, deliberately NOT `core/`/`hooks/`/`tools/`-wide (that would false-positive on the many legitimate workshop-local raw fs calls elsewhere, like gate.js reports or telemetry logs). Applies two rules:
+It scans a hardcoded fileset of the canonical `.agents/` sources — `core/install.js`, `core/template-updater.js`, `core/scaffold.js`, `core/_lib/{skill-merger,agent-merger,zone-copy,settings-merger,shared-agents,git-ignored}.js` — plus the workshop-only `tools/fleet.js`, `tools/publish.js` and `tools/sync-work.js` (skipped and counted when absent, as in an adopter): the confirmed adopter-trust-boundary-crossing modules, deliberately NOT `core/`/`hooks/`/`tools/`-wide (that would false-positive on the many legitimate workshop-local raw fs calls elsewhere, like gate.js reports or telemetry logs). The default run fails closed: a missing shipped entry is **MISSING_ENTRY** (ERROR), and an entry that is a generated compatibility wrapper or holds no filesystem call is **VACUOUS_ENTRY** (ERROR), because scanning it proves nothing. Applies two rules:
 
 - **UNGUARDED_WRITE** (ERROR) — a raw `fs.writeFileSync`/`fs.copyFileSync`/`fs.cpSync` call with no `fs-safe-lint:local` marker on the line
 - **UNGUARDED_DELETE** (ERROR) — a raw `fs.rmSync`/`fs.rmdirSync` call with no marker AND no `assertNoSymlinkedAncestor()` guard call within the preceding 6 lines (the established `pruneEmptyDirs` pattern)
@@ -128,15 +140,17 @@ Exit code is 0 when clean, 1 on any ERROR. Same operating standard as 2c/2d/2e: 
 ### 3. Scan Hook Inventory
 
 ```
-Glob: .claude/hooks/*.cjs
+Glob: .agents/hooks/*.cjs
+# Compare installed .claude/.codex wrappers and each adapter registration.
 ```
 
-For each hook file, record the filename.
+Record executable handlers separately from shared libraries such as `secret-patterns.cjs`; a library is not an orphaned hook.
 
 ### 4. Scan Command Inventory
 
 ```
-Glob: .claude/commands/**/*.md
+Glob: .agents/skills/*/references/workflow.md
+# Use .agents/adapters/workflows.json and sanity-check generated command/skill entry points.
 ```
 
 For each command, read the content and extract:
@@ -145,23 +159,23 @@ For each command, read the content and extract:
 
 ### 5. Read Settings
 
-Read `.claude/settings.json` — extract the `hooks` section:
+Read Claude `.claude/settings.json` and Codex `.codex/hooks.json` against their adapter metadata. Extract the installed event/handler wiring for each active runtime:
 - Which hook files are registered under PreToolUse, PostToolUse, PreCompact
 - Which matchers are configured
 
 ### 6. Cross-Reference Analysis
 
 **6a. Agent wiring:**
-- For each agent: is it referenced by at least one command? If not → **ORPHANED**
+- For each role: is it actually dispatched/read by a workflow or intentionally available for direct use (such as Shadow)? Only if neither → **ORPHANED**. Do not invent a workflow to register a valid direct-use role.
 - Broken skill refs are now caught deterministically in Step 2d (`skill-resolution.js`) — don't re-derive them by eye here; just carry forward any **BROKEN SKILL REF** / **UNPRELOADABLE** findings it reported.
 
 **6b. Skill wiring:**
-- For each skill: is it loaded by at least one agent's frontmatter? If not → **UNUSED SKILL**
+- For each knowledge skill: is it loaded by frontmatter or explicitly read by a workflow/role body? Only if neither → **UNUSED SKILL**. Registered workflow selectors are evaluated as command wiring, not eager knowledge preloads.
 - For each skill: is it referenced by at least one command? If not → **UNREFERENCED** (may be fine if agent-loaded only)
 
 **6c. Hook wiring:**
-- For each hook file: is it registered in settings.json? If not → **UNREGISTERED HOOK**
-- For each settings.json hook entry: does the referenced file exist? If not → **MISSING HOOK FILE**
+- For each executable hook handler: is it registered by the relevant adapter/runtime? If not → **UNREGISTERED HOOK** only when that runtime promises the event. Shared libraries and intentionally unsupported runtime events are exempt.
+- For each installed Claude/Codex hook registration: does the referenced file exist? If not → **MISSING HOOK FILE**
 
 **6d. Command wiring:**
 - For each command that references an agent: does the agent file exist? If not → **MISSING AGENT**
@@ -169,7 +183,7 @@ Read `.claude/settings.json` — extract the `hooks` section:
 
 ### 7. Read Template Version
 
-Read `.claude/version.json` if it exists:
+Read canonical `.agents/config/version.json` when present and compare its rendered `.claude/version.json`; use the native marker as the legacy fallback:
 - If found: extract `version`, `updated`, `changelog` fields
 - If not found: set version to "unknown (pre-versioning)"
 
@@ -179,9 +193,9 @@ Rate each category 0-10:
 
 | Category | 10 (perfect) | 0 (broken) |
 |----------|-------------|------------|
-| **Agents** | All agents referenced by commands, all skill refs valid | Multiple orphans, broken refs |
-| **Skills** | All skills loaded by agents | Multiple unused skills |
-| **Hooks** | All hooks registered, all registrations point to real files | Orphaned hooks, missing files |
+| **Agents** | Every role dispatched/read or intentionally direct-use; declared skill refs valid | Multiple orphans, broken refs |
+| **Skills** | Knowledge wired by frontmatter/workflow/role-body reads; explicit selectors registered | Multiple unused skills |
+| **Hooks** | Supported handlers/registrations resolve per runtime; libraries and documented omissions classified | Orphaned hooks, missing files |
 | **Commands** | All agent references valid | Missing agents referenced |
 | **Settings** | Hook config complete and consistent | Broken registrations |
 

@@ -2,6 +2,8 @@
 description: "Generate or update work/timeline.md with weekly commit history"
 ---
 
+<!-- Generated from .agents/skills/review-timeline/references/workflow.md; edit the canonical source, then run node .claude/core/render-shared-agents.js. -->
+
 # Timeline
 
 Generate or update `docs/work/timeline.md` — a weekly-grouped, daily-breakdown history of all project commits.

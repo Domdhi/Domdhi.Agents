@@ -3,6 +3,8 @@ description: Self-improving skills — mine this repo's own signals into skill C
 argument-hint: "[--create-only | --improve-only] [--auto] [--apply <skill-name>] [--since YYYY-MM-DD]"
 ---
 
+<!-- Generated from .agents/skills/review-evolve-skills/references/workflow.md; edit the canonical source, then run node .claude/core/render-shared-agents.js. -->
+
 # Evolve Skills
 
 The autonomous driver for self-improving skills. It reads the failure/learning signals the toolkit already collects, turns them into **skill work** — a brand-new skill (CREATE) or a fix to an existing one (IMPROVE) — validates each candidate with the `skill-creator` skill's **differential eval harness**, and applies it on your confirmation.
@@ -31,13 +33,13 @@ CREATE is deliberately distinct from `/review:promote-memories` (which injects a
 ## Variables
 
 - `--improve-only` / `--create-only` — run just one path (default: both).
-- `--auto` — **sweep mode**: propose-only. Run intake + draft candidates + **the differential eval that gates them** (against a **workspace copy** — the live skill in `.claude/skills/` is never touched), but do NOT apply, commit, or iterate. Surface staged proposals for human review. Used by `/sweep` Phase 5b. (Skill *bodies* are the system's brain — never mutate them unattended; there is no safe auto-threshold for a rewrite, unlike memory promotion.) The differential always runs — it is the falsifier — `--auto` only withholds *applying* the result. "Propose-only" ≠ "skip the eval"; a proposal with no Δ is not a proposal.
+- `--auto` — **sweep mode**: propose-only. Run intake + draft candidates + **the differential eval that gates them** (against a **workspace copy** — the live skill in `.agents/skills/` is never touched), but do NOT apply, commit, or iterate. Surface staged proposals for human review. Used by `/sweep` Phase 5b. (Skill *bodies* are the system's brain — never mutate them unattended; there is no safe auto-threshold for a rewrite, unlike memory promotion.) The differential always runs — it is the falsifier — `--auto` only withholds *applying* the result. "Propose-only" ≠ "skip the eval"; a proposal with no Δ is not a proposal.
 - `--apply <skill-name>` — apply a previously-staged proposal for that skill: **runs the differential eval (the real gate)**, then re-validates conformance + the build/test gate, then commits. A non-positive `summary.delta.pass_rate` **blocks** the apply (see *What NOT to Do*) — conformance + build passing is necessary but not sufficient.
 - `--since YYYY-MM-DD` — only consider agent-updates on/after this date (default: all day-rotated files).
 
 ## Orchestration Rule
 
-> You (the main agent / Opus) own the reflective diagnosis and the SKILL.md authoring — that is the "why did it fail / what should the skill say" judgment. Dispatch `general-purpose` subagents **on Sonnet** (pass `model: sonnet` on every such dispatch) only for the eval *runs* (with_skill / baseline) and grading — that work is mechanical execution (run the suite, grade against the rubric), not judgment, so it stays on the cheaper tier while Opus keeps the diagnosis + authoring. (`general-purpose` is a Sonnet-tier agent by frontmatter; the explicit `model: sonnet` makes the rule load-bearing so a future caller can't silently escalate the eval fleet to Opus.) Follow the **`skill-creator`** skill for the loop mechanics and the **`skill-authoring`** skill for the doctrine; read them, don't paste them here.
+> You (the main agent) own the reflective diagnosis and the SKILL.md authoring — that is the "why did it fail / what should the skill say" judgment. Dispatch `general-purpose` subagents **on `standard` tier** (pass `model: "sonnet"` on every such dispatch) only for the eval *runs* (with_skill / baseline) and grading — that work is mechanical execution (run the suite, grade against the rubric), not judgment, so it stays on the cheaper tier while Main Agent keeps the diagnosis + authoring. (`general-purpose` is a `standard`-tier agent by its adapter registry; the explicit `model: "sonnet"` makes the rule load-bearing so a future caller can't silently escalate the eval fleet to `deep` tier.) Follow the **`skill-creator`** skill for the loop mechanics and the **`skill-authoring`** skill for the doctrine; read them, don't paste them here.
 
 ## Workflow
 
@@ -47,7 +49,9 @@ CREATE is deliberately distinct from `/review:promote-memories` (which injects a
 node .claude/core/skill-evolution.js intake --since <date-or-omit> --date <YYYY-MM-DD>
 ```
 
-This writes `docs/.output/evolution/skills/{date}/intake.{json,md}` with ranked **IMPROVE** candidates (per-skill, with the agent-update evidence + per-signal `polarity`), **CREATE** candidates (memory clusters with member IDs + keywords), and a **`dispatchGaps`** list. Read `intake.json`. If `improve` and `create` are both empty → report "no skill-evolution signal" and stop.
+This writes `docs/.output/evolution/skills/{date}/intake.{json,md}` with ranked **IMPROVE** candidates (per-skill, with the agent-update evidence + per-signal `polarity`), **CREATE** candidates (memory clusters with member IDs + keywords), a **`dispatchGaps`** list, and an **`ambiguous`** list. Read `intake.json`. If `improve` and `create` are both empty → report "no skill-evolution signal" (still listing any `ambiguous` signals under the Report's "Ambiguous signals" line for a human call) and stop. IMPROVE `score` is IDF-weighted and not comparable with scores from toolkit versions before 6.2.
+
+> **`ambiguous` signals are NOT attributed.** Each is a near-tie (the winning skill did not beat the runner-up by the confidence margin) listed with its top candidates. They are kept out of IMPROVE so no differential eval is spent on a coin-flip; a person picks the skill, or drops the signal.
 
 > **`dispatchGaps` are NOT skill-evolution candidates.** Each is a signal that attributed to a review/safeguard skill but whose text shows the safeguard *caught* the defect — so the gap is in the **dev-agent dispatch prompt** (e.g. `/run-todo`'s implementation prompt), not in the review skill. Do **not** open a skill eval for these (it would read Δ=0, exactly the wasted cycle two projects reported). Surface them in the Report under "Dispatch-prompt gaps" for the human to route; the scorer attributes by domain keyword and cannot tell *caught* from *slipped*, so it pre-separates them here. Likewise, an IMPROVE evidence line tagged `(caught)` is weaker evidence (a safeguard fired) than one tagged `(slipped)` — weight the diagnosis accordingly.
 
@@ -59,7 +63,7 @@ Present the candidates compactly:
 
 Ask which to pursue (Accept / Skip per candidate). Under `--auto`, pursue every candidate that clears the bar (IMPROVE: ≥1 attributed misalignment; CREATE: cluster size ≥3 OR avg confidence ≥0.8) and stage proposals without applying.
 
-### Step 3 — Reflective diagnosis (Opus)
+### Step 3 — Reflective diagnosis (Main Agent)
 
 For each pursued candidate, read the evidence and the relevant skill, then diagnose the *gap*:
 - **IMPROVE** — read the named skill's `SKILL.md` + each cited agent-update section. What did the skill say (or fail to say) that let the misalignment happen? Is it missing a rule, ambiguous, or contradicted by reality? Confirm the evidence is a genuine empirical RED (an agent actually failed) — if it's speculative, drop it. No "this could be clearer" edits without a failure behind them.
@@ -67,8 +71,10 @@ For each pursued candidate, read the evidence and the relevant skill, then diagn
 
 ### Step 4 — Draft / edit (follow `skill-creator`)
 
-- **IMPROVE** → snapshot the skill (`cp -r .claude/skills/<skill> <workspace>/skill-snapshot/`), then make the surgical edit. The snapshot is the `old_skill` baseline. **In the workshop**, edit the skill body directly (it's the template source — the fix propagates to the fleet). **In an adopter**, a fix to a *template* skill that you're not contributing upstream MUST use a project-additions sentinel (create if absent) — a new section at the end → `<!-- @@project-additions -->`; a bullet inserted into an existing section → an anchored `<!-- @@project-additions:start -->`/`:end` fence. A plain edit to template prose is clobbered on the next sync. See `skill-authoring`.
-- **CREATE** → scaffold `.claude/skills/<name>/SKILL.md` (name==dir; pushy what+when description; explain-the-why body; progressive disclosure). The baseline is `without_skill`.
+Resolve the canonical `.agents/skills/<name>` source first; a legacy native source is used only when no canonical counterpart exists. Workspace candidates never overwrite generated projections. Render after an accepted canonical change. Under the enclosing `/sweep` Phase 5b, draft/conformance-only staging follows that phase's explicit override; do not claim a measured differential until the standalone apply workflow actually runs it.
+
+- **IMPROVE** → snapshot the selected canonical source into `<workspace>/skill-snapshot/`, then draft the surgical change at `<workspace>/candidate/SKILL.md`. The snapshot is the `old_skill` baseline. Do not edit live canonical source or generated native copies while drafting/evaluating. In an adopter, retained template additions still use the existing project-additions tail/inline fences; keep those in the candidate and apply only the accepted source change.
+- **CREATE** → scaffold `<workspace>/candidate/SKILL.md` (matching `name`, concrete triggering description, complete body/resources). The baseline is `without_skill`. Only an accepted candidate becomes `.agents/skills/<name>/SKILL.md`; an unmigrated installation may use its supported legacy source.
 
 Write the workspace + test cases per `skill-creator` Step "Running and evaluating test cases":
 `docs/.output/evolution/skills/{date}/<skill>-workspace/`.
@@ -98,23 +104,27 @@ Read `benchmark.json`. **Check `benchmark.warnings` first** (and watch for a non
 
 ### Step 6 — Gate + apply
 
-For each candidate that cleared the differential (and that the user accepts — under `--auto`, **stage only, do not apply**):
+For each candidate with a positive, warning-free differential:
 
-1. Conformance gate the final body:
+1. Conformance gate the workspace candidate:
    ```bash
-   node .claude/core/skill-evolution.js check <skill-name> .claude/skills/<skill-name>/SKILL.md
+   node .claude/core/skill-evolution.js check <skill-name> <workspace>/candidate/SKILL.md
    ```
-   Must PASS (name==dir, description ≤1024, body ≤500 WARN). Fix any ERROR before applying.
-2. Run the build/test gate (a new/edited skill must not break the suite):
+   Must PASS (name, description and body budget). Fix errors before applying.
+2. Under `--auto`, record the evaluated proposal and leave live sources untouched. Under the enclosing sweep's draft-only Phase 5b, conformance is evidence for a staged draft, not a measured differential or permission to apply.
+3. When the user accepts the candidate, apply the accepted change to the selected canonical source, preserving marked project additions and resources. If that source changed after the snapshot, reconcile it before claiming the benchmark still applies. Render and check native projections:
    ```bash
+   node .claude/core/render-shared-agents.js
+   node .claude/core/render-shared-agents.js --check
+   node .claude/core/skill-evolution.js check <skill-name> .agents/skills/<skill-name>/SKILL.md
    node .claude/core/gate.js test
    ```
-   If it fails → stop, report, leave unapplied.
-3. The change is already on disk (Step 4 wrote it). Record the proposal + benchmark delta in `docs/.output/evolution/skills/{date}/proposals.md`.
+   A failing build/test stops application completion; do not claim the change is ready.
+4. Record the proposal, measured delta and actual applied/staged disposition in `docs/.output/evolution/skills/{date}/proposals.md`. Accepted commits include canonical source, computed native output and ownership ledger; auto/propose-only commits contain staging artifacts only.
 
 ### Step 7 — Commit
 
-Stage the skill file(s) + the workspace artifacts + `proposals.md`. Write the message to `docs/.output/.state/.commit-msg` (Write tool, no `Co-Authored-By`), then `node .claude/core/commit.js`:
+Stage the specific accepted canonical skill/resource files, computed native projections, render ledger, workspace artifacts and `proposals.md`. Write the message to `docs/.output/.state/.commit-msg` (Write tool, without automatic attribution), then `node .claude/core/commit.js`:
 
 ```
 feat: /review:evolve-skills — {CREATE <name> | IMPROVE <skill>} (pass-rate Δ +N pts)
@@ -134,13 +144,13 @@ Under `--auto`, do NOT commit applied skill changes (nothing was applied) — th
 | IMPROVE | {skill} | {N misalignments} | {+N pts} | Applied / Staged / Dropped |
 | CREATE | {name} | {N memories} | {+N pts} | Applied / Staged / Dropped |
 
-**Intake:** {I} IMPROVE · {C} CREATE candidates · {U} unattributed signals
+**Intake:** {I} IMPROVE · {C} CREATE candidates · {A} ambiguous · {U} unattributed signals
 **Applied:** {N}   **Staged (need you):** {M}   **Dropped (no differential):** {K}
 ```
 
 ## What NOT to Do
 
-- Do NOT run the eval/grading subagents on Opus — they are mechanical (execute the suite, grade against the rubric), so they MUST be dispatched as `general-purpose` with `model: sonnet`. Opus stays on the main-agent diagnosis + `SKILL.md` authoring only.
+- Do NOT run the eval/grading subagents on `deep` tier — they are mechanical (execute the suite, grade against the rubric), so they MUST be dispatched as `general-purpose` with `model: "sonnet"`. Main Agent keeps diagnosis and `SKILL.md` authoring.
 - Do NOT apply a skill change whose differential `delta.pass_rate` is not positive — the eval is the whole point.
 - Do NOT propose an edit without empirical evidence of a gap (an agent-update misalignment, a gate failure, or a recurring memory cluster) — speculative polish is out of scope (`skill-authoring` doctrine).
 - Do NOT auto-apply skill-body changes under `--auto` — stage proposals; the human confirms.

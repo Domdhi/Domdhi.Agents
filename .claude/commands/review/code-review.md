@@ -3,6 +3,8 @@ description: Review code changes against architecture standards, security best p
 argument-hint: [file path, PR number, or git diff range]
 ---
 
+<!-- Generated from .agents/skills/review-code-review/references/workflow.md; edit the canonical source, then run node .claude/core/render-shared-agents.js. -->
+
 # Code Review
 
 Review code for quality, security, and architecture compliance. Uses the `code-review` skill.
@@ -29,7 +31,7 @@ INPUT: $ARGUMENTS
 
 **Flags:**
 - `--deep` — Run a cross-model second opinion: dispatches two review agents in parallel (primary tier determined by risk, backup is the opposite tier), then compares findings for higher-confidence results. Without this flag, only the risk-routed primary tier runs.
-- `--council` — Run a **council review** (the N-reviewer generalization of `--deep`): dispatch one `code-reviewer` per LENS (correctness / security / architecture / performance), then have each reviewer **anonymously cross-validate** the others' findings, and an Opus **chairman** synthesize the consensus. Higher cost (N reviewers + a cross-validation round); use on high-stakes changes. Aggregation is deterministic via `.claude/core/council.js`. See **Council Mode** below. (`--council` supersedes `--deep` when both are passed.)
+- `--council` — Run a **council review** (the N-reviewer generalization of `--deep`): dispatch one `code-reviewer` per LENS (correctness / security / architecture / performance), then have each reviewer **anonymously cross-validate** the others' findings, and the main-agent **chairman** synthesize the consensus. Higher cost (N reviewers + a cross-validation round); use on high-stakes changes. Aggregation is deterministic via `.claude/core/council.js`. See **Council Mode** below. (`--council` supersedes `--deep` when both are passed.)
 
 ## Workflow
 
@@ -53,7 +55,7 @@ INPUT: $ARGUMENTS
 - Read `docs/architecture/overview.md` — Development Standards, API conventions, project structure
 - Read `CLAUDE.md` — project-specific rules (if exists)
 - Check relevant skills for domain patterns:
-  - `.css`/`.html` with Tailwind → check `tailwind-css-patterns` skill
+  - `.css`/`.html` in a project that uses Tailwind → check `tailwind-css-patterns` skill
 - Search memory system for established project patterns:
   ```bash
   # Search for patterns related to the changed files' domain
@@ -66,6 +68,8 @@ INPUT: $ARGUMENTS
   node .claude/core/memory-manager.js list decisions
   ```
   Memory patterns complement skill checklists: skills define general best practices, memories capture project-specific conventions discovered during implementation.
+
+**Runtime and verification.** This review changes no application code and runs no build or test gate; where a gate result is cited, in an adopter it comes from the application's own `gate.js` commands and never the Domdhi.Agents toolkit suite, including after agent-file edits, and in Domdhi.Agents itself from the toolkit's Node build and Vitest suite. In Codex, run each `.claude/core/` command in this workflow (telemetry, memory search, `council.js`, `commit.js`) as `.codex/core/` with the same arguments and dispatch the reviewer as `.agents/adapters/codex/execution.md` describes. Note that discovery alone (an installed skill, a listed command or a loaded file) never proves this review ran: claim completion only from the Step 4 report written to `docs/.output/findings/reviews/` and its Step 5 commit hash.
 
 ### 2b. Classify Risk Tiers (main agent)
 
@@ -96,14 +100,14 @@ Classify each changed file into a risk tier to determine review depth.
 Use the Task tool with `subagent_type: "code-reviewer"` to perform the review.
 
 **Determine the primary model from the risk tier (Step 2b):**
-- Overall tier is **HIGH** → dispatch `code-reviewer` with `model: opus`.
-- Overall tier is **MEDIUM or LOW** → omit `model:` so the agent runs on its Sonnet floor.
+- Overall tier is **HIGH** → dispatch `code-reviewer` with `model: "opus"`.
+- Overall tier is **MEDIUM or LOW** → omit `model:` so the agent runs on its `standard` default.
 
 **If `--deep` flag is set:** Dispatch TWO review agents in parallel:
 1. **Primary** — `subagent_type: "code-reviewer"`, model determined by risk tier above.
-2. **Backup** — `subagent_type: "code-reviewer"`, model is **the opposite tier from the primary** (if primary ran Sonnet → `model: opus`; if primary ran Opus → `model: sonnet`). This gives cross-tier diversity, not a re-run.
+2. **Backup** — `subagent_type: "code-reviewer"`, model is **the opposite tier from the primary** (if primary ran `standard` tier → `model: "opus"`; if primary ran `deep` tier → `model: "sonnet"`). This gives cross-tier diversity, not a re-run.
 
-Both receive the same prompt. Results are compared in Step 4.
+Distinct requested tiers do not prove distinct models: when both resolve to an omitted argument or the same model, report that model diversity was not established. Both receive the same prompt. Results are compared in Step 4.
 
 **If no `--deep` flag:** Dispatch single agent using the risk-tier model above.
 
@@ -117,17 +121,18 @@ Both receive the same prompt. Results are compared in Step 4.
 7. Instruction to evaluate: Correctness, Security, Performance, Architecture Compliance, Memory Pattern Compliance, Test Coverage
 8. Instruction to classify findings by severity: CRITICAL > MAJOR > MINOR > NIT
 9. Instruction to include the Risk Assessment section in the report (between Summary and Findings)
+10. The verified project constraints and architecture conventions loaded in Step 2, with their source paths (or "none" when absent)
 
 ### 3d. Council Mode (`--council`)
 
 When `--council` is set, **replace** the single/`--deep` dispatch in Step 3 with this three-stage flow (Karpathy's llm-council, adapted for a single-vendor panel — diversity comes from LENS, not vendor). Use a workspace dir: `docs/.output/findings/reviews/council-{YYMMDD-HHMM}/`.
 
-**Stage 1 — independent reviews (parallel).** Get the lens set: `node .claude/core/council.js lenses`. Dispatch one `code-reviewer` agent **per lens, in parallel** (background OK). Model is risk-routed, same as the primary dispatch: overall tier **HIGH** → pass `model: opus` per lens; overall tier **MEDIUM or LOW** → omit `model:` (Sonnet floor). The Opus chairman (Stage 3) is always Opus regardless of tier. Each agent gets the same diff + standards + risk table from Steps 1–2b, **plus a lens instruction**: "Review ONLY through the **{lens}** lens ({focus}). Report findings as a JSON array `[{file,line,title,severity,lens:'{lens}',detail}]`." Collect all findings into `findings.json` (concatenate the arrays; tag each with its `lens`).
+**Stage 1 — independent reviews (parallel).** Get the lens set: `node .claude/core/council.js lenses`. Dispatch one `code-reviewer` agent **per lens, in parallel** (background OK). Model is risk-routed, same as the primary dispatch: overall tier **HIGH** → pass `model: "opus"` per lens; overall tier **MEDIUM or LOW** → omit `model:` (`standard` default). Main Agent owns chairman synthesis in Stage 3. Each agent gets the same diff + standards + risk table from Steps 1–2b, **plus a lens instruction**: "Review ONLY through the **{lens}** lens ({focus}). Report findings as a JSON array `[{file,line,title,severity,lens:'{lens}',detail}]`." Collect all findings into `findings.json` (concatenate the arrays; tag each with its `lens`).
 - Optional cross-vendor member: if the project has configured an external model (e.g. OpenRouter) AND opted in, add it as one more reviewer for true vendor diversity. Off by default — it breaks the zero-dependency drop-in property, so never enable it implicitly.
 
 **Stage 2 — anonymized cross-validation.** Dedupe + assign stable ids: `node .claude/core/council.js dedupe docs/.output/findings/reviews/council-{YYMMDD-HHMM}/findings.json` → `deduped.json`. (Independent re-raises by multiple lenses auto-merge — that overlap is itself a confirmation signal.) Then dispatch each lens reviewer AGAIN, giving it the **anonymized** deduped findings (present them as "Reviewer A/B/…" via the `anonymization` map — do NOT tell a reviewer which findings are its own) with this instruction: "For each finding NOT your own, vote `confirm` / `refute` / `unsure` and a `severity_vote`. **Default to `refute` if you cannot independently substantiate it** — do not rubber-stamp; we reward independent confirmation, not agreement." Collect votes into `votes.json` as `[{finding_id,voter:'{lens}',verdict,severity_vote}]`.
 
-**Stage 3 — chairman synthesis.** Aggregate deterministically: `node .claude/core/council.js aggregate docs/.output/findings/reviews/council-{YYMMDD-HHMM}/` → `council.json` + `council.md`. This applies the survival rule (a finding **confirmed** = ≥2 independent confirms and confirms>refutes; **refuted** = majority-refuted and not high-severity; a CRITICAL/MAJOR that drew refutes is **contested**, never silently dropped). Then YOU (Opus, the chairman) write the synthesis: take the `council.json` consensus and produce the final findings list — lead with **confirmed**, call out **contested** for human judgment, and list **refuted** in an appendix (logged, not actioned). This `council.md` + your synthesis is the review body for Step 4.
+**Stage 3 — chairman synthesis.** Aggregate deterministically: `node .claude/core/council.js aggregate docs/.output/findings/reviews/council-{YYMMDD-HHMM}/` → `council.json` + `council.md`. This applies the survival rule (a finding **confirmed** = ≥2 independent confirms and confirms>refutes; **refuted** = majority-refuted and not high-severity; a CRITICAL/MAJOR that drew refutes is **contested**, never silently dropped). Then YOU (Main Agent, the chairman) write the synthesis: take the `council.json` consensus and produce the final findings list — lead with **confirmed**, call out **contested** for human judgment, and list **refuted** in an appendix (logged, not actioned). This `council.md` + your synthesis is the review body for Step 4.
 
 ### 4. Persist Output (main agent)
 
@@ -193,7 +198,7 @@ Read the agent's output and present the final report, including the output file 
 **Models:** {risk-tier model} (primary) + {opposite tier} (backup)
 **Agreement rate:** {N}%
 
-| Finding | Sonnet | Opus | Confidence |
+| Finding | `standard` tier | `deep` tier | Confidence |
 |---------|--------|------|------------|
 | {description} | {severity or —} | {severity or —} | {Both agree: HIGH / One only: REVIEW} |
 

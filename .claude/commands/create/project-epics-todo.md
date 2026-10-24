@@ -3,6 +3,8 @@ description: Create a detailed story-level implementation checklist for a single
 argument-hint: [epic number or "all"] [--yolo]
 ---
 
+<!-- Generated from .agents/skills/create-project-epics-todo/references/workflow.md; edit the canonical source, then run node .claude/core/render-shared-agents.js. -->
+
 # Create TODO Epic — Per-Epic Implementation Checklist
 
 Generate `docs/work/todo/TODO_epicNN_{slug}.md` — the tech-lead view of a single epic. Contains story-level task checkboxes, dependency metadata, track assignments, and bottleneck annotations. This is what `/do` and `/run-todo` consume during implementation.
@@ -91,6 +93,8 @@ From `docs/work/backlog.md`, extract for the target epic:
 
 Use the Task tool with `subagent_type: "project-planner"`.
 
+**Runtime and verification.** In Codex, run each `.claude/core/` command in this workflow as `.codex/core/` with the same arguments, per `.agents/adapters/codex/execution.md`. This workflow runs no build gate; its evidence is the written checklist passing Step 6 validation against `docs/work/backlog.md` and the Step 7 commit hash. The checklist's Validation section names the application's own build and test commands in an adopter, never the Domdhi.Agents toolkit suite, also after agent-file edits; in Domdhi.Agents itself it names the toolkit's Node build and Vitest suite. Discovery alone (an installed skill, a listed command or a loaded file) never proves this workflow ran; report completion only from that evidence.
+
 **Task prompt must include**:
 1. Epic number and name
 2. Output path: `docs/work/todo/TODO_epic{NN}_{slug}.md`
@@ -99,13 +103,14 @@ Use the Task tool with `subagent_type: "project-planner"`.
 5. Optimization data (critical path, parallel tracks, bottlenecks)
 6. The `project-planner` agent auto-loads the `project-planning` skill via frontmatter.
 7. Instruction to follow the checklist template from `/todo` command format
+9. The repository's actual test-authorship rule, read before dispatch (in this toolkit, `/run-todo` Step 2b: the Main Agent writes AC tests before dev dispatch, with its documented one-round exceptions), so each story's Ownership line matches it
 
 **The agent must produce a checklist following the `/todo` template structure:**
 
 ```markdown
 # Epic {N}: {Epic Name} - Implementation Checklist
 
-**Parent Document**: [TODO_{Project}.md](../TODO_{Project}.md)
+**Parent Document**: [TODO_{Project}.md](../../TODO_{Project}.md)
 **Phase**: {N} — {Phase Name}
 **Status**: Not Started
 **Stories**: {N}.1 - {N}.{M}
@@ -203,7 +208,7 @@ with no logical dependency), and respect dependency order across waves.
 - **Epic**: Epic {N}: {Name}
 - **Phase**: Phase {P}: {Phase Name}
 - **Checklist location**: `docs/work/todo/TODO_epic{NN}_{slug}.md`
-- **Related docs**: [backlog.md](backlog.md), [architecture/overview.md](../architecture/overview.md)
+- **Related docs**: [backlog.md](../backlog.md), [architecture/overview.md](../../architecture/overview.md)
 - **Dependencies**: {Cross-epic dependencies}
 - **Critical Rules**: {Architecture constraints relevant to this epic}
 
@@ -217,6 +222,7 @@ with no logical dependency), and respect dependency order across waves.
 **Domain:** {Backend|Frontend|DevOps|...}
 **Estimate:** {S|M|L|XL}
 **Complexity:** {1–10}  <!-- persisted routing signal `/do` reads; score per the canonical rubric in `/todo` (≤5 → Opus-direct, ≥6 → Sonnet-delegate). Distinct from Estimate (wall-clock effort). -->
+**Ownership:** production {agent type}; tests {owner per the repository's test-authorship rule | owning story ID}; review {fresh independent reviewer}
 
 **As a** {persona}, **I want** {capability}, **So that** {benefit}.
 
@@ -270,11 +276,13 @@ After the agent completes, verify:
 - Acceptance criteria match `backlog.md` (not invented)
 - No code blocks or implementation examples (WHAT, not HOW)
 - Required sections all present (Execution Log, Key Decisions, Validation, Work Doc References)
+- Every story has an Ownership line consistent with the repository's actual test-authorship rule
+- Mechanical plan checks pass: every Dependencies/Unblocks ID exists, no wave depends on a later wave, no file is owned by two stories in one wave, and a story that consumes a file another story creates sits in a later wave. These are structural checks, not proof that any AC is met; critical-path hours are effort, not elapsed time
 - If issues found, delegate back to agent to fix
 
 ### 7. Commit (main agent)
 
-Follow the **Post-Command Commit Convention** in CLAUDE.md. Stage files created or modified and commit with a descriptive message.
+Follow the **Post-Command Commit Convention** in `.agents/startup-reference.md`. Stage each file created or modified by its exact path and commit through the native commit helper (`node .claude/core/commit.js`, or `node .codex/core/commit.js` in Codex) with a descriptive message. Do not push, open a PR or take any other outward action without explicit authorization.
 
 ### 8. Report (main agent)
 
@@ -303,3 +311,4 @@ Follow the **Post-Command Commit Convention** in CLAUDE.md. Stage files created 
 7. **Stories MUST be in dependency-optimized order**
 8. **Every story MUST include Dependencies, Unblocks, Track, Domain, Estimate, and Complexity metadata** (Complexity = the 1–10 routing score `/do` reads — score it per the canonical rubric in `/todo`, never restate that rubric here)
 9. Acceptance criteria MUST match `backlog.md` exactly — do not paraphrase or invent new ones
+10. **Every story MUST include an Ownership line** naming production, test and review ownership per the repository's actual test-authorship rule (see `/todo` Template Rules)

@@ -3,6 +3,8 @@ description: Generate automated tests for existing code using acceptance criteri
 argument-hint: [story number, file path, or module name]
 ---
 
+<!-- Generated from .agents/skills/review-qa/references/workflow.md; edit the canonical source, then run node .claude/core/render-shared-agents.js. -->
+
 # QA — Test Generation
 
 Generate automated tests for code. Uses the `qa-engineer` skill for patterns and conventions.
@@ -51,6 +53,8 @@ INPUT: $ARGUMENTS
 - Read existing tests to match patterns and conventions
 - Read `docs/architecture/overview.md` Testing Strategy section
 
+**Runtime and verification.** In an adopter, the Step 4 run (`gate.js` or the detected test command) executes the application's own build and test commands and never the Domdhi.Agents toolkit suite, including after agent-file edits; in Domdhi.Agents itself it runs the toolkit's Node build and Vitest suite, and toolkit tests stay under `.agents/core/__tests__/` and `.agents/hooks/__tests__/`. In Codex, run each `.claude/core/` command in this workflow as `.codex/core/` with the same arguments and dispatch the QA role as `.agents/adapters/codex/execution.md` describes. Note that discovery alone (an installed skill, a listed command or a loaded file) never proves this workflow ran: claim completion only from the Step 4 test output with zero failures and the Step 5 commit hash.
+
 **2b. Bootstrap (if no test framework detected):**
 
 If no test framework is found:
@@ -79,6 +83,7 @@ Use the Task tool with `subagent_type: "qa-engineer"` to plan and generate tests
 6. Instruction to: map AC → test names, identify test types (unit/integration/e2e), plan test data and mocks, generate tests using Arrange-Act-Assert pattern
 7. Instruction to include both happy path AND error paths
 8. Instruction to follow naming convention: `{Method}_{Scenario}_{ExpectedResult}`
+9. The verified project constraints and architecture conventions loaded in Step 2, with their source paths (or "none" when absent)
 
 ### 4. Run Tests + Auto-Fix Loop (main agent)
 
@@ -101,7 +106,7 @@ After 3 failed attempts: stop, report which tests are still failing with their e
 
 ### 5. Commit (main agent)
 
-Follow the **Post-Command Commit Convention** in CLAUDE.md. Stage all files created or modified by this command and commit with a descriptive message.
+Follow the **Post-Command Commit Convention** in `.agents/startup-reference.md`. Stage all files created or modified by this command and commit with a descriptive message.
 
 ### 6. Report (main agent)
 

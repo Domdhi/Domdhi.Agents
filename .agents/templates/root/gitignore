@@ -1,0 +1,49 @@
+# ============================================
+# Domdhi.Agents — System Ignores
+# ============================================
+
+# Dependencies
+node_modules/
+
+# Environment / secrets
+# (defense-in-depth; the pre-commit secret scanner is the real gate)
+.env
+.env.*
+!.env.example
+!.env.*.example
+*.local.*
+
+# Temp / Logs
+*.log*
+*.bak*
+*.tmp*
+*.archive*
+
+# Runtime artifacts
+# Playwright MCP and Playwright CLI write their per-session output (snapshots,
+# console and network logs, traces, saved files) to .playwright-mcp/ and
+# .playwright-cli/ under the working directory. .playwright/ is configuration,
+# not output: .playwright/cli.config.json and its templates/root/.playwright/
+# copies stay tracked, so only the two output directories are ignored here.
+.playwright-mcp/
+.playwright-cli/
+# Playwright test output — written by `npx playwright test` / `npm run e2e`.
+# Pure per-run artifacts (traces, screenshots, HTML report); never committed.
+# Pre-seeded so a project that stands up an E2E runner doesn't leak them (F29).
+test-results/
+playwright-report/
+# Vitest 5 reports and attachments are per-run artifacts.
+.vitest/
+
+# Ephemeral output — ADR 0006 lifecycle split. ALL regenerable / per-session /
+# derived / transient state lives under ONE zone, docs/.output/.state/ (telemetry,
+# sessions, screenshots, work, HTML dashboards, .commit-msg/.pr-body/freeze-state,
+# and memory's derived index + drafts + raw logs: memory-{index,inbox,daily}).
+# Tracked (NOT under .state/): the durable .output history — handoffs/ findings/
+# plans/ evolution/ — the curated memory SOURCE docs/.output/.memory/, and the
+# docs/ domains. One ignored folder; the boundary is structural, not a path list.
+docs/.output/.state/
+.claude/.agents.docs/
+# Agent-scoped working memory (per-agent markdown the sub-agents accumulate).
+# Local/regenerable — must NOT be committed (C10).
+.claude/agent-memory/

@@ -3,6 +3,8 @@ description: Create a technical architecture document with tech stack decisions,
 argument-hint: [project name or prd path] [--yolo]
 ---
 
+<!-- Generated from .agents/skills/create-project-architecture/references/workflow.md; edit the canonical source, then run node .claude/core/render-shared-agents.js. -->
+
 # Create Architecture
 
 Create a technical architecture document. Produces `docs/architecture/overview.md`.
@@ -69,6 +71,8 @@ Synthesize a context brief from upstream docs:
 
 ### 5. Delegate to Agent
 
+**Runtime and verification.** In Codex, run each `.claude/core/` command in this workflow (such as `telemetry-log.js`) as `.codex/core/` with the same arguments, per `.agents/adapters/codex/execution.md`. The architecture names the application's own build, test and security commands; in an adopter they are never the Domdhi.Agents toolkit suite, and in Domdhi.Agents itself they are the toolkit's Node build and Vitest suite. This workflow's evidence is `docs/architecture/overview.md` passing the real-document check (no `<!-- @@template -->` first line) and the Step 6 Required Sections Checklist, plus the hash of a commit that stages only the files this command wrote; discovery alone (an installed skill, a listed command or a loaded file) never proves this workflow ran.
+
 Use the Task tool with `subagent_type: "architect"` to generate the architecture document.
 
 **Task prompt must include**:
@@ -85,7 +89,7 @@ After the agent completes, read `docs/architecture/overview.md` and validate aga
 
 ### 7. Commit (main agent)
 
-Follow the **Post-Command Commit Convention** in CLAUDE.md. Stage all files created or modified by this command and commit with a descriptive message.
+Follow the **Post-Command Commit Convention** in `.agents/startup-reference.md`. Stage all files created or modified by this command and commit with a descriptive message.
 
 ### 8. Report (main agent)
 

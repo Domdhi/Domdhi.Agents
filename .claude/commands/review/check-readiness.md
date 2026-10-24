@@ -2,6 +2,8 @@
 description: Validate that all planning docs are complete and consistent before implementation
 ---
 
+<!-- Generated from .agents/skills/review-check-readiness/references/workflow.md; edit the canonical source, then run node .claude/core/render-shared-agents.js. -->
+
 # Check Implementation Readiness
 
 Validate that all Phase 1-3 documentation is complete, consistent, and ready for implementation. Returns PASS, CONCERNS, or FAIL.

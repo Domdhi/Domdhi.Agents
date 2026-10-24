@@ -3,6 +3,8 @@ description: Capture a conversational insight to the daily log for memory acquis
 argument-hint: [what to remember — a decision, insight, or discovery]
 ---
 
+<!-- Generated from .agents/skills/remember/references/workflow.md; edit the canonical source, then run node .claude/core/render-shared-agents.js. -->
+
 # Remember
 
 Pin a conversational insight to the memory pipeline. Use when a Q&A exchange, investigation, or design decision should persist beyond the current session — things that git commits and TODO files can't capture.

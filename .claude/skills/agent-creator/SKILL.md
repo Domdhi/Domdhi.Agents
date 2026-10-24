@@ -1,6 +1,6 @@
 ---
 name: agent-creator
-description: "Use WHEN creating a new subagent in .claude/agents/ — provides this toolkit's agent template, frontmatter contract, model-tier selection, persona/soul conventions, and the agent-vs-skill decision rule. Triggers: create agent, new agent, subagent, agent frontmatter, agent persona, agent model"
+description: "Use WHEN creating a new subagent in .agents/roles/ — provides this toolkit's agent template, frontmatter contract, model-tier selection, persona/soul conventions, and the agent-vs-skill decision rule. Triggers: create agent, new agent, subagent, agent frontmatter, agent persona, agent model"
 metadata:
   version: 1.0.0
   author: Domdhi.Agents
@@ -9,9 +9,11 @@ user-invocable: false
 allowed-tools: Read Write Edit Grep Glob
 ---
 
+<!-- Generated from .agents/skills/agent-creator/SKILL.md; edit the canonical source, then run node .claude/core/render-shared-agents.js. -->
+
 # Agent Creator
 
-Template, field rules, and quality criteria for creating a new agent (`.claude/agents/{name}.md`) that follows this toolkit's conventions. An agent owns **personality and working style** and auto-loads skills via frontmatter — it never duplicates command orchestration logic. See the three-tier architecture + "no duplication between layers" rule in CLAUDE.md; for commands use `command-creator`, for skills use `skill-creator` + `skill-authoring`.
+Template, field rules, and quality criteria for creating a new agent (`.agents/roles/{name}.md`) that follows this toolkit's conventions. An agent owns **personality and working style** and auto-loads skills via frontmatter — it never duplicates command orchestration logic. See the three-tier architecture + "no duplication between layers" rule in CLAUDE.md; for commands use `command-creator`, for skills use `skill-creator` + `skill-authoring`.
 
 ## Agent Template
 
@@ -22,12 +24,9 @@ Template, field rules, and quality criteria for creating a new agent (`.claude/a
 name: {kebab-case-name}
 nickname: {short-name}
 aliases: [{alias1}, {alias2}, {alias3}]
-model: {inherit|sonnet|haiku}
 description: {1-2 sentences. What it does. When to use it.}
-tools: {comma-separated tool list}
 skills:
   - {skill-name}
-memory: project
 ---
 ```
 
@@ -38,11 +37,10 @@ memory: project
 | `name` | Yes | kebab-case, matches filename without `.md` |
 | `nickname` | Yes | Short name used in `# {Nickname} — {Role Title}` heading |
 | `aliases` | Yes | Inline YAML array `[...]`, 2-5 aliases for invocation |
-| `model` | Yes | `sonnet` is the floor for nearly every agent (dual-use ones escalate to Opus per-dispatch via a `## Model Routing` block); `opus` only for always-high-stakes agents that must never downgrade (e.g. `security-auditor`). See the Model Selection Guide. Avoid `inherit` (it just means "the main-session model") and `haiku` (fabricates). |
 | `description` | Yes | Concise, no quotes needed. Format: "{What it does}. Use for {when to use it}." |
-| `tools` | Yes | Unquoted comma-separated list. Common sets: `Read, Write, Edit, Bash, Grep, Glob` (implementation), `Read, Write, Edit, Grep, Glob, WebSearch, WebFetch` (research/strategy) |
 | `skills` | Yes | YAML list of skill names, or `[]` if none |
-| `memory` | Yes | Always `project` |
+
+Runtime fields belong in adapters, never canonical role frontmatter. Add a `tier` under `roles[name]` in each `.agents/adapters/{runtime}/shared-agents.json`, applying the tier selection guide below. Each adapter's `model-tiers.json` supplies its model values. Add Claude tools, memory and permissions in its adapter; project-specific overrides belong in `.claude/shared-agents.json`. Add supported Codex overrides (`model`, `model_reasoning_effort`, `sandbox_mode`) in `.codex/shared-agents.json` only when needed. Empty Codex tiers omit the model parameter. Never put Claude model identifiers into Codex settings. Run `node .claude/core/render-shared-agents.js` after canonical changes.
 
 ### Body Structure
 
@@ -75,7 +73,7 @@ Must include anti-sycophancy rule: "No hedging — never say 'that's an interest
 
 ### Calibration
 
-Before creating a new agent, read `.claude/agents/architect.md` as a format reference — the prose style, section structure, and principle density set the bar. For complex domains, spawn Task sub-agents to read source material before synthesizing the agent's identity — don't rely on recall for domain-specific standards.
+Before creating a new agent, read `.agents/roles/architect.md` as a format reference — the prose style, section structure, and principle density set the bar. For complex domains, spawn Task sub-agents to read source material before synthesizing the agent's identity — don't rely on recall for domain-specific standards.
 
 ### Thin-Default Shipping
 
@@ -87,17 +85,17 @@ Write the thin default and stop. Don't over-engineer the identity for hypothetic
 
 ### Model Selection Guide
 
-The policy is **Sonnet floor + Opus escalated per-dispatch** (see CLAUDE.md Model Policy). Pick the floor, then decide whether the agent is *dual-use* (needs an escalation path).
+The policy is **`standard` by default, `deep` for higher-stakes dispatches, and `audit` for security review** (see the Model Policy in `.agents/startup-reference.md`). Pick the default tier, then decide whether the agent is *dual-use* (needs a higher-stakes route).
 
-| Role Type | Floor | Dual-use? (add `## Model Routing`) |
+| Role Type | Tier | Dual-use? (add `## Model Routing`) |
 |-----------|-------|-----------|
-| Planning, strategy, research, design | `sonnet` | **Yes** — escalate to Opus for new ADRs / strategic briefs / greenfield design from scratch |
-| Code implementation | `sonnet` | **Yes** — escalate for multi-component refactors / data-integrity / migration logic |
-| Code review | `sonnet` | **Yes** — escalate for HIGH-risk-tier paths / novel patterns |
-| Testing, browser automation, documentation, ghostwriting | `sonnet` | No — always Sonnet, no escalation path |
-| Security audit | `opus` 🔒 | No — **pinned Opus**, never downgraded (a missed vuln costs more than the Opus call) |
+| Planning, strategy, research, design | `standard` | **Yes** — select `deep` for new ADRs / strategic briefs / greenfield design from scratch |
+| Code implementation | `standard` | **Yes** — select `deep` for multi-component refactors / data-integrity / migration logic |
+| Code review | `standard` | **Yes** — select `deep` for HIGH-risk-tier paths / novel patterns |
+| Testing, browser automation, documentation, ghostwriting | `standard` | No — keep the default tier |
+| Security audit | `audit` 🔒 | No — retain the audit tier; never supply a cheaper override |
 
-**Dual-use agents** carry a `## Model Routing` block (after `## Skills`, before `## Memory Inbox Protocol`) listing Escalate-to-Opus vs Stay-on-Sonnet criteria; the dispatching **command** enforces it by passing `model: opus` (escalate) or omitting `model` (floor). Never use `haiku` (it fabricates results) or `inherit` (it only means the main-session model — not a tier choice).
+**Dual-use agents** carry a `## Model Routing` block (after `## Skills`, before `## Memory Inbox Protocol`) listing `deep` versus `standard` criteria; the dispatching **command** enforces it by selecting `model: "opus"` for higher-stakes work or omitting `model` to retain native role settings. The security role uses `model: "opus"`. Do not dispatch the `fast` tier until its bounded evaluation passes: the recorded 2026-06-02 Haiku 4.5 evidence showed fabricated results. An empty Codex tier means omit the argument and use the configured session model; it does not promise a distinct model for each tier.
 
 ### Decision Gate: Agent or Skill?
 
@@ -137,7 +135,7 @@ A new agent ships **without** `## Project Context`. That section gets added when
 
 - Generic personality ("I am a helpful assistant...") — every agent must have a distinct perspective
 - Overlapping with existing agents — check the agent inventory first
-- Tools that don't match the role — review agents (code-reviewer, security-auditor) get `Write` for review artifacts only; do NOT include `Edit` (frontmatter is a whitelist — omitting a tool already disallows it); pure inspectors (e.g., `Explore`) get neither. Match tools to the agent's actual write surface, not its label.
+- Tools that don't match the role — review agents (code-reviewer, security-auditor) get `Write` for review artifacts only; do NOT include `Edit` (the Claude native tools list is a whitelist — omitting a tool already disallows it); pure inspectors (e.g., `Explore`) get neither. Match tools to the agent's actual write surface, not its label.
 - Missing anti-sycophancy rule in Quality Standards
 - Principles that fail the Obvious Test — cut anything that's just a job description
 - Including `## Project Context` — that's for `/specialize`, not creation
@@ -145,9 +143,9 @@ A new agent ships **without** `## Project Context`. That section gets added when
 ## Wiring Checklist (New Agent)
 
 After creating the agent, verify the wiring:
-- [ ] File at `.claude/agents/{name}.md`
+- [ ] Canonical file at `.agents/roles/{name}.md`, with rendered `.claude/agents/{name}.md` and `.codex/agents/{name}.toml`
 - [ ] Frontmatter has all required fields in correct order
-- [ ] Skills listed in frontmatter exist in `.claude/skills/`
+- [ ] Skills listed in frontmatter resolve in canonical `.agents/skills/` or legacy `.claude/skills/`
 - [ ] No tool/role overlap with existing agents
 - [ ] At least one command delegates to it, OR it's for direct invocation
 

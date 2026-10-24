@@ -9,6 +9,8 @@ user-invocable: false
 allowed-tools: Read Write Edit Grep Glob
 ---
 
+<!-- Generated from .agents/skills/architecture/SKILL.md; edit the canonical source, then run node .claude/core/render-shared-agents.js. -->
+
 # Software Architecture
 
 The discipline of making the **structural decisions that are expensive to reverse** — system shape, technology choices, data ownership, failure behavior, security boundaries — and recording them so they survive the people who made them. This skill is two things: the *judgment* to architect well, and the *production* of the architecture document that captures it.

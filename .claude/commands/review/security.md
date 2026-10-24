@@ -3,6 +3,8 @@ description: Audit code for OWASP compliance, vulnerabilities, secrets, and thre
 argument-hint: [file path, PR number, git diff range, or directory]
 ---
 
+<!-- Generated from .agents/skills/review-security/references/workflow.md; edit the canonical source, then run node .claude/core/render-shared-agents.js. -->
+
 # Security Review
 
 Security audit of code for vulnerabilities, OWASP compliance, secret exposure, and attack surface analysis. Uses the `security-auditor` agent. The auditor writes its findings to `docs/.output/findings/reviews/` and never modifies the system under audit.
@@ -58,6 +60,8 @@ INPUT: $ARGUMENTS
   node .claude/core/memory-manager.js list constraints
   ```
 
+**Runtime and verification.** This audit changes no application code and runs no build or test gate; any recommended remediation is verified by the application's own `gate.js` commands in an adopter, never the Domdhi.Agents toolkit suite (including after agent-file edits), and by the toolkit's Node build and Vitest suite only in Domdhi.Agents itself. In Codex, run each `.claude/core/` command in this workflow (telemetry, memory search, `commit.js`) as `.codex/core/` with the same arguments and dispatch the auditor as `.agents/adapters/codex/execution.md` describes. Note that discovery alone (an installed skill, a listed command or a loaded file) never proves this audit ran: claim completion only from the Step 4 audit written to `docs/.output/findings/reviews/` with redacted secrets and its Step 5 commit hash.
+
 ### 3. Delegate to Agent (main agent → security-auditor)
 
 Use the Task tool with `subagent_type: "security-auditor"` to perform the audit.
@@ -75,6 +79,7 @@ Use the Task tool with `subagent_type: "security-auditor"` to perform the audit.
 10. Instruction to think in attack chains — how LOW findings combine into higher-severity paths
 11. Instruction to classify findings by severity: CRITICAL > HIGH > MEDIUM > LOW
 12. Instruction to include for each finding: severity, OWASP category, proof conditions, attack scenario, remediation
+13. The verified project constraints and architecture conventions loaded in Step 2, with their source paths (or "none" when absent)
 
 > **MANDATORY — redact secrets in the report.** When a finding quotes a discovered credential, NEVER write the full value into the audit file. Redact to a non-recoverable, non-matching form: show at most a short identifying prefix then mask the rest, e.g. `CG-abc…[REDACTED]` or `sk-ant-…[REDACTED]`. Report the **location** (`file:line`) precisely so it can be found and rotated — the location, not the value, is what makes the finding actionable. This is both why the report stays safe to commit and why the commit-time secret scan won't block it. (A non-redacted full key written into `docs/.output/findings/reviews/` is exactly how a live key once leaked — the output dir is no longer a scanner blind spot.)
 

@@ -1,0 +1,15 @@
+{
+  "roles": {
+    "qa-engineer": {},
+    "architect": {},
+    "code-reviewer": {},
+    "doc-writer": {},
+    "general-purpose": {},
+    "playwright": {},
+    "product-strategist": {},
+    "project-planner": {},
+    "security-auditor": {},
+    "shadow": {},
+    "ux-designer": {}
+  }
+}

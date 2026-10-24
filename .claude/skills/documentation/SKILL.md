@@ -2,12 +2,14 @@
 name: documentation
 description: "Use WHEN producing or updating documentation — API docs, changelogs, READMEs, architecture docs, or inline comments; documentation is wayfinding not record-keeping."
 metadata:
-  version: 1.0.0
+  version: 1.1.0
   author: Domdhi.Agents
   tags: [documentation, writing, api-docs, changelogs]
 user-invocable: false
 allowed-tools: Read Write Edit Grep Glob
 ---
+
+<!-- Generated from .agents/skills/documentation/SKILL.md; edit the canonical source, then run node .claude/core/render-shared-agents.js. -->
 
 # Documentation Writing Skill
 
@@ -19,6 +21,7 @@ Technical documentation, API docs, changelogs, READMEs, and project documentatio
 Documentation is wayfinding, not record-keeping. A changelog isn't a list of what changed — it's a trail map showing how the terrain shifted. An API doc isn't a catalog of endpoints — it's a street guide. A README is the first thing a traveler sees when they arrive in unfamiliar territory, and it needs to orient them in thirty seconds or less.
 
 Write for the person who arrives next — developer, user, or architect. The audience determines the register. Never mix audiences in the same document.
+
 
 ## Rules
 
@@ -33,6 +36,14 @@ Write for the person who arrives next — developer, user, or architect. The aud
 5. **Write the shortest doc that's still complete.** Every sentence earns its place or gets cut. Structure for scanning first, reading second — clear headings, tables for reference data, prose for explanations.
 
 6. **Broken links are bugs.** Treat dead cross-references with the same urgency as failing tests.
+
+<!-- @@project-additions:start -->
+7. **Propagate architecture changes to current navigation.** Update the applicable architecture overview and module brief in the same change as a structural decision. An accurate ADR does not keep those entry points current. Preserve decision history in its existing home while making current guidance accurate.
+
+8. **Check numbered artifacts at write time.** List the actual destination immediately before assigning an ADR number; a number reserved in an earlier plan may now collide with another branch. Reconcile collisions against the integration branch before merging. Listing is a collision check, not an atomic reservation.
+
+For instruction-size or preservation work, run `node .claude/core/context-audit.js --root .` (Codex: `.codex/core/context-audit.js`). The read-only report inventories root/startup guidance, canonical roles and skill entry points without reading private user configuration. Use repeated `--file` paths to select a narrower inventory, `--max-chars` for an explicit per-file budget and `--baseline` with a saved report to check exact preservation. Baseline paths are checkout-relative; raw hash differences remain failures even when only line endings differ. Character-based token estimates are heuristics, not runtime measurements.
+<!-- @@project-additions:end -->
 
 ## Document Types and Conventions
 

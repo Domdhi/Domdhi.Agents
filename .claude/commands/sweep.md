@@ -3,6 +3,8 @@ description: Autonomous post-work maintenance sweep — code review → retro (+
 argument-hint: "[PR range / epic names — e.g. '109-128' or 'Auth,Billing,Search'] [--review-scope high-risk|systemic|all] [--gated] [--skip 1,4]"
 ---
 
+<!-- Generated from .agents/skills/sweep/references/workflow.md; edit the canonical source, then run node .claude/core/render-shared-agents.js. -->
+
 # Maintenance Sweep
 
 Run the **entire post-work maintenance lifecycle** as one autonomous, auto-approved pass. This is the orchestrator for what are otherwise ten separate interactive commands (`/review:code-review`, `/review:check-sync`, `/retro`, `/review:promote-memories`, `/review:optimize-agents`, `/review:evolve-skills`, `/review:memory-defrag`, `/review:memory-health`, `/review:check-templates`, `/review:timeline`).
@@ -30,7 +32,7 @@ node .claude/core/telemetry-log.js sweep
 7. Health & integrity → verify: memory lint/decay + check-templates (.claude/ wiring) + timeline refresh
 ```
 
-**Why these three fold in here.** `check-sync` (doc drift) runs *inside* the retro (Phase 2) because its findings are retro input and its fixes are Phase-3 work. `check-templates` (`.claude/` structural audit — orphaned agents, unused skills, broken wiring, skill-conformance) runs in Phase 7 *after* Phases 3 & 5 have edited agents/skills/commands, so it validates the sweep's own edits left nothing dangling. `timeline` regeneration is pure end-of-run housekeeping — it just reflects the commits the sweep itself made.
+**Why these three fold in here.** `check-sync` (doc drift) runs *inside* the retro (Phase 2) because its findings are retro input and its fixes are Phase-3 work. `check-templates` (canonical/native structural audit — orphaned agents, unused skills, broken wiring, skill-conformance) runs in Phase 7 *after* Phases 3 & 5 have edited agents/skills/commands, so it validates the sweep's own edits left nothing dangling. `timeline` regeneration is pure end-of-run housekeeping — it just reflects the commits the sweep itself made.
 
 **Defrag runs last on purpose.** Steps 2–5 spawn a pile of new memories. Defragging *before* that pile lands gets invalidated the moment the new memories are written — you'd have to defrag twice. Defrag is the *final cleanup pass* over the grown store, not the opener.
 
@@ -45,7 +47,7 @@ node .claude/core/telemetry-log.js sweep
 > - A build/test gate fails after an auto-applied code change in Step 3 → **stop, report, leave the rest unrun.**
 > - The user passed `--gated` (see Variables) → pause between phases.
 >
-> **The sweep's own damage is always resolved in-pass — the operating standard.** Any inconsistency this sweep introduces (a Phase-3/5 edit that breaks skill conformance, an orphaned skill, a broken wiring ref) is fixed and re-verified before the final report (Phase 7b) — never just logged. That is "resolve it or don't report it." Pre-existing issues *unrelated* to this sweep are the documented exception: surface them as residual follow-ups, don't churn already-merged code. Canonical statement: `.claude/skills/verification-before-completion/SKILL.md`.
+> **The sweep's own damage is always resolved in-pass — the operating standard.** Any inconsistency this sweep introduces (a Phase-3/5 edit that breaks skill conformance, an orphaned skill, a broken wiring ref) is fixed and re-verified before the final report (Phase 7b) — never just logged. That is "resolve it or don't report it." Pre-existing issues *unrelated* to this sweep are the documented exception: surface them as residual follow-ups, don't churn already-merged code. Canonical statement: `.agents/skills/verification-before-completion/SKILL.md`.
 
 ## Execution Notes (generic hardening — apply regardless of stack)
 
@@ -82,6 +84,8 @@ INPUT: $ARGUMENTS — optional scope hint. Two forms:
 3. **Resolve scope** from INPUT (PR range → themes + epics, or epic list → epics).
 4. **Compute the run stamp once** — `date +%y%m%d-%H%M` (e.g. `260606-1642`) — and reuse this SAME `{YYMMDD-HHMM}` for **every** artifact this sweep writes (the plan, each phase's report, the final report) so one run's files sort together and a same-day re-run never clobbers a prior run. **Resuming a dead sweep:** if a `*-sweep.md` from today already exists with an incomplete Phase Log, reuse ITS stamp (the most recent one) instead of minting a new one, so you append to the same plan. Then **write the sweep plan** to `docs/.output/findings/reviews/{YYMMDD-HHMM}-sweep.md` with a `## Phase Log` section. This is the durable artifact — if the session dies mid-sweep, the plan + completed-phase markers survive and the sweep is resumable (skip phases already marked `[x]` in the Phase Log).
 
+**Runtime and verification.** In an adopter, the Phase 3 gate (`gate.js`) runs the application's own build and test commands and never the Domdhi.Agents toolkit suite, including after the agent, skill and command edits this sweep makes; in Domdhi.Agents itself it runs the toolkit's Node build and Vitest suite. In Codex, run each `.claude/core/` command in this workflow as `.codex/core/` with the same arguments and dispatch roles as `.agents/adapters/codex/execution.md` describes. Note that discovery alone (an installed skill, a listed command or a loaded file) never proves a phase ran: mark a phase `[x]` and claim completion only from its written report, the gate output and the commit hash recorded in the Phase Log.
+
 ---
 
 ## Phase 1 — Code Review
@@ -90,7 +94,7 @@ Reuses the `/review:code-review` methodology, but **dispatches reviewers in para
 
 1. Classify the in-scope PRs/commits into themes (e.g. auth, data, API, UI, infra/CI). **Skip pure-infra/CI and doc-only changes** unless `--review-scope all`.
 2. **Tell every reviewer to ignore generated/vendored code** (lockfiles, `dist/`, minified bundles, migration scaffolding/snapshots) — sanity-check intent only.
-3. Dispatch one `code-reviewer` agent per theme, in parallel (background OK). Omit the `model:` param so each runs on the **Sonnet floor** (code-reviewer's default — sweep is broad maintenance, not a high-stakes gate). Escalate a specific theme to `model: opus` only if it touches a HIGH-risk-tier path (security, auth, data-integrity, migrations). Each gets the merge commits, diffs via `git diff <hash>^1 <hash>` (fallback `^2`), and returns a CRITICAL/MAJOR/MINOR/NIT findings table. They auto-load the `code-review` skill — do not paste the rubric.
+3. Dispatch one `code-reviewer` agent per theme, in parallel (background OK). Omit the `model:` param so each runs on the **`standard` default** (code-reviewer's default — sweep is broad maintenance, not a high-stakes gate). Escalate a specific theme to `model: "opus"` only if it touches a HIGH-risk-tier path (security, auth, data-integrity, migrations). Each gets the merge commits, diffs via `git diff <hash>^1 <hash>` (fallback `^2`), and returns a CRITICAL/MAJOR/MINOR/NIT findings table. They auto-load the `code-review` skill — do not paste the rubric. For a theme that concerns a specific application area, also pass the project reference paths and verified project constraints that apply to it.
 4. Consolidate all findings into `docs/.output/findings/reviews/{YYMMDD-HHMM}-code-review.md`.
 5. Commit (unless `--single-commit`) per the convention below: `docs: /sweep p1 — code review, {N} findings ({C}C/{M}M/{m}m)`.
 6. Append the findings summary to the sweep plan's Phase Log — **the retro consumes this.**
@@ -113,9 +117,9 @@ Auto-apply the retro's concrete outputs. This is the step that turns a retro fro
    - If the target category is **below ~80% of cap**: `node .claude/core/memory-manager.js create <category> <id> '<content-json>'`. Assign an `importance` (1–5) in the content per the `session-handoff` skill.
    - If the target category is **at/near cap (≥ `MEMORY_NEAR_LIMIT_PCT` of `MEMORY_MAX_PER_CATEGORY` — read `constants.js`)**: **stage a draft to the inbox** (`docs/.output/.state/memory-inbox/`) instead — do NOT force the write. The Phase 6 defrag frees room and promotes from the inbox. Record the staged item in the Phase Log.
 2. **System Improvements** — for each row in the retro's `## System Improvements` table:
-   - `Agent: …` → edit the named `.claude/agents/*.md` (surgical fix from the retro; broad re-alignment is Phase 5's job — don't duplicate).
-   - `Skill: …` → edit the named `.claude/skills/*/SKILL.md`. **In an adopter** (not the workshop), project-specific additions to a *template* skill MUST use a project-additions sentinel (create if absent) — a new section at the end → `<!-- @@project-additions -->`; a bullet inserted into an existing section → an anchored `<!-- @@project-additions:start -->`/`:end` fence. A plain edit to template prose is clobbered on the next sync. See `skill-authoring`.
-   - `Command: …` → edit the named `.claude/commands/**/*.md`.
+   - `Agent: …` → edit the named canonical `.agents/roles/*.md` (legacy native source only when no canonical counterpart exists) (surgical fix from the retro; broad re-alignment is Phase 5's job — don't duplicate).
+   - `Skill: …` → edit the named canonical `.agents/skills/*/SKILL.md`. **In an adopter** (not the workshop), project-specific additions to a *template* skill MUST use a project-additions sentinel (create if absent) — a new section at the end → `<!-- @@project-additions -->`; a bullet inserted into an existing section → an anchored `<!-- @@project-additions:start -->`/`:end` fence. A plain edit to template prose is clobbered on the next sync. See `skill-authoring`.
+   - `Command: …` → edit the named `.agents/skills/*/references/workflow.md` and its existing registry metadata; render the generated command.
    - `Memory: …` → create/boost the memory (cap rule above).
 3. **Code-review fixes — every finding, nits-and-up.** Fix each finding CRITICAL down to NIT in-pass (the operating standard: `verification-before-completion` → "Autonomous & batch commands"; no "MINOR/NIT logged not fixed" tier). Dispatch a `general-purpose` agent for anything beyond a trivial edit (batch related small fixes to keep dispatches efficient), then **the orchestrator runs the gate** (`node .claude/core/gate.js test` — auto-detects the stack). Agents never build/test. If the gate fails → **stop the sweep, report.** The only carve-out is SCOPE, not severity: don't expand scope to churn unrelated code the sweep isn't examining, and skip generated/vendored artifacts.
 4. Commit: `feat: /sweep p3 — applied {N} retro recs, {M} memories staged, {K} fixes`.
@@ -127,7 +131,7 @@ Auto-apply the retro's concrete outputs. This is the step that turns a retro fro
 Reuses `/review:promote-memories` in **auto-approve** mode.
 
 1. `node .claude/core/memory-promoter.js scan --top 15`.
-2. For each candidate with **promotion score ≥ 0.9 AND decayed confidence ≥ 0.7** (the auto-promote threshold — high bar, since this writes into skills/CLAUDE.md unattended): apply the promotion to its suggested target (decisions→CLAUDE.md, patterns→relevant SKILL.md, constraints→`architecture/overview.md`/template, workflows→agent frontmatter), then `node .claude/core/memory-promoter.js mark <slug> <target>`.
+2. For each candidate with **promotion score ≥ 0.9 AND decayed confidence ≥ 0.7** (the auto-promote threshold — high bar, since this writes into skills/CLAUDE.md unattended): resolve the promotion to an existing canonical shared target (decisions→existing architecture/skill guidance, patterns→relevant knowledge source, constraints→existing template/reference, workflows→canonical role body); project decisions stay project-owned, and generated projections/root runtime instructions are not shared-behavior targets, then `node .claude/core/memory-promoter.js mark <slug> <target>`.
 3. Candidates **below** the auto-threshold are listed in the report as "manual-review promotion candidates" — surfaced, not applied.
 4. Commit: `docs: /sweep p4 — promoted {N} concepts`.
 
@@ -136,8 +140,8 @@ Reuses `/review:promote-memories` in **auto-approve** mode.
 Reuses `/review:optimize-agents --fix`.
 
 1. Dispatch `architect` to scan the actual codebase → detected stack + structure map.
-2. Compare against each `.claude/agents/*.md` `## Project Context`; classify CURRENT / DRIFTED / MISSING.
-3. Inject proven patterns (confidence ≥ 0.7) + this sweep's retro findings + the day-scoped `docs/.output/evolution/agents/{date}.md` issues into DRIFTED/MISSING agents (idempotent replace).
+2. Compare each canonical `.agents/roles/*.md` `## Project Context` (legacy native only without a canonical equivalent); classify CURRENT / DRIFTED / MISSING.
+3. Retain intentionally portable template roles without project specialization. Inject proven patterns (confidence ≥ 0.7) + this sweep's retro findings + the day-scoped `docs/.output/evolution/agents/{date}.md` issues into DRIFTED/MISSING agents (idempotent replace).
 4. Dispatch `code-reviewer` for the skill-effectiveness audit (ACTIVE / NOT_USED / gaps).
 5. Write `docs/.output/findings/reviews/{YYMMDD-HHMM}-agent-optimization.md`.
 6. Commit: `docs: /sweep p5 — agent re-alignment ({N} agents updated)`.
@@ -148,8 +152,8 @@ Reuses `/review:evolve-skills --auto`. Runs *after* Phase 5 (so it sees freshly-
 
 **Why propose-only inside the sweep.** Skill *bodies* are the system's own brain. Unlike memory promotion (Phase 4, which has a clean ≥0.9 auto-threshold), a skill rewrite or a brand-new skill has no safe unattended threshold — and the `skill-authoring` doctrine requires a positive **differential eval** to justify any change, which is an expensive multi-subagent run that shouldn't fire blind in a maintenance pass. So Phase 5b **stages proposals; it never applies them.**
 
-1. `node .claude/core/skill-evolution.js intake --date {YYYY-MM-DD} --since {last-sweep date}` → reads `intake.json`: IMPROVE candidates (agent-update misalignments attributed to a skill) + CREATE candidates (uncovered recurring memory clusters). **Pass `--since`** (the previous sweep's date, from the newest prior `*-sweep.md`) — without it the intake re-surfaces signals an earlier sweep already adjudicated, and you re-litigate stale evidence every run.
-2. For each candidate clearing the bar (IMPROVE: ≥1 attributed misalignment; CREATE: cluster size ≥3 OR avg confidence ≥0.8), the orchestrator (Opus) does the **reflective diagnosis** (what gap, what the skill should say) and drafts a candidate edit/new SKILL.md into the workspace under `docs/.output/evolution/skills/{date}/`, then conformance-gates it:
+1. `node .claude/core/skill-evolution.js intake --date {YYYY-MM-DD} --since {last-sweep date}` → reads `intake.json`: IMPROVE candidates (agent-update misalignments attributed to a skill) + CREATE candidates (uncovered recurring memory clusters). A near-tie signal lands in `ambiguous`, not IMPROVE: list it in the report for a human call, never propose an edit for it. **Pass `--since`** (the previous sweep's date, from the newest prior `*-sweep.md`) — without it the intake re-surfaces signals an earlier sweep already adjudicated, and you re-litigate stale evidence every run.
+2. For each candidate clearing the bar (IMPROVE: ≥1 attributed misalignment; CREATE: cluster size ≥3 OR avg confidence ≥0.8), the orchestrator (Main Agent) does the **reflective diagnosis** (what gap, what the skill should say) and drafts a candidate edit/new SKILL.md into the workspace under `docs/.output/evolution/skills/{date}/`, then conformance-gates it:
    `node .claude/core/skill-evolution.js check <skill> <candidate>`.
 3. **Do NOT apply, do NOT run the full differential benchmark here** (that's the human-confirmed `/review:evolve-skills` standalone run). Record each staged proposal — skill, evidence, the candidate diff, conformance result — in `docs/.output/evolution/skills/{date}/proposals.md`.
 4. Commit the staging artifacts only: `docs: /sweep p5b — {N} skill-evolution proposals staged`.
@@ -177,10 +181,10 @@ Reuses `/review:memory-health`, `/review:check-templates`, and `/review:timeline
 2. `node .claude/core/memory-manager.js decay-report` → confirm no `decayed_confidence < 0.3` left unaddressed.
 3. If lint is below target or stale entries exist, note them in the report as residual follow-ups.
 
-### 7b — `.claude/` integrity (read-only — validates THIS sweep's edits)
+### 7b — Canonical/native integrity (read-only — validates THIS sweep's edits)
 Phases 3 and 5 edited agents/skills/commands. Run the `check-templates` audit to confirm none of it left the system inconsistent:
 1. `node .claude/core/skill-conformance.js` → every skill conforms (body ≤500 lines, name==dir, description ≤1024). A FAIL here is almost always a Phase-3/5 edit — flag it.
-2. Audit wiring (the `check-templates` methodology): orphaned agents (defined, never dispatched), unused skills (no agent/command references them), broken skill references in agent frontmatter (a `skills:` entry with no matching dir — the exact failure class the Phase-5/optimize and template-merge work touches), missing hooks.
+2. Audit canonical sources and both native adapters/projections using `check-templates`: orphaned agents (no actual dispatch or intentional direct-role use), unused knowledge skills (no frontmatter/workflow/role-body reference; registered workflow selectors are explicit entry points), broken skill references in agent frontmatter (a `skills:` entry with no matching dir — the exact failure class the Phase-5/optimize and template-merge work touches), missing hooks.
 3. **Anything CRITICAL that this sweep introduced** (a skill edit that broke conformance, an agent edit that orphaned a skill) → fix it in place and re-verify, since it's the sweep's own damage. Pre-existing issues unrelated to this sweep → log as residual follow-ups, don't auto-fix.
 
 ### 7c — Timeline refresh (housekeeping, committed)
@@ -193,7 +197,7 @@ Phases 3 and 5 edited agents/skills/commands. Run the `check-templates` audit to
 
 Inline `git commit -m` is blocked by the commit-guard hook. For each phase commit:
 1. `git add` the specific files that phase changed (not `git add .`).
-2. Write the message to `docs/.output/.state/.commit-msg` with the Write tool (no `Co-Authored-By` line — `commit.js` appends the trailer).
+2. Write the message to `docs/.output/.state/.commit-msg` with the Write tool, without automatic attribution.
 3. Run `node .claude/core/commit.js`.
 4. Record the hash in the Phase Log.
 
@@ -237,7 +241,7 @@ Everything this sweep could resolve, it resolved in-pass (the Autonomy Contract 
 - {any phase that halted + why}
 ```
 
-> Security findings need no separate line: Phase 1 already routes security/auth/data-integrity themes to Opus reviewers and Phase 3 resolves their CRITICAL/MAJOR findings in-pass. Agent-drift needs no separate line either: Phase 2 (retro System Improvements) + Phase 5 (optimize-agents) already act on it. The sweep *does* the work those standalone reviews would have surfaced — it does not tell you to go run them.
+> Security findings need no separate line: Phase 1 already routes security/auth/data-integrity themes to `deep` tier reviewers and Phase 3 resolves their CRITICAL/MAJOR findings in-pass. Agent-drift needs no separate line either: Phase 2 (retro System Improvements) + Phase 5 (optimize-agents) already act on it. The sweep *does* the work those standalone reviews would have surfaced — it does not tell you to go run them.
 
 ## What NOT to Do
 

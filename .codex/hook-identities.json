@@ -1,0 +1,155 @@
+{
+  "schemaVersion": 1,
+  "handlers": [
+    {
+      "id": "codex-hook:05ba154eb07c43be8331147871c8d2e3a112ede680c026aab625cf005d0e68fa",
+      "fingerprint": "sha256:ae1e1cf14183f36973dace72acab8d90ada06eae64686b27f6cdaee3a4fa76c5",
+      "event": "PreToolUse",
+      "matcher": "^apply_patch$",
+      "position": {
+        "group": 0,
+        "handler": 0
+      }
+    },
+    {
+      "id": "codex-hook:95b3d47dbd24b79cfe2741f28cbc1cc3e535a4f20d82bc997300d445ebae49c1",
+      "fingerprint": "sha256:12ebd3968ee14cffdd9b16339d24ed05a42495ae15c7b1ea7998d532ac8568d4",
+      "event": "PreToolUse",
+      "matcher": "^apply_patch$",
+      "position": {
+        "group": 0,
+        "handler": 1
+      }
+    },
+    {
+      "id": "codex-hook:1281695c1cdae2a9bc2d4295119c11c4b9ace70949723fcf64d59589f8a9719b",
+      "fingerprint": "sha256:94f62ad540b3bebf12b609a16d17c1f549ffb62f01200ce67e5ade5eae3c04e7",
+      "event": "PreToolUse",
+      "matcher": "^Bash$",
+      "position": {
+        "group": 1,
+        "handler": 0
+      }
+    },
+    {
+      "id": "codex-hook:d28e444ea11857ab93f10a45c57ce076a1bbb0768d72a1643900a2c774930ee4",
+      "fingerprint": "sha256:8c19da50e92c7da64741a6fbadabb77d6a9e3a1242f92157f0ffbe09b154a422",
+      "event": "PreToolUse",
+      "matcher": "^Bash$",
+      "position": {
+        "group": 1,
+        "handler": 1
+      }
+    },
+    {
+      "id": "codex-hook:f453edaef7dbabe493b75035c13435cfc8ade81a39f18c5086b3d111639a48d2",
+      "fingerprint": "sha256:d11521f55216196a8043b302e14c312f35153439f72b4eebf537fc478ac2cd29",
+      "event": "PostToolUse",
+      "matcher": "^Bash$",
+      "position": {
+        "group": 0,
+        "handler": 0
+      }
+    },
+    {
+      "id": "codex-hook:456f3cfca1199da3d22d47ec921cfcd01e01c5525d2df3b441cc7c0caa17cbfa",
+      "fingerprint": "sha256:84cdd6b37f212ec6821edbad4c63001019160a6f6aaabf295be85b126428b8b6",
+      "event": "PostToolUse",
+      "matcher": "^Bash$",
+      "position": {
+        "group": 0,
+        "handler": 1
+      }
+    },
+    {
+      "id": "codex-hook:76b3da738ede314d527a5d5ec73e978690df182c87736f98039903c9492a4c3b",
+      "fingerprint": "sha256:87b656c49f523bc6f2e0a308eb00865be12cba69894c8d2261e6c0bf4f834326",
+      "event": "PostToolUse",
+      "matcher": "^Bash$",
+      "position": {
+        "group": 0,
+        "handler": 2
+      }
+    },
+    {
+      "id": "codex-hook:cc330371857171d4fdc684af7bd69109d4f018d8f82539653bf83e8959c595f4",
+      "fingerprint": "sha256:071e91d46ede003c5e1632ab8947e4aa1149fe7f369a55df66268ac2c0ea9d8d",
+      "event": "PostToolUse",
+      "matcher": "^Bash$",
+      "position": {
+        "group": 0,
+        "handler": 3
+      }
+    },
+    {
+      "id": "codex-hook:aab098d431b2bedd37693d1942b18a391016ec3cbba38c94b6898e7e7899c294",
+      "fingerprint": "sha256:9e0de92794be0e5249726ce7a62ca47fbfea4cd7db36e24977317ad21e54043c",
+      "event": "PostToolUse",
+      "matcher": "^apply_patch$",
+      "position": {
+        "group": 1,
+        "handler": 0
+      }
+    },
+    {
+      "id": "codex-hook:76a1558d2097a75e9e22d11f7658da51e800488981c11ed90c906c9e9344e6b9",
+      "fingerprint": "sha256:2775413082779f901c5c01bc922bae1c9cda5677aa7de36504ed7a62277a93ad",
+      "event": "PostToolUse",
+      "matcher": "^apply_patch$",
+      "position": {
+        "group": 1,
+        "handler": 1
+      }
+    },
+    {
+      "id": "codex-hook:d1dca65cd4087b7ae105f29edc287a721ea3b3458628766a1831aabc3c7665f9",
+      "fingerprint": "sha256:0aa220c723f7790783204ffac66758e37648ef7708a5f2a2f22bf2e86dd8c267",
+      "event": "PostToolUse",
+      "matcher": "^mcp__.*$",
+      "position": {
+        "group": 2,
+        "handler": 0
+      }
+    },
+    {
+      "id": "codex-hook:7cda8d3020878e4b61fc490d79d62f494ff5993a0ae25198761771a84d670d1f",
+      "fingerprint": "sha256:6759047f2f2e81a4f70aa180b7aa7b7824d5af81ba3456ec908626ca8c30baa6",
+      "event": "SubagentStop",
+      "matcher": "",
+      "position": {
+        "group": 0,
+        "handler": 0
+      }
+    },
+    {
+      "id": "codex-hook:c8deff4111c2bc99edc3a19adad1d648b13ee68be0a4529b00d6610b3b251483",
+      "fingerprint": "sha256:7fd598cfc8f775e2b0e0ca2394707f3f74adf0d855fb91e43006aa8800b3cc8d",
+      "event": "PreCompact",
+      "matcher": "",
+      "position": {
+        "group": 0,
+        "handler": 0
+      }
+    },
+    {
+      "id": "codex-hook:41aba5187a289041b974b019b4879fa9135aa9ab3a1b6f3280783acf1706a834",
+      "fingerprint": "sha256:e7d1c86bc062d7e456f7ea910815d2cb8495e9f4d9ce7733edfccd36c65f6b8d",
+      "event": "SessionStart",
+      "matcher": "",
+      "position": {
+        "group": 0,
+        "handler": 0
+      }
+    },
+    {
+      "id": "codex-hook:534b616f20ec29fb3f73b38cae1bbcf5c8b197025c60504cf5b4a75874bc4c24",
+      "fingerprint": "sha256:6abd60a570688c4b30d864a76ac8655c7ca751bf9de52dd9aaab1a9cc183d438",
+      "event": "SessionEnd",
+      "matcher": "",
+      "position": {
+        "group": 0,
+        "handler": 0
+      }
+    }
+  ]
+}

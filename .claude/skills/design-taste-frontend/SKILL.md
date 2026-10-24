@@ -9,6 +9,8 @@ user-invocable: false
 allowed-tools: Read Write Edit Grep Glob
 ---
 
+<!-- Generated from .agents/skills/design-taste-frontend/SKILL.md; edit the canonical source, then run node .claude/core/render-shared-agents.js. -->
+
 # High-Agency Frontend Skill
 
 ## 1. ACTIVE BASELINE CONFIGURATION
@@ -19,14 +21,16 @@ allowed-tools: Read Write Edit Grep Glob
 **AI Instruction:** The standard baseline for all generations is strictly set to these values (8, 6, 4). Do not ask the user to edit this file. Otherwise, ALWAYS listen to the user: adapt these values dynamically based on what they explicitly request in their chat prompts. Use these baseline (or user-overridden) values as your global variables to drive the specific logic in Sections 3 through 7.
 
 ## 2. DEFAULT ARCHITECTURE & CONVENTIONS
-Unless the user explicitly specifies a different stack, adhere to these structural constraints to maintain consistency:
+**Stack precedence:** The stack defaults in this skill (React/Next.js, Framer Motion, Tailwind CSS styling, the Phosphor/Radix icon packages and the `Geist`/`Outfit`/`Cabinet Grotesk`/`Satoshi` font picks) apply only when the project already uses that stack or the user explicitly asks for it. Otherwise, keep the project's existing stack (framework, component library, styling system and fonts) and apply this skill's dials, design directives and AI-tells blocklist within it; never introduce Tailwind, React or a new font family into a project that does not already use them. Tailwind class names elsewhere in this skill state measurements and intent; translate them into the project's own styling system.
+
+When the project's stack matches, adhere to these structural constraints to maintain consistency:
 
 * **DEPENDENCY VERIFICATION [MANDATORY]:** Before importing ANY 3rd party library (e.g. `framer-motion`, `lucide-react`, `zustand`), you MUST check `package.json`. If the package is missing, you MUST output the installation command (e.g. `npm install package-name`) before providing the code. **Never** assume a library exists.
-* **Framework & Interactivity:** React or Next.js. Default to Server Components (`RSC`). 
+* **Framework & Interactivity (React/Next.js projects):** Default to Server Components (`RSC`).
     * **RSC SAFETY:** Global state works ONLY in Client Components. In Next.js, wrap providers in a `"use client"` component.
     * **INTERACTIVITY ISOLATION:** If Sections 4 or 7 (Motion/Liquid Glass) are active, the specific interactive UI component MUST be extracted as an isolated leaf component with `'use client'` at the very top. Server Components must exclusively render static layouts.
 * **State Management:** Use local `useState`/`useReducer` for isolated UI. Use global state strictly for deep prop-drilling avoidance.
-* **Styling Policy:** Use Tailwind CSS (v3/v4) for 90% of styling. 
+* **Styling Policy (Tailwind projects):** Use Tailwind CSS (v3/v4) for 90% of styling.
     * **TAILWIND VERSION LOCK:** Check `package.json` first. Do not use v4 syntax in v3 projects. 
     * **T4 CONFIG GUARD:** For v4, do NOT use `tailwindcss` plugin in `postcss.config.js`. Use `@tailwindcss/postcss` or the Vite plugin.
 * **ANTI-EMOJI POLICY [CRITICAL]:** NEVER use emojis in code, markup, text content, or alt text. Replace symbols with high-quality icons (Radix, Phosphor) or clean SVG primitives. Emojis are BANNED.
@@ -35,7 +39,7 @@ Unless the user explicitly specifies a different stack, adhere to these structur
   * Contain page layouts using `max-w-[1400px] mx-auto` or `max-w-7xl`.
   * **Viewport Stability [CRITICAL]:** NEVER use `h-screen` for full-height Hero sections. ALWAYS use `min-h-[100dvh]` to prevent catastrophic layout jumping on mobile browsers (iOS Safari).
   * **Grid over Flex-Math:** NEVER use complex flexbox percentage math (`w-[calc(33%-1rem)]`). ALWAYS use CSS Grid (`grid grid-cols-1 md:grid-cols-3 gap-6`) for reliable structures.
-* **Icons:** You MUST use exactly `@phosphor-icons/react` or `@radix-ui/react-icons` as the import paths (check installed version). Standardize `strokeWidth` globally (e.g., exclusively use `1.5` or `2.0`).
+* **Icons:** Use the project's installed icon set. In React projects without one, use exactly `@phosphor-icons/react` or `@radix-ui/react-icons` as the import paths (check installed version). Standardize `strokeWidth` globally (e.g., exclusively use `1.5` or `2.0`).
 
 
 ## 3. DESIGN ENGINEERING DIRECTIVES (Bias Correction)
@@ -43,8 +47,8 @@ LLMs have statistical biases toward specific UI cliché patterns. Proactively co
 
 **Rule 1: Deterministic Typography**
 * **Display/Headlines:** Default to `text-4xl md:text-6xl tracking-tighter leading-none`.
-    * **ANTI-SLOP:** Discourage `Inter` for "Premium" or "Creative" vibes. Force unique character using `Geist`, `Outfit`, `Cabinet Grotesk`, or `Satoshi`.
-    * **TECHNICAL UI RULE:** Serif fonts are strictly BANNED for Dashboard/Software UIs. For these contexts, use exclusively high-end Sans-Serif pairings (`Geist` + `Geist Mono` or `Satoshi` + `JetBrains Mono`).
+    * **ANTI-SLOP:** Discourage `Inter` for "Premium" or "Creative" vibes. Keep the brand's or project's established typeface; only when neither sets one, force unique character using `Geist`, `Outfit`, `Cabinet Grotesk`, or `Satoshi`.
+    * **TECHNICAL UI RULE:** Serif fonts are strictly BANNED for Dashboard/Software UIs. For these contexts, use the brand's or project's sans-serif and monospace pairing; only when neither sets one, use a high-end Sans-Serif pairing (`Geist` + `Geist Mono` or `Satoshi` + `JetBrains Mono`).
 * **Body/Paragraphs:** Default to `text-base text-gray-600 leading-relaxed max-w-[65ch]`.
 
 **Rule 2: Color Calibration**
@@ -111,7 +115,7 @@ To guarantee a premium, non-generic output, you MUST strictly avoid these common
 * **NO Custom Mouse Cursors:** They are outdated and ruin performance/accessibility.
 
 ### Typography
-* **NO Inter Font:** Banned. Use `Geist`, `Outfit`, `Cabinet Grotesk`, or `Satoshi`.
+* **NO Inter Font by default:** Do not reach for Inter. Keep the brand's or project's established typeface; only when neither sets one, use `Geist`, `Outfit`, `Cabinet Grotesk`, or `Satoshi`.
 * **NO Oversized H1s:** The first heading should not scream. Control hierarchy with weight and color, not just massive scale.
 * **Serif Constraints:** Use Serif fonts ONLY for creative/editorial designs. **NEVER** use Serif on clean Dashboards.
 
@@ -202,7 +206,7 @@ When generating modern SaaS dashboards or feature sections, you MUST utilize the
 * **Aesthetic:** High-end, minimal, and functional.
 * **Palette:** Background in `#f9fafb`. Cards are pure white (`#ffffff`) with a 1px border of `border-slate-200/50`.
 * **Surfaces:** Use `rounded-[2.5rem]` for all major containers. Apply a "diffusion shadow" (a very light, wide-spreading shadow, e.g., `shadow-[0_20px_40px_-15px_rgba(0,0,0,0.05)]`) to create depth without clutter.
-* **Typography:** Strict `Geist`, `Satoshi`, or `Cabinet Grotesk` font stack. Use subtle tracking (`tracking-tight`) for headers.
+* **Typography:** The brand's or project's established font stack; only when neither sets one, a strict `Geist`, `Satoshi`, or `Cabinet Grotesk` stack. Use subtle tracking (`tracking-tight`) for headers.
 * **Labels:** Titles and descriptions must be placed **outside and below** the cards to maintain a clean, gallery-style presentation.
 * **Pixel-Perfection:** Use generous `p-8` or `p-10` padding inside cards.
 

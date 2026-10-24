@@ -1,0 +1,152 @@
+{
+  "description": "Portable shared hooks for the Codex adapter. Review and trust in /hooks; coverage and limitations: .agents/adapters/codex/README.md.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "^apply_patch$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node -e \"try{const fs=require('fs'),p=require('path');let d=process.cwd();for(;;){const f=p.join(d,'.agents','adapters','codex','hooks.js');if(fs.existsSync(f)){process.argv[2]='secret-scanner.cjs';process.exitCode=require(f).main();break;}const n=p.dirname(d);if(n===d)throw new Error('Toolkit hook adapter not found');d=n;}}catch(e){const reason='Codex hook launcher failed: '+e.message;let event='PreToolUse';try{event=JSON.parse(require('fs').readFileSync(0,'utf8')).hook_event_name||event;}catch{}process.stderr.write(reason);process.stdout.write(JSON.stringify(!['SessionStart','PostToolUse','Stop','SessionEnd','PreCompact'].includes(event)?{hookSpecificOutput:{hookEventName:'PreToolUse',permissionDecision:'deny',permissionDecisionReason:reason}}:{continue:false,stopReason:reason}));process.exitCode=0;}\"",
+            "commandWindows": "node -e \"try{const fs=require('fs'),p=require('path');let d=process.cwd();for(;;){const f=p.join(d,'.agents','adapters','codex','hooks.js');if(fs.existsSync(f)){process.argv[2]='secret-scanner.cjs';process.exitCode=require(f).main();break;}const n=p.dirname(d);if(n===d)throw new Error('Toolkit hook adapter not found');d=n;}}catch(e){const reason='Codex hook launcher failed: '+e.message;let event='PreToolUse';try{event=JSON.parse(require('fs').readFileSync(0,'utf8')).hook_event_name||event;}catch{}process.stderr.write(reason);process.stdout.write(JSON.stringify(!['SessionStart','PostToolUse','Stop','SessionEnd','PreCompact'].includes(event)?{hookSpecificOutput:{hookEventName:'PreToolUse',permissionDecision:'deny',permissionDecisionReason:reason}}:{continue:false,stopReason:reason}));process.exitCode=0;}\"",
+            "timeout": 15
+          },
+          {
+            "type": "command",
+            "command": "node -e \"try{const fs=require('fs'),p=require('path');let d=process.cwd();for(;;){const f=p.join(d,'.agents','adapters','codex','hooks.js');if(fs.existsSync(f)){process.argv[2]='path-guardrail.cjs';process.exitCode=require(f).main();break;}const n=p.dirname(d);if(n===d)throw new Error('Toolkit hook adapter not found');d=n;}}catch(e){const reason='Codex hook launcher failed: '+e.message;let event='PreToolUse';try{event=JSON.parse(require('fs').readFileSync(0,'utf8')).hook_event_name||event;}catch{}process.stderr.write(reason);process.stdout.write(JSON.stringify(!['SessionStart','PostToolUse','Stop','SessionEnd','PreCompact'].includes(event)?{hookSpecificOutput:{hookEventName:'PreToolUse',permissionDecision:'deny',permissionDecisionReason:reason}}:{continue:false,stopReason:reason}));process.exitCode=0;}\"",
+            "commandWindows": "node -e \"try{const fs=require('fs'),p=require('path');let d=process.cwd();for(;;){const f=p.join(d,'.agents','adapters','codex','hooks.js');if(fs.existsSync(f)){process.argv[2]='path-guardrail.cjs';process.exitCode=require(f).main();break;}const n=p.dirname(d);if(n===d)throw new Error('Toolkit hook adapter not found');d=n;}}catch(e){const reason='Codex hook launcher failed: '+e.message;let event='PreToolUse';try{event=JSON.parse(require('fs').readFileSync(0,'utf8')).hook_event_name||event;}catch{}process.stderr.write(reason);process.stdout.write(JSON.stringify(!['SessionStart','PostToolUse','Stop','SessionEnd','PreCompact'].includes(event)?{hookSpecificOutput:{hookEventName:'PreToolUse',permissionDecision:'deny',permissionDecisionReason:reason}}:{continue:false,stopReason:reason}));process.exitCode=0;}\"",
+            "timeout": 15
+          }
+        ]
+      },
+      {
+        "matcher": "^Bash$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node -e \"try{const fs=require('fs'),p=require('path');let d=process.cwd();for(;;){const f=p.join(d,'.agents','adapters','codex','hooks.js');if(fs.existsSync(f)){process.argv[2]='guardrail.cjs';process.exitCode=require(f).main();break;}const n=p.dirname(d);if(n===d)throw new Error('Toolkit hook adapter not found');d=n;}}catch(e){const reason='Codex hook launcher failed: '+e.message;let event='PreToolUse';try{event=JSON.parse(require('fs').readFileSync(0,'utf8')).hook_event_name||event;}catch{}process.stderr.write(reason);process.stdout.write(JSON.stringify(!['SessionStart','PostToolUse','Stop','SessionEnd','PreCompact'].includes(event)?{hookSpecificOutput:{hookEventName:'PreToolUse',permissionDecision:'deny',permissionDecisionReason:reason}}:{continue:false,stopReason:reason}));process.exitCode=0;}\"",
+            "commandWindows": "node -e \"try{const fs=require('fs'),p=require('path');let d=process.cwd();for(;;){const f=p.join(d,'.agents','adapters','codex','hooks.js');if(fs.existsSync(f)){process.argv[2]='guardrail.cjs';process.exitCode=require(f).main();break;}const n=p.dirname(d);if(n===d)throw new Error('Toolkit hook adapter not found');d=n;}}catch(e){const reason='Codex hook launcher failed: '+e.message;let event='PreToolUse';try{event=JSON.parse(require('fs').readFileSync(0,'utf8')).hook_event_name||event;}catch{}process.stderr.write(reason);process.stdout.write(JSON.stringify(!['SessionStart','PostToolUse','Stop','SessionEnd','PreCompact'].includes(event)?{hookSpecificOutput:{hookEventName:'PreToolUse',permissionDecision:'deny',permissionDecisionReason:reason}}:{continue:false,stopReason:reason}));process.exitCode=0;}\"",
+            "timeout": 15
+          },
+          {
+            "type": "command",
+            "command": "node -e \"try{const fs=require('fs'),p=require('path');let d=process.cwd();for(;;){const f=p.join(d,'.agents','adapters','codex','hooks.js');if(fs.existsSync(f)){process.argv[2]='commit-guard.cjs';process.exitCode=require(f).main();break;}const n=p.dirname(d);if(n===d)throw new Error('Toolkit hook adapter not found');d=n;}}catch(e){const reason='Codex hook launcher failed: '+e.message;let event='PreToolUse';try{event=JSON.parse(require('fs').readFileSync(0,'utf8')).hook_event_name||event;}catch{}process.stderr.write(reason);process.stdout.write(JSON.stringify(!['SessionStart','PostToolUse','Stop','SessionEnd','PreCompact'].includes(event)?{hookSpecificOutput:{hookEventName:'PreToolUse',permissionDecision:'deny',permissionDecisionReason:reason}}:{continue:false,stopReason:reason}));process.exitCode=0;}\"",
+            "commandWindows": "node -e \"try{const fs=require('fs'),p=require('path');let d=process.cwd();for(;;){const f=p.join(d,'.agents','adapters','codex','hooks.js');if(fs.existsSync(f)){process.argv[2]='commit-guard.cjs';process.exitCode=require(f).main();break;}const n=p.dirname(d);if(n===d)throw new Error('Toolkit hook adapter not found');d=n;}}catch(e){const reason='Codex hook launcher failed: '+e.message;let event='PreToolUse';try{event=JSON.parse(require('fs').readFileSync(0,'utf8')).hook_event_name||event;}catch{}process.stderr.write(reason);process.stdout.write(JSON.stringify(!['SessionStart','PostToolUse','Stop','SessionEnd','PreCompact'].includes(event)?{hookSpecificOutput:{hookEventName:'PreToolUse',permissionDecision:'deny',permissionDecisionReason:reason}}:{continue:false,stopReason:reason}));process.exitCode=0;}\"",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "^Bash$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node -e \"try{const fs=require('fs'),p=require('path');let d=process.cwd();for(;;){const f=p.join(d,'.agents','adapters','codex','hooks.js');if(fs.existsSync(f)){process.argv[2]='post-read-scrubber.cjs';process.exitCode=require(f).main();break;}const n=p.dirname(d);if(n===d)throw new Error('Toolkit hook adapter not found');d=n;}}catch(e){const reason='Codex hook launcher failed: '+e.message;let event='PreToolUse';try{event=JSON.parse(require('fs').readFileSync(0,'utf8')).hook_event_name||event;}catch{}process.stderr.write(reason);process.stdout.write(JSON.stringify(!['SessionStart','PostToolUse','Stop','SessionEnd','PreCompact'].includes(event)?{hookSpecificOutput:{hookEventName:'PreToolUse',permissionDecision:'deny',permissionDecisionReason:reason}}:{continue:false,stopReason:reason}));process.exitCode=0;}\"",
+            "commandWindows": "node -e \"try{const fs=require('fs'),p=require('path');let d=process.cwd();for(;;){const f=p.join(d,'.agents','adapters','codex','hooks.js');if(fs.existsSync(f)){process.argv[2]='post-read-scrubber.cjs';process.exitCode=require(f).main();break;}const n=p.dirname(d);if(n===d)throw new Error('Toolkit hook adapter not found');d=n;}}catch(e){const reason='Codex hook launcher failed: '+e.message;let event='PreToolUse';try{event=JSON.parse(require('fs').readFileSync(0,'utf8')).hook_event_name||event;}catch{}process.stderr.write(reason);process.stdout.write(JSON.stringify(!['SessionStart','PostToolUse','Stop','SessionEnd','PreCompact'].includes(event)?{hookSpecificOutput:{hookEventName:'PreToolUse',permissionDecision:'deny',permissionDecisionReason:reason}}:{continue:false,stopReason:reason}));process.exitCode=0;}\"",
+            "timeout": 15
+          },
+          {
+            "type": "command",
+            "command": "node -e \"try{const fs=require('fs'),p=require('path');let d=process.cwd();for(;;){const f=p.join(d,'.agents','adapters','codex','hooks.js');if(fs.existsSync(f)){process.argv[2]='organize.cjs';process.exitCode=require(f).main();break;}const n=p.dirname(d);if(n===d)throw new Error('Toolkit hook adapter not found');d=n;}}catch(e){const reason='Codex hook launcher failed: '+e.message;let event='PreToolUse';try{event=JSON.parse(require('fs').readFileSync(0,'utf8')).hook_event_name||event;}catch{}process.stderr.write(reason);process.stdout.write(JSON.stringify(!['SessionStart','PostToolUse','Stop','SessionEnd','PreCompact'].includes(event)?{hookSpecificOutput:{hookEventName:'PreToolUse',permissionDecision:'deny',permissionDecisionReason:reason}}:{continue:false,stopReason:reason}));process.exitCode=0;}\"",
+            "commandWindows": "node -e \"try{const fs=require('fs'),p=require('path');let d=process.cwd();for(;;){const f=p.join(d,'.agents','adapters','codex','hooks.js');if(fs.existsSync(f)){process.argv[2]='organize.cjs';process.exitCode=require(f).main();break;}const n=p.dirname(d);if(n===d)throw new Error('Toolkit hook adapter not found');d=n;}}catch(e){const reason='Codex hook launcher failed: '+e.message;let event='PreToolUse';try{event=JSON.parse(require('fs').readFileSync(0,'utf8')).hook_event_name||event;}catch{}process.stderr.write(reason);process.stdout.write(JSON.stringify(!['SessionStart','PostToolUse','Stop','SessionEnd','PreCompact'].includes(event)?{hookSpecificOutput:{hookEventName:'PreToolUse',permissionDecision:'deny',permissionDecisionReason:reason}}:{continue:false,stopReason:reason}));process.exitCode=0;}\"",
+            "timeout": 15
+          },
+          {
+            "type": "command",
+            "command": "node -e \"try{const fs=require('fs'),p=require('path');let d=process.cwd();for(;;){const f=p.join(d,'.agents','adapters','codex','hooks.js');if(fs.existsSync(f)){process.argv[2]='damage-control.cjs';process.exitCode=require(f).main();break;}const n=p.dirname(d);if(n===d)throw new Error('Toolkit hook adapter not found');d=n;}}catch(e){const reason='Codex hook launcher failed: '+e.message;let event='PreToolUse';try{event=JSON.parse(require('fs').readFileSync(0,'utf8')).hook_event_name||event;}catch{}process.stderr.write(reason);process.stdout.write(JSON.stringify(!['SessionStart','PostToolUse','Stop','SessionEnd','PreCompact'].includes(event)?{hookSpecificOutput:{hookEventName:'PreToolUse',permissionDecision:'deny',permissionDecisionReason:reason}}:{continue:false,stopReason:reason}));process.exitCode=0;}\"",
+            "commandWindows": "node -e \"try{const fs=require('fs'),p=require('path');let d=process.cwd();for(;;){const f=p.join(d,'.agents','adapters','codex','hooks.js');if(fs.existsSync(f)){process.argv[2]='damage-control.cjs';process.exitCode=require(f).main();break;}const n=p.dirname(d);if(n===d)throw new Error('Toolkit hook adapter not found');d=n;}}catch(e){const reason='Codex hook launcher failed: '+e.message;let event='PreToolUse';try{event=JSON.parse(require('fs').readFileSync(0,'utf8')).hook_event_name||event;}catch{}process.stderr.write(reason);process.stdout.write(JSON.stringify(!['SessionStart','PostToolUse','Stop','SessionEnd','PreCompact'].includes(event)?{hookSpecificOutput:{hookEventName:'PreToolUse',permissionDecision:'deny',permissionDecisionReason:reason}}:{continue:false,stopReason:reason}));process.exitCode=0;}\"",
+            "timeout": 15
+          },
+          {
+            "type": "command",
+            "command": "node -e \"try{const fs=require('fs'),p=require('path');let d=process.cwd();for(;;){const f=p.join(d,'.agents','adapters','codex','hooks.js');if(fs.existsSync(f)){process.argv[2]='command-usage-logger.cjs';process.exitCode=require(f).main();break;}const n=p.dirname(d);if(n===d)throw new Error('Toolkit hook adapter not found');d=n;}}catch(e){const reason='Codex hook launcher failed: '+e.message;let event='PreToolUse';try{event=JSON.parse(require('fs').readFileSync(0,'utf8')).hook_event_name||event;}catch{}process.stderr.write(reason);process.stdout.write(JSON.stringify(!['SessionStart','PostToolUse','Stop','SessionEnd','PreCompact'].includes(event)?{hookSpecificOutput:{hookEventName:'PreToolUse',permissionDecision:'deny',permissionDecisionReason:reason}}:{continue:false,stopReason:reason}));process.exitCode=0;}\"",
+            "commandWindows": "node -e \"try{const fs=require('fs'),p=require('path');let d=process.cwd();for(;;){const f=p.join(d,'.agents','adapters','codex','hooks.js');if(fs.existsSync(f)){process.argv[2]='command-usage-logger.cjs';process.exitCode=require(f).main();break;}const n=p.dirname(d);if(n===d)throw new Error('Toolkit hook adapter not found');d=n;}}catch(e){const reason='Codex hook launcher failed: '+e.message;let event='PreToolUse';try{event=JSON.parse(require('fs').readFileSync(0,'utf8')).hook_event_name||event;}catch{}process.stderr.write(reason);process.stdout.write(JSON.stringify(!['SessionStart','PostToolUse','Stop','SessionEnd','PreCompact'].includes(event)?{hookSpecificOutput:{hookEventName:'PreToolUse',permissionDecision:'deny',permissionDecisionReason:reason}}:{continue:false,stopReason:reason}));process.exitCode=0;}\"",
+            "timeout": 15
+          }
+        ]
+      },
+      {
+        "matcher": "^apply_patch$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node -e \"try{const fs=require('fs'),p=require('path');let d=process.cwd();for(;;){const f=p.join(d,'.agents','adapters','codex','hooks.js');if(fs.existsSync(f)){process.argv[2]='memory-guard.cjs';process.exitCode=require(f).main();break;}const n=p.dirname(d);if(n===d)throw new Error('Toolkit hook adapter not found');d=n;}}catch(e){const reason='Codex hook launcher failed: '+e.message;let event='PreToolUse';try{event=JSON.parse(require('fs').readFileSync(0,'utf8')).hook_event_name||event;}catch{}process.stderr.write(reason);process.stdout.write(JSON.stringify(!['SessionStart','PostToolUse','Stop','SessionEnd','PreCompact'].includes(event)?{hookSpecificOutput:{hookEventName:'PreToolUse',permissionDecision:'deny',permissionDecisionReason:reason}}:{continue:false,stopReason:reason}));process.exitCode=0;}\"",
+            "commandWindows": "node -e \"try{const fs=require('fs'),p=require('path');let d=process.cwd();for(;;){const f=p.join(d,'.agents','adapters','codex','hooks.js');if(fs.existsSync(f)){process.argv[2]='memory-guard.cjs';process.exitCode=require(f).main();break;}const n=p.dirname(d);if(n===d)throw new Error('Toolkit hook adapter not found');d=n;}}catch(e){const reason='Codex hook launcher failed: '+e.message;let event='PreToolUse';try{event=JSON.parse(require('fs').readFileSync(0,'utf8')).hook_event_name||event;}catch{}process.stderr.write(reason);process.stdout.write(JSON.stringify(!['SessionStart','PostToolUse','Stop','SessionEnd','PreCompact'].includes(event)?{hookSpecificOutput:{hookEventName:'PreToolUse',permissionDecision:'deny',permissionDecisionReason:reason}}:{continue:false,stopReason:reason}));process.exitCode=0;}\"",
+            "timeout": 15
+          },
+          {
+            "type": "command",
+            "command": "node -e \"try{const fs=require('fs'),p=require('path');let d=process.cwd();for(;;){const f=p.join(d,'.agents','adapters','codex','hooks.js');if(fs.existsSync(f)){process.argv[2]='edit-capture.cjs';process.exitCode=require(f).main();break;}const n=p.dirname(d);if(n===d)throw new Error('Toolkit hook adapter not found');d=n;}}catch(e){const reason='Codex hook launcher failed: '+e.message;let event='PreToolUse';try{event=JSON.parse(require('fs').readFileSync(0,'utf8')).hook_event_name||event;}catch{}process.stderr.write(reason);process.stdout.write(JSON.stringify(!['SessionStart','PostToolUse','Stop','SessionEnd','PreCompact'].includes(event)?{hookSpecificOutput:{hookEventName:'PreToolUse',permissionDecision:'deny',permissionDecisionReason:reason}}:{continue:false,stopReason:reason}));process.exitCode=0;}\"",
+            "commandWindows": "node -e \"try{const fs=require('fs'),p=require('path');let d=process.cwd();for(;;){const f=p.join(d,'.agents','adapters','codex','hooks.js');if(fs.existsSync(f)){process.argv[2]='edit-capture.cjs';process.exitCode=require(f).main();break;}const n=p.dirname(d);if(n===d)throw new Error('Toolkit hook adapter not found');d=n;}}catch(e){const reason='Codex hook launcher failed: '+e.message;let event='PreToolUse';try{event=JSON.parse(require('fs').readFileSync(0,'utf8')).hook_event_name||event;}catch{}process.stderr.write(reason);process.stdout.write(JSON.stringify(!['SessionStart','PostToolUse','Stop','SessionEnd','PreCompact'].includes(event)?{hookSpecificOutput:{hookEventName:'PreToolUse',permissionDecision:'deny',permissionDecisionReason:reason}}:{continue:false,stopReason:reason}));process.exitCode=0;}\"",
+            "timeout": 15
+          }
+        ]
+      },
+      {
+        "matcher": "^mcp__.*$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node -e \"try{const fs=require('fs'),p=require('path');let d=process.cwd();for(;;){const f=p.join(d,'.agents','adapters','codex','hooks.js');if(fs.existsSync(f)){process.argv[2]='post-read-scrubber.cjs';process.exitCode=require(f).main();break;}const n=p.dirname(d);if(n===d)throw new Error('Toolkit hook adapter not found');d=n;}}catch(e){const reason='Codex hook launcher failed: '+e.message;let event='PreToolUse';try{event=JSON.parse(require('fs').readFileSync(0,'utf8')).hook_event_name||event;}catch{}process.stderr.write(reason);process.stdout.write(JSON.stringify(!['SessionStart','PostToolUse','Stop','SessionEnd','PreCompact'].includes(event)?{hookSpecificOutput:{hookEventName:'PreToolUse',permissionDecision:'deny',permissionDecisionReason:reason}}:{continue:false,stopReason:reason}));process.exitCode=0;}\"",
+            "commandWindows": "node -e \"try{const fs=require('fs'),p=require('path');let d=process.cwd();for(;;){const f=p.join(d,'.agents','adapters','codex','hooks.js');if(fs.existsSync(f)){process.argv[2]='post-read-scrubber.cjs';process.exitCode=require(f).main();break;}const n=p.dirname(d);if(n===d)throw new Error('Toolkit hook adapter not found');d=n;}}catch(e){const reason='Codex hook launcher failed: '+e.message;let event='PreToolUse';try{event=JSON.parse(require('fs').readFileSync(0,'utf8')).hook_event_name||event;}catch{}process.stderr.write(reason);process.stdout.write(JSON.stringify(!['SessionStart','PostToolUse','Stop','SessionEnd','PreCompact'].includes(event)?{hookSpecificOutput:{hookEventName:'PreToolUse',permissionDecision:'deny',permissionDecisionReason:reason}}:{continue:false,stopReason:reason}));process.exitCode=0;}\"",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node -e \"try{const fs=require('fs'),p=require('path');let d=process.cwd();for(;;){const f=p.join(d,'.agents','adapters','codex','hooks.js');if(fs.existsSync(f)){process.argv[2]='subagent-stop.cjs';process.exitCode=require(f).main();break;}const n=p.dirname(d);if(n===d)throw new Error('Toolkit hook adapter not found');d=n;}}catch(e){const reason='Codex hook launcher failed: '+e.message;let event='PreToolUse';try{event=JSON.parse(require('fs').readFileSync(0,'utf8')).hook_event_name||event;}catch{}process.stderr.write(reason);process.stdout.write(JSON.stringify(!['SessionStart','PostToolUse','SubagentStop','Stop','SessionEnd','PreCompact'].includes(event)?{hookSpecificOutput:{hookEventName:'PreToolUse',permissionDecision:'deny',permissionDecisionReason:reason}}:{continue:false,stopReason:reason}));process.exitCode=0;}\"",
+            "commandWindows": "node -e \"try{const fs=require('fs'),p=require('path');let d=process.cwd();for(;;){const f=p.join(d,'.agents','adapters','codex','hooks.js');if(fs.existsSync(f)){process.argv[2]='subagent-stop.cjs';process.exitCode=require(f).main();break;}const n=p.dirname(d);if(n===d)throw new Error('Toolkit hook adapter not found');d=n;}}catch(e){const reason='Codex hook launcher failed: '+e.message;let event='PreToolUse';try{event=JSON.parse(require('fs').readFileSync(0,'utf8')).hook_event_name||event;}catch{}process.stderr.write(reason);process.stdout.write(JSON.stringify(!['SessionStart','PostToolUse','SubagentStop','Stop','SessionEnd','PreCompact'].includes(event)?{hookSpecificOutput:{hookEventName:'PreToolUse',permissionDecision:'deny',permissionDecisionReason:reason}}:{continue:false,stopReason:reason}));process.exitCode=0;}\"",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node -e \"try{const fs=require('fs'),p=require('path');let d=process.cwd();for(;;){const f=p.join(d,'.agents','adapters','codex','hooks.js');if(fs.existsSync(f)){process.argv[2]='pre-compaction-archive.cjs';process.exitCode=require(f).main();break;}const n=p.dirname(d);if(n===d)throw new Error('Toolkit hook adapter not found');d=n;}}catch(e){const reason='Codex hook launcher failed: '+e.message;let event='PreToolUse';try{event=JSON.parse(require('fs').readFileSync(0,'utf8')).hook_event_name||event;}catch{}process.stderr.write(reason);process.stdout.write(JSON.stringify(!['SessionStart','PostToolUse','Stop','SessionEnd','PreCompact'].includes(event)?{hookSpecificOutput:{hookEventName:'PreToolUse',permissionDecision:'deny',permissionDecisionReason:reason}}:{continue:false,stopReason:reason}));process.exitCode=0;}\"",
+            "commandWindows": "node -e \"try{const fs=require('fs'),p=require('path');let d=process.cwd();for(;;){const f=p.join(d,'.agents','adapters','codex','hooks.js');if(fs.existsSync(f)){process.argv[2]='pre-compaction-archive.cjs';process.exitCode=require(f).main();break;}const n=p.dirname(d);if(n===d)throw new Error('Toolkit hook adapter not found');d=n;}}catch(e){const reason='Codex hook launcher failed: '+e.message;let event='PreToolUse';try{event=JSON.parse(require('fs').readFileSync(0,'utf8')).hook_event_name||event;}catch{}process.stderr.write(reason);process.stdout.write(JSON.stringify(!['SessionStart','PostToolUse','Stop','SessionEnd','PreCompact'].includes(event)?{hookSpecificOutput:{hookEventName:'PreToolUse',permissionDecision:'deny',permissionDecisionReason:reason}}:{continue:false,stopReason:reason}));process.exitCode=0;}\"",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node -e \"try{const fs=require('fs'),p=require('path');let d=process.cwd();for(;;){const f=p.join(d,'.agents','adapters','codex','hooks.js');if(fs.existsSync(f)){process.argv[2]='session-start-prime.cjs';process.exitCode=require(f).main();break;}const n=p.dirname(d);if(n===d)throw new Error('Toolkit hook adapter not found');d=n;}}catch(e){const reason='Codex hook launcher failed: '+e.message;let event='PreToolUse';try{event=JSON.parse(require('fs').readFileSync(0,'utf8')).hook_event_name||event;}catch{}process.stderr.write(reason);process.stdout.write(JSON.stringify(!['SessionStart','PostToolUse','Stop','SessionEnd','PreCompact'].includes(event)?{hookSpecificOutput:{hookEventName:'PreToolUse',permissionDecision:'deny',permissionDecisionReason:reason}}:{continue:false,stopReason:reason}));process.exitCode=0;}\"",
+            "commandWindows": "node -e \"try{const fs=require('fs'),p=require('path');let d=process.cwd();for(;;){const f=p.join(d,'.agents','adapters','codex','hooks.js');if(fs.existsSync(f)){process.argv[2]='session-start-prime.cjs';process.exitCode=require(f).main();break;}const n=p.dirname(d);if(n===d)throw new Error('Toolkit hook adapter not found');d=n;}}catch(e){const reason='Codex hook launcher failed: '+e.message;let event='PreToolUse';try{event=JSON.parse(require('fs').readFileSync(0,'utf8')).hook_event_name||event;}catch{}process.stderr.write(reason);process.stdout.write(JSON.stringify(!['SessionStart','PostToolUse','Stop','SessionEnd','PreCompact'].includes(event)?{hookSpecificOutput:{hookEventName:'PreToolUse',permissionDecision:'deny',permissionDecisionReason:reason}}:{continue:false,stopReason:reason}));process.exitCode=0;}\"",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node -e \"try{const fs=require('fs'),p=require('path');let d=process.cwd();for(;;){const f=p.join(d,'.agents','adapters','codex','hooks.js');if(fs.existsSync(f)){process.argv[2]='session-end-doc-sync.cjs';process.exitCode=require(f).main();break;}const n=p.dirname(d);if(n===d)throw new Error('Toolkit hook adapter not found');d=n;}}catch(e){const reason='Codex hook launcher failed: '+e.message;let event='PreToolUse';try{event=JSON.parse(require('fs').readFileSync(0,'utf8')).hook_event_name||event;}catch{}process.stderr.write(reason);process.stdout.write(JSON.stringify(!['SessionStart','PostToolUse','Stop','SessionEnd','PreCompact'].includes(event)?{hookSpecificOutput:{hookEventName:'PreToolUse',permissionDecision:'deny',permissionDecisionReason:reason}}:{continue:false,stopReason:reason}));process.exitCode=0;}\"",
+            "commandWindows": "node -e \"try{const fs=require('fs'),p=require('path');let d=process.cwd();for(;;){const f=p.join(d,'.agents','adapters','codex','hooks.js');if(fs.existsSync(f)){process.argv[2]='session-end-doc-sync.cjs';process.exitCode=require(f).main();break;}const n=p.dirname(d);if(n===d)throw new Error('Toolkit hook adapter not found');d=n;}}catch(e){const reason='Codex hook launcher failed: '+e.message;let event='PreToolUse';try{event=JSON.parse(require('fs').readFileSync(0,'utf8')).hook_event_name||event;}catch{}process.stderr.write(reason);process.stdout.write(JSON.stringify(!['SessionStart','PostToolUse','Stop','SessionEnd','PreCompact'].includes(event)?{hookSpecificOutput:{hookEventName:'PreToolUse',permissionDecision:'deny',permissionDecisionReason:reason}}:{continue:false,stopReason:reason}));process.exitCode=0;}\"",
+            "timeout": 3
+          }
+        ]
+      }
+    ]
+  }
+}

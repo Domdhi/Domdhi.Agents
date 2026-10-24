@@ -3,6 +3,8 @@ description: Create master project implementation index with phase tracking and 
 argument-hint: [project name] [--yolo]
 ---
 
+<!-- Generated from .agents/skills/create-project-todo/references/workflow.md; edit the canonical source, then run node .claude/core/render-shared-agents.js. -->
+
 # Create TODO Project — Master Implementation Index
 
 Generate `docs/TODO_{ProjectName}.md` — the project-manager view of implementation. Tracks phases, epic status, critical path, parallel workstreams, and phase gates. Does NOT contain story-level task checkboxes — those live in per-epic checklists.
@@ -108,6 +110,8 @@ If no optimization data exists, note this — the index will use phase order ins
 
 Use the Task tool with `subagent_type: "project-planner"`.
 
+**Runtime and verification.** In Codex, run each `.claude/core/` command in this workflow as `.codex/core/` with the same arguments, per `.agents/adapters/codex/execution.md`. This workflow runs no build gate; its evidence is the written index passing Step 7 validation against `docs/work/backlog.md` and the Step 8 commit hash. Phase gates that name build or test evidence use the application's own commands in an adopter, never the Domdhi.Agents toolkit suite, also after agent-file edits. Discovery alone (an installed skill, a listed command or a loaded file) never proves this workflow ran; report completion only from that evidence.
+
 **Task prompt must include**:
 1. Project name (PascalCase)
 2. Output path: `docs/TODO_{ProjectName}.md`
@@ -143,8 +147,8 @@ Use the Task tool with `subagent_type: "project-planner"`.
 
 | Epic | Title | Stories | Est. Hours | Status | Checklist |
 |------|-------|---------|-----------|--------|-----------|
-| 1 | {Epic Name} | 4 | 5.5h | [ ] | [TODO](todo/TODO_epic01_{slug}.md) |
-| 2 | {Epic Name} | 6 | 12h | [ ] | [TODO](todo/TODO_epic02_{slug}.md) |
+| 1 | {Epic Name} | 4 | 5.5h | [ ] | [TODO](work/todo/TODO_epic01_{slug}.md) |
+| 2 | {Epic Name} | 6 | 12h | [ ] | [TODO](work/todo/TODO_epic02_{slug}.md) |
 | ... | ... | ... | ... | ... | ... |
 
 > **Status key:** `[ ]` Not started · `[>]` In progress · `[x]` Complete
@@ -209,13 +213,16 @@ Epic 2 (Story 2.1) → Epic 3 (Story 3.2) → Epic 5 (Story 5.1) → ... → tot
 After the agent completes, verify:
 - Phase Map totals are correct (spot-check against extracted data)
 - Epic Index has entries for every epic in `backlog.md`
-- Checklist links use correct naming: `TODO_epicNN_{slug}.md`
-- Cross-Epic Dependencies are real (not invented)
+- Checklist links use correct naming and location: `work/todo/TODO_epicNN_{slug}.md`, relative to the index at the `docs/` root
+- Cross-Epic Dependencies are real (not invented) and every referenced epic and story ID exists in `backlog.md`
+- Critical-path hours are summed story effort along the chain, labeled as effort, not elapsed time
 - If issues found, delegate back to agent to fix
+
+These checks are structural: they prove the index matches the backlog, not that any story's acceptance criteria are met.
 
 ### 8. Commit (main agent)
 
-Follow the **Post-Command Commit Convention** in CLAUDE.md. Stage files created or modified and commit with a descriptive message.
+Follow the **Post-Command Commit Convention** in `.agents/startup-reference.md`. Stage each file created or modified by its exact path and commit through the native commit helper (`node .claude/core/commit.js`, or `node .codex/core/commit.js` in Codex) with a descriptive message. Do not push, open a PR or take any other outward action without explicit authorization.
 
 ### 9. Report (main agent)
 

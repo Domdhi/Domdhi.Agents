@@ -1,72 +1,50 @@
 # Skills
 
-A skill in this system is a folder at `.claude/skills/{name}/` with a `SKILL.md` file that carries domain knowledge — a template, a quality checklist, a set of interview questions, an investigation procedure, a style guide. Skills don't *do* anything on their own; they get loaded into a conversation (by an agent, a command, or the user directly) so that whoever is acting has the right reference material already in context. There are 21 of them in this template as of today.
+Skills are authored under `.agents/skills/{name}/`. Each directory has a `SKILL.md` entry point; references load on demand, assets are copied into outputs and scripts provide executable support. The toolkit has 49 workflow entry points and 23 knowledge skills. Claude receives generated native copies; Codex discovers the canonical repository skills.
 
-Skills are the **knowledge layer** of the three-tier architecture. Commands orchestrate procedures. Agents execute delegated work. Skills carry the shared reference material both layers lean on. Put another way: if the same checklist or template appears in three different commands, it belongs in a skill. The payoff is that changing the rule in one place updates every downstream consumer — no search-and-replace, no inline-copy drift.
+Knowledge skills hold reusable domain guidance. Workflows use the same native skill mechanism to select an authored procedure: most bodies live in `references/workflow.md`, while review-specialize keeps its workflow in `SKILL.md`. [Commands](../commands.md) lists all 49 mappings.
 
-## The three consumption paths
+## Consumption and discovery
 
-A skill can reach an agent or a command in one of three ways. Most skills travel down one of these paths by design; a few travel down more than one.
+- Claude role `skills:` frontmatter loads declared knowledge at dispatch. Commands reference shared checklists by name rather than repeat their contents.
+- Codex named-role availability depends on the native dispatcher. When unavailable, a worker reads the canonical role and declared skills; report that accurately as role-guidance execution.
+- Knowledge skills commonly declare `user-invocable: false`; this suppresses Claude slash-menu invocation without preventing role/reference use. It does not mean every knowledge skill is a user command. Codex's discovered `$` inventory must be observed in the actual session.
+- Explicit workflow use requires reading the installed selector and its selected body. Discovery proves availability, not execution. Start a fresh session when newly installed skills are absent.
 
-1. **Auto-load by an agent (the common case).** Every agent has a `skills:` list in its frontmatter. When the agent is dispatched, Claude Code reads each SKILL.md into the agent's context before the agent's first turn. The command that dispatched the agent doesn't need to tell it "read the skill first" — the skill is already there. See [`./agents.md`](./agents.md) for the full mechanism.
-2. **Checklist reference by a command.** A command may mention a skill by name in its instructions — for example, `/do` tells the main agent to "regenerate the handoff using the `session-handoff` skill" at Step 9d. The command doesn't inline the skill's rules; it names it and lets the main agent pull the file. This keeps command files thin and keeps the rules in one place.
-3. **Direct user invocation.** Every SKILL.md with proper frontmatter is discoverable by Claude Code as `/skill-name`. Useful when you want to trigger a skill's procedure outside a command — for example, running `/simplify` on code you just wrote, or `/skill-authoring` when authoring a new skill.
+## The 23 knowledge skills
 
-The story heading for this doc calls out "user-invocable vs internal," and in practice that distinction is fuzzy: all 21 skills are technically user-invocable because Claude Code picks them up from frontmatter. The meaningful question isn't "is it invocable?" — it's "what's the primary consumer?" For `architecture` the answer is the `architect` agent. For `session-handoff` the answer is five different session-boundary commands. For `skill-authoring` and `content-formats` there is no primary consumer — they're designed for direct invocation when you're extending the system.
+| Skill | Primary use |
+| --- | --- |
+| `agent-creator` | New canonical role identity and adapter contract |
+| `architecture` | System design, architecture docs and ADRs |
+| `brand-guidelines` | Project brand identity; project-owned subtree |
+| `code-review` | Risk routing, review depth and reviewer checklists |
+| `command-creator` | Shared workflow conventions and native mapping |
+| `content-formats` | Platform-specific writing formats |
+| `design-taste-frontend` | Frontend design quality and component standards |
+| `documentation` | Verified docs, examples and cross-references |
+| `finishing-a-development-branch` | Branch integration and cleanup choices |
+| `full-output-enforcement` | Complete generated artifacts |
+| `ghostwriting` | Long-form writing in the author's voice; ships with a blank voice fingerprint the project fills in |
+| `playwright-cli` | Browser interaction and testing |
+| `project-planning` | Brief, PRD, backlog and project context |
+| `qa-engineer` | Test strategy and acceptance coverage |
+| `redesign-existing-projects` | Existing UI design improvement |
+| `session-handoff` | Resolver-based continuity artifacts |
+| `skill-authoring` | Evidence-driven doctrine and structural conventions |
+| `skill-creator` | Create/eval/improve/benchmark mechanics |
+| `systematic-debugging` | Root-cause investigation before fixes |
+| `tailwind-css-patterns` | Tailwind-specific patterns |
+| `using-git-worktrees` | Isolated worktree setup |
+| `ux-design` | UX specs, themes, wireframes and mock layouts |
+| `verification-before-completion` | Fresh evidence before completion claims |
 
-## The 21 skills
+Optional local aesthetic skills remain outside the shipped baseline; legacy `.claude/skills-optional/` is a compatibility location. Project-added canonical skill directories are the normal home for substantial project guidance. Shared additions use the [customization markers](../customization.md#keeping-project-skill-additions).
 
-| Skill | Primary consumer | Purpose |
-|-------|------------------|---------|
-| `architecture` | `architect` agent + `/create:project-architecture`, `/review:check-readiness` | Architecture doc template + quality criteria |
-| `project-planning` | `product-strategist`, `project-planner`, `doc-writer` agents + `/brainstorm`, `/research`, `/create:project-brief`, `/create:project-requirements`, `/create:project-epics`, `/create:project-todo`, `/create:project-epics-todo`, `/review:optimize-backlog`, `/review:check-readiness`, `/review:changelog`, `/review:update-docs`, `/retro` | Consolidated planning-pipeline authoring: brief, PRD, backlog (epics/stories), project-context quick-ref — templates + guidance in `references/`/`assets/` (folded in epic-writer + project-context) |
-| `documentation` | `doc-writer` agent | Documentation wayfinding + verification rules |
-| `ux-design` | `ux-designer` agent + `/create:project-design`, `/review:check-readiness` | UX spec template + quality criteria |
-| `brand-guidelines` | `ux-designer` agent (updates `/create:project-design`) | Brand colors/typography guide |
-| `code-review` | `code-reviewer` + `security-auditor` agents + `/review:code-review` | Two-stage review process, severity routing + checklists |
-| `qa-engineer` | `qa-engineer` agent + `/review:qa` | Test strategy + generation patterns |
-| `playwright-cli` | `playwright` agent + `/run-tests` | Browser automation patterns |
-| `ghostwriting` | `shadow` agent | Blog/article writing patterns |
-| `content-formats` | direct invocation | LinkedIn, newsletter, Twitter, YouTube templates |
-| `agent-creator` | `/create:component` | Agent creation template + conventions |
-| `command-creator` | `/create:component` | Command creation template + conventions |
-| `tailwind-css-patterns` | `ux-designer` agent + `/review:specialize` (as exemplar) | Tailwind utility patterns |
-| `full-output-enforcement` | `general-purpose` agent | Anti-truncation rules |
-| `systematic-debugging` | `general-purpose` agent | 4-phase root cause investigation |
-| `verification-before-completion` | `general-purpose` agent | Blocks success claims without fresh verification |
-| `finishing-a-development-branch` | `general-purpose` agent | Branch integration workflow (merge, PR, keep, discard) |
-| `using-git-worktrees` | `general-purpose` agent | Isolated worktree creation for feature work |
-| `skill-authoring` | direct invocation | TDD for skill creation (baseline test before writing) |
-| `design-taste-frontend` | `ux-designer` agent | Frontend design standards |
-| `redesign-existing-projects` | `ux-designer` agent | Upgrade existing UI patterns |
-| `session-handoff` | `/end`, `/do`, `/run-todo`, `/run-tests`, `/todo` | Handoff template + fill rules for session-persistence commands |
+## Authoring a skill
 
-Every skill file lives at `.claude/skills/{name}/SKILL.md`. Some skills have supplemental files in the same folder (exemplars, templates, rule files) — `SKILL.md` is the entry point, and Claude Code loads just that file on auto-load or reference.
+A repeated checklist, a demonstrated model gap or useful project reference belongs in a skill. A distinct worker mandate/persona belongs in a role; a user-invoked orchestration procedure belongs in a workflow. Use `/create:component skill` or `$create-component skill` to scaffold and wire it.
 
-An optional directory `.claude/skills-optional/` exists for aesthetic skills that are gitignored and not shipped by default. Drop them in manually for design-heavy projects, or wire them via `/review:specialize`.
+[Skill authoring](../../../../.agents/skills/skill-authoring/SKILL.md) requires evidence of a real gap plus a differential evaluation showing improvement. It replaces the old strict failing-test-before-draft ordering. [Skill creator](../../../../.agents/skills/skill-creator/SKILL.md) owns the operational evaluation loop. Keep examples runnable, use the existing naming/frontmatter conventions and verify consumers before claiming a skill helps.
 
-## Auto-load mechanism
-
-Summary (the full explanation lives in [`./agents.md`](./agents.md)): every agent's frontmatter declares a `skills:` list; Claude Code loads each named SKILL.md into the agent's context before the agent's first turn; the command that dispatched the agent does NOT repeat the skill's content in the prompt. If you find yourself writing a command that pastes skill text into the prompt, the skill wiring is wrong — fix the agent frontmatter instead.
-
-Commands can still reference a skill by name ("use the `session-handoff` skill") when the command itself needs the reference material. That's Path 2 above. What they shouldn't do is inline the skill's content — that's duplication, and CLAUDE.md explicitly calls it out as the single biggest anti-pattern in an untuned template.
-
-## When to add a new skill
-
-Add a skill when:
-
-- **The same checklist, template, or rule appears in two or more commands** — the shared reference belongs in a skill, and both commands should reference it by name.
-- **An agent's behavior needs tuning that isn't about its persona** — rules about how to name things, how to verify work, how to structure a specific kind of document. The agent's frontmatter gets the new skill added to its `skills:` list.
-- **You're codifying a process that other humans (or future-you) will need to follow** — a debugging procedure, a handoff template, a review rubric. Skills are durable; inline prose in a command rots.
-
-Don't add a skill for:
-
-- **Project-specific one-off knowledge.** That belongs in `CLAUDE.md` or the module's `brief.md`.
-- **Rules that only apply to one agent and never change.** Just put them in the agent's persona.
-- **Knowledge that's already covered by an existing skill.** Check the catalog above first — there are 21 skills, and most territory is already mapped.
-
-Use the [`skill-authoring`](../../../../.claude/skills/skill-authoring/SKILL.md) skill when authoring a new one. It applies TDD to skill creation: write a failing baseline test before writing the skill, then iterate until the test passes. This keeps new skills grounded in a concrete scenario rather than floating in abstraction.
-
----
-
-See also: [`./agents.md`](./agents.md) for the agent inventory and auto-load mechanism, [`./commands.md`](./commands.md) for the orchestration layer, [`./hooks.md`](./hooks.md) for the deterministic event layer, [`./memory.md`](./memory.md) for the auto-compound pipeline.
+See [agents](agents.md) for role skill lists, [contributing](../guides/contributing.md) for creation examples and [system map](../system-map.md) for source/delivery wiring.

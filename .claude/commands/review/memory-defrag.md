@@ -2,11 +2,13 @@
 description: Identify memory store overlap clusters and walk the user through merge / split / cross-ref proposals
 ---
 
+<!-- Generated from .agents/skills/review-memory-defrag/references/workflow.md; edit the canonical source, then run node .claude/core/render-shared-agents.js. -->
+
 # Memory Defrag
 
 Periodic restructuring sweep of the memory store. Dispatches a Sonnet agent to analyze overlap, then walks the user through accepting merge / split / cross-reference proposals one-by-one. Different timing from the `memory-curator.js` Stop hook (which does light dedup on session close): defrag is the heavier, infrequent intervention.
 
-**When to run:** quarterly, OR after a burst of new memory creation, OR when a category approaches its 50-entry hard cap (`MAX_MEMORIES_PER_CATEGORY` in `memory-manager.js`; writes are refused at 50, prune-warning triggers at 80% = 40). Not every session — the analysis cost (Sonnet dispatch) is real.
+**When to run:** quarterly, OR after a burst of new memory creation, OR when a category approaches its effective cap (`MEMORY_FILTERS.MEMORY_MAX_PER_CATEGORY` in `.agents/core/constants.js`, with the consumer-applied `MEMORY_MAX_PER_CATEGORY` environment override; near-limit warnings/pruning use `MEMORY_FILTERS.MEMORY_NEAR_LIMIT_PCT`). Not every session — the analysis cost (Sonnet dispatch) is real.
 
 ## Telemetry (run first)
 
@@ -204,7 +206,7 @@ Before SPLIT or CROSS-REF that would create a new memory, check the target categ
 node .claude/core/memory-manager.js list {category} | grep -c '"id"'
 ```
 
-If the category is one below the hard cap (`MEMORY_MAX_PER_CATEGORY` in `.claude/core/constants.js` — read it, do NOT assume a number; it has gone 50→60→100→150), warn the user and suggest pruning before proceeding. Do NOT silently fail at the cap.
+If the category is one below the hard cap (`MEMORY_FILTERS.MEMORY_MAX_PER_CATEGORY` in `.agents/core/constants.js`, including the `MEMORY_MAX_PER_CATEGORY` environment override — read the effective cap, do NOT assume a number), warn the user and suggest pruning before proceeding. Do NOT silently fail at the cap.
 
 ### Step 5: Commit
 

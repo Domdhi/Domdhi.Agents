@@ -3,6 +3,8 @@ description: Scaffold a new module — brainstorm, decide, document, plan, and g
 argument-hint: [module description]
 ---
 
+<!-- Generated from .agents/skills/create-module/references/workflow.md; edit the canonical source, then run node .claude/core/render-shared-agents.js. -->
+
 # Create Module
 
 Orchestrate the full lifecycle of a new module from idea to implementation-ready TODO checklist. Creates the `docs/modules/{module}/` folder structure and generates all planning artifacts.
@@ -26,7 +28,7 @@ MODULE_DESCRIPTION: $ARGUMENTS
 ### Phase 1: Context Gathering
 
 1. **Read project context** to understand current state:
-   - `docs/product/context.md` — quick reference hub
+   - `docs/product/context.md` — quick-reference index
    - `docs/architecture/overview.md` — tech stack, component architecture, ADRs
    - `docs/product/requirements.md` — existing requirements and scope
    - `docs/CLAUDE.md` — documentation structure conventions
@@ -122,7 +124,7 @@ Generate a comprehensive TODO checklist following the `/todo` command format.
 
 ### Phase 5.5: Commit (main agent)
 
-Follow the **Post-Command Commit Convention** in CLAUDE.md. Stage all files created or modified by this command and commit with a descriptive message.
+Follow the **Post-Command Commit Convention** in `.agents/startup-reference.md`. Stage all files created or modified by this command and commit with a descriptive message.
 
 ### Phase 6: Summary Report
 
@@ -168,7 +170,7 @@ Follow the **Post-Command Commit Convention** in CLAUDE.md. Stage all files crea
 /create:module Add CSV export to the reporting module
 
 # Infrastructure module
-/create:module Add a feature flag system with per-hub toggles
+/create:module Add a feature flag system with per-tenant toggles
 
 # Cross-cutting concern
 /create:module Implement audit logging for all data mutations

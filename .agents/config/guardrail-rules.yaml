@@ -1,0 +1,401 @@
+# ============================================================
+# Guardrail Rules — .claude/guardrail-rules.yaml
+# ============================================================
+#
+# This file configures the PreToolUse guardrail hook for the shell tools
+# (.claude/hooks/guardrail.cjs, matcher Bash|PowerShell: Claude Code on
+# Windows also runs commands through a PowerShell tool).
+# Rules are evaluated in order within each section. The first match wins.
+#
+# HOW RULES WORK
+# ==============
+# Each entry under block_patterns, nudge_patterns, or confirm_patterns
+# is a pattern string checked against the full shell command. Precedence:
+#   block_patterns / dangerousPatterns  — hard stop (exit 2), never escalatable
+#   nudge_patterns                       — soft deny (exit 2) with a "try a safer
+#                                          alternative first" message; re-run the
+#                                          same command with `# guardrail:confirm`
+#                                          appended to escalate to a user confirm
+#   confirm_patterns                     — user prompted yes/no immediately
+# First match in that order wins.
+#
+# Pattern formats:
+#   plain string  — case-insensitive substring match
+#                   e.g. "rm -rf" matches "sudo rm -rf /"
+#
+#   /regex/       — JavaScript regex (case-insensitive)
+#                   e.g. "/git push -+f/" matches any -f or --force flag
+#
+# KNOWN LIMITATION — SUBSTRING MATCHING
+# ======================================
+# Plain string patterns match anywhere in the command string.
+# This means a pattern like "DROP TABLE" will also match:
+#   - echo "run DROP TABLE to clean up" >> notes.md
+#   - grep -r "DROP TABLE" src/
+# Use /anchored-regex/ patterns for SQL keywords and other terms
+# that may legitimately appear inside echo, grep, or comment strings.
+# Double-spaced or tab-separated variants are normalized before plain-string
+# matching (runs of whitespace collapse to a single space), so "git  reset
+# --hard" DOES match "git reset --hard" (hooks-C3). /regex/ patterns are not
+# normalized — use \s+ between tokens for whitespace tolerance in a regex.
+#
+# ADVISORY, NOT AUTHORITATIVE: this guardrail is a best-effort speed-bump, not a
+# security boundary. Alternate verbs, encodings, and subshells can always be
+# constructed; the Claude Code permission system is the real gate.
+#
+# Exit codes produced by the hook:
+#   2  — BLOCKED   command is hard-stopped (only exit code 2 blocks in Claude Code)
+#   0 + JSON "ask" — CONFIRM   user is prompted yes/no before proceeding
+#   0  — PASS      command is safe, no output, execution continues
+#   1  — WARNING   Claude Code treats this as non-blocking, command STILL RUNS
+#
+# HOW TO ADD CUSTOM RULES
+# =======================
+# 1. Add a pattern string under block_patterns or confirm_patterns.
+# 2. Use a plain substring for simple matches.
+# 3. Use /regex/ for multi-variant patterns (flags, alternatives).
+# 4. Comment the rule inline to document why it exists.
+# 5. Save the file — changes apply immediately on the next hook invocation.
+#
+# HOW TO TEMPORARILY DISABLE A RULE
+# ===================================
+# Comment out the line with #. The YAML parser strips inline comments,
+# so "- rm -rf   # disabled" still fires. Move the rule to a comment-only
+# block or delete the line entirely to disable it.
+#
+# ============================================================
+
+# ============================================================
+# BLOCK PATTERNS (hard block — exit 2, no option to proceed)
+# ============================================================
+# Catastrophic / irreversible commands that have no legitimate
+# automated use. If you actually need these, run them manually
+# in your terminal.
+# ============================================================
+
+block_patterns:
+
+  # --- Git: Force push (overwrites remote history, cannot be undone) ---
+  # Regex (not plain string). A negative lookahead keeps `--force-with-lease`
+  # EXCLUDED so it falls through to its confirm rule below (hooks-m1). The rule
+  # tolerates INTERVENING TOKENS between `git` and `push` — the old contiguous
+  # `git push --force` was trivially evaded by a global option before `push`
+  # (`git -c k=v push --force`) or another flag after it (`git push --quiet
+  # --force`). `(?:\s+\S+)*?` LAZILY consumes leading git global options (any
+  # token — value-taking `-c k=v` included). It replaces an earlier nested-
+  # optional `(?:\s+-\S+(?:\s+\S+)?)*` that had catastrophic-backtracking
+  # ambiguity (ReDoS: ~483ms at 36 all-dash tokens, unbounded) — since this hook
+  # runs on EVERY Bash command, that was a live DoS + fail-open risk. `\S+` is
+  # unambiguous and the lazy `*?` stops at the first `push`, so runtime is linear.
+  # After `push`, `[^;&|\n]*` tolerates intervening flags before the force flag
+  # but is BOUNDED to a single command — an unbounded `.*` mis-attributed a
+  # chained command's flag to push (`git push origin main && rm --force /tmp/x`
+  # hard-blocked as a "force push"). The alternation also catches the short
+  # `-f`/combined `-vf`/`-fv` clusters. (M — non-contiguous force-push evasion; ReDoS-safe)
+  - /git\b(?:\s+\S+)*?\s+push\b[^;&|\n]*(?:--force(?!-with-lease)\b|\s-\w*f\w*\b)/
+  - git push -f                             # short force flag (belt-and-suspenders; also covered above)
+  # Refspec force push (`git push origin +main`, `+HEAD:main`): a leading `+` on
+  # a refspec forces the update with NO flag at all — the flag-based rule above
+  # never sees it. Match a `+`-prefixed refspec token after `git push`, BOUNDED to
+  # the same command (`[^;&|\n]*`). The ref must START with a letter/`_`/`/`
+  # (`[A-Za-z_/]`) — a leading DIGIT is excluded so a benign trailing note like
+  # `git push origin main   deploy +1` doesn't false-block, and (deliberately) a
+  # literal `#` is kept OUT of the regex because the rule-file comment stripper
+  # truncates any `#`, which would invalidate the pattern and drop the whole tier.
+  # Tolerates the same intervening git global options as the force-flag rule
+  # above (`git -c k=v push origin +main` used to evade — the flag rule only
+  # sees `--force`/`-f`, not a bare `+refspec`, so this sibling rule needed
+  # the identical `(?:\s+\S+)*?` lazy-global-option prefix). (M — +refspec
+  # global-option evasion)
+  - /git\b(?:\s+\S+)*?\s+push\b[^;&|\n]*\s\+[A-Za-z_/][^\s:]*(?::[^\s:]+)?(?:\s|$)/
+
+  # --- Database: Schema destruction ---
+  # Anchored regexes prevent false positives on echo/grep commands that
+  # mention these SQL keywords in strings or test names.
+  - /^\s*(DROP\s+TABLE|DROP\s+DATABASE|DROP\s+SCHEMA)/i   # destroys tables, databases, or schemas
+  - /^\s*TRUNCATE\s+/i                                     # empties all rows (no rollback without explicit txn)
+
+  # --- Disk / OS: Low-level format commands ---
+  - format c:                          # Windows disk format
+  - mkfs                               # Linux filesystem format (any variant: mkfs.ext4, etc.)
+  # `dd` device-wipe: match `dd` + an `if=/dev/zero|random` ARGUMENT in any order,
+  # not the contiguous `dd if=/dev/zero` literal — `dd bs=1M if=/dev/zero of=/dev/sda`
+  # (option before if=) evaded the old literal. Bounded to one command. (M — reordered-token evasion)
+  - /\bdd\b[^;&|\n]*\bif=\/dev\/(?:zero|u?random)\b/   # zero/random/urandom-wipe a block device (any arg order)
+  - fdisk                              # interactive partition editor (destructive if scripted)
+  - diskpart                           # Windows partition manager (destructive if scripted)
+
+
+# ============================================================
+# NUDGE PATTERNS (try a safer alternative first — confirm on demand)
+# ============================================================
+# Destructive / hard-to-reverse commands that DO usually have a safer
+# alternative. On a plain match the hook DENIES (exit 2) and tells the
+# agent to try a reversible path first (mv the target aside, `git rm`,
+# trash/recycle, dry-run, or scope tighter). If the agent has genuinely
+# confirmed there is no reversible alternative, it re-runs the SAME
+# command with the escalation marker appended:
+#
+#     rm -rf build  # guardrail:confirm
+#
+# ...and the hook escalates to a user yes/no confirm. Precedence sits
+# between block and confirm: block_patterns / dangerousPatterns still
+# win and IGNORE the marker (never escalatable); confirm_patterns are
+# checked after these. Move a pattern here (rather than confirm_patterns)
+# when "try something else first" is the right default; keep it in
+# confirm_patterns when an immediate prompt is fine.
+# ============================================================
+
+nudge_patterns:
+
+  # --- Filesystem: Recursive deletion ---
+  # rm -rf / -fr: nudge EXCEPT when the FIRST argument is a clearly-disposable
+  # path. Autonomous sub-agents (code-reviewer verification, /run-todo e2e)
+  # routinely create + delete scratch dirs; nudging on every cleanup would stall
+  # the flow, so disposable first-args are exempted entirely (pass, no nudge).
+  #
+  # CRITICAL — the exemption binds to the FIRST rm argument (the lookahead sits
+  # immediately after the flags, with NO leading `.*`). An earlier version used
+  # `(?!.*(…))` which scanned the whole line, so a trailing exempt token disarmed
+  # the guard for a dangerous target — e.g. `rm -rf ~/important && echo /tmp`
+  # passed silently. Binding to the first arg closes that bypass: the temp token
+  # must be the rm target itself. Chained dangerous deletes still fire because
+  # the matcher also matches a later `rm -rf <dangerous>` segment; substring
+  # look-alikes like `~/node_modules_backup` fire (token must START the arg).
+  #
+  # Exempted (no nudge) — only when it is the rm's first argument:
+  #   /tmp, /tmp/...            (Linux/WSL temp)
+  #   ./tmp/ or tmp/ relative   scratch dirs
+  #   $TMPDIR / $TMP / $T*      variables
+  #   mktemp                    (rare: mktemp literal right after the flags)
+  #   node_modules              (always reinstallable)
+  #   /var/folders/             (macOS GUI temp)
+  #   .sandbox                  (the repo's gitignored disposable area)
+  #   bin/ obj/ dist/           regenerable build output (also ./bin/ etc.)
+  #   coverage/ TestResults/    regenerable test/coverage output
+  # NOTE: .output/ and .worktrees/ are deliberately NOT exempt — deleting them
+  # destroys generated reports / live worktrees, so they still nudge. (2026-06-21)
+  # Real project-path deletes (rm -rf ./src, repo root, ~, /, sudo rm -rf /etc)
+  # nudge first, then confirm via `# guardrail:confirm`. The path-tier check
+  # (zeroAccess/readOnly/noDelete) remains the hard guard for protected paths.
+  #
+  # `git rm` is EXEMPT (negative lookbehind `(?<!(?:^|[\s;&|(])git )`): it stages
+  # a history-preserving removal that `git checkout`/`git restore` fully reverses,
+  # so it IS the reversible alternative this nudge tells you to use — nudging it
+  # would loop the agent against its own advice. The boundary group `(?:^|[\s;&|(])`
+  # anchors the exemption to a real `git` INVOCATION (start / after whitespace or
+  # `;`/`&`/`|`/`(`), so `legit rm` and `X=git rm` (a var-assignment prefix on a
+  # real rm) still fire — only a standalone `git rm` is exempt. (sweep A3)
+  # The flag matcher accepts BOTH the short cluster (`-rf`, `-r`, `-fr`) AND the
+  # GNU long forms `--recursive` / `--force`, so `rm --recursive --force <path>`
+  # and mixed `rm -r --force` / `rm --force -r` no longer evade the nudge (M —
+  # long-form flag evasion). The first-arg disposable-path exemption lookahead
+  # still follows the flag token, so short-form exemptions (`rm -rf /tmp/…`) are
+  # unaffected; long-form + a disposable path may still nudge (acceptable).
+  # (2026-06-03; first-arg-bound 2026-06-05; moved confirm→nudge + git-rm-exempt 2026-06-06; boundary-anchored 2026-06-06; long-form flags 2026-07-16)
+  - /(?<!(?:^|[\s;&|(])git )rm\s+(?:-[a-z]*[rf][a-z]*|--(?:recursive|force))\s+(?!["']?(\.?\/?tmp\/|\/tmp|\$\{?T|mktemp|node_modules|\/var\/folders\/|\.sandbox|\.?\/?bin\/|\.?\/?obj\/|\.?\/?dist\/|\.?\/?coverage\/|\.?\/?TestResults\/))/
+  # Windows silent recursive delete (cmd.exe) — either flag order (`del /s /q`
+  # or `del /q /s`), bounded to one command. NOTE: matchesPattern only recognizes
+  # the `/expr/` regex form (no trailing flags) and applies case-insensitivity
+  # itself — a trailing `/i` would make this parse as neither regex nor substring
+  # and silently never match, so it is intentionally omitted. (M — reversed-flag evasion)
+  - /\b(?:del|erase)\b[^;&|\n]*(?:\/s\b[^;&|\n]*\/q\b|\/q\b[^;&|\n]*\/s\b)/
+  # cmd.exe recursive directory removal (`rd /s`, `rmdir /s`), anchored to a command
+  # start so `rd` as an argument (`grep rd -r`) never matches.
+  - /(?:^\s*|[;&|(]\s*)(?:cmd(?:\.exe)?\s+\/[ck]\s+)?(?:rd|rmdir)\b[^;&|\n]*\/s\b/
+  # PowerShell recursive force remove. `.*` (not `.+`) so the canonical single-space
+  # `Remove-Item foo -Recurse -Force` matches, and a second alternation covers the
+  # reverse flag order `-Force … -Recurse`. (sweep A2)
+  - /Remove-Item\b.*(-Recurse\b.*-Force|-Force\b.*-Recurse)\b/
+  # The same through PowerShell's aliases (ri/rd/rmdir/Remove-Item) and its abbreviated
+  # parameters (`-r`/`-Rec`… and `-fo`/`-Forc`…, either order), anchored to a command
+  # start. Claude Code's Windows PowerShell tool reaches this hook.
+  - /(?:^\s*|[;&|(]\s*)(?:Remove-Item|ri|rd|rmdir)\b[^;&|\n]*(?:\s-r(?:e(?:c(?:u(?:r(?:s(?:e)?)?)?)?)?)?\b[^;&|\n]*\s-fo(?:r(?:c(?:e)?)?)?\b|\s-fo(?:r(?:c(?:e)?)?)?\b[^;&|\n]*\s-r(?:e(?:c(?:u(?:r(?:s(?:e)?)?)?)?)?)?\b)/
+
+  # --- Git: Working tree destruction (moved from confirm 2026-06-06) ---
+  # Only the WORK-LOSING `git reset --hard` is nudged (stash first). Non-hard
+  # resets — `--soft`, `--mixed`/default, `git reset HEAD~1`, `git reset -- <file>`
+  # (unstaging) — are safe & reversible (they never touch the working tree), so
+  # they are NOT nudged; nudging them was pure friction. (narrowed 2026-06-21)
+  # Regex (not contiguous literals) so an intervening git global option or an
+  # interposed flag doesn't evade — `git -c x reset --hard`, `git reset -q --hard`,
+  # `git clean -q -fd` all slipped past the old plain-string rules. Each is bounded
+  # to one command (`[^;&|\n]*`). (M — non-contiguous evasion of the sibling nudges)
+  - /git\b[^;&|\n]*\breset\b[^;&|\n]*--hard\b/          # discards all uncommitted changes → stash first
+  - /git\b[^;&|\n]*\bcheckout\b[^;&|\n]*\s--\s+\./      # bulk-resets tracked files (checkout -- .) → stash first
+  - /git\b[^;&|\n]*\bclean\b[^;&|\n]*(?:\s-\w*f\w*\b|--force\b)/  # -f/-fd/-fX/--force untracked delete → `git clean -n` first
+
+  # --- Git: History rewriting (moved from confirm 2026-06-06) ---
+  # Reflog-recoverable, but back up the branch first (git branch backup/<name>)
+  # before rewriting; escalate when the rewrite is the intended operation.
+  # NOTE: `git commit --amend` is intentionally NOT nudged — amending the last
+  # (unpushed) commit is a routine, reflog-recoverable edit; the nudge was pure
+  # friction on message fix-ups. Force-push protection (above) still guards the
+  # genuinely dangerous case of rewriting already-shared history.
+  - git rebase                         # rewrites commit history → backup branch first
+
+  # --- Git: Stash destruction (moved from confirm 2026-06-06) ---
+  # The stash IS the backup — confirm there's a copy (git stash show -p > patch)
+  # before dropping; escalate when the entry is genuinely disposable.
+  - git stash drop                     # permanently removes a stash entry
+  - git stash clear                    # permanently removes ALL stash entries
+
+  # --- Package management: local removal (moved from confirm 2026-06-06) ---
+  - npm uninstall -g                   # globally removes packages → reinstallable, nudge
+
+  # --- File: Bulk destructive find -exec (moved from confirm 2026-06-06) ---
+  # find -exec: nudge only when the exec runs a DESTRUCTIVE command
+  # (rm/mv/dd/truncate/tee/chmod/chown/sh/bash). Read-only execs like
+  # -exec grep / cat / ls never match. Try a tighter scope or a dry `-print`
+  # first; escalate with the marker when the sweep is intended.
+  - /find\s+.+-exec\s+(rm|mv|dd|truncate|tee|chmod|chown|sh|bash)\b/
+  # find … -delete: the built-in deletion sibling of -exec rm (G3). A protected
+  # target (e.g. `.env`) is ALSO hard-blocked by the four-tier path check before
+  # this nudge is reached; this rule covers the general case.
+  - /find\s+.+-delete\b/
+
+
+# ============================================================
+# CONFIRM PATTERNS (user prompted yes/no before proceeding)
+# ============================================================
+# Risky but legitimate. You'll be asked before these run.
+# ============================================================
+
+confirm_patterns:
+
+  # Only outward-facing / irreversible-external operations remain here — a human
+  # gate is the right posture and the nudge tier's "try a safer alternative
+  # first" has no path that still achieves the goal. All LOCAL, reversible
+  # destructive commands (working-tree/history/stash destruction, npm uninstall
+  # -g, destructive find -exec) moved to nudge_patterns 2026-06-06.
+
+  # --- Git: Remote branch/tag operations (outward-facing — touch the remote) ---
+  # Deletion flags apply to any remote, including after Git global options.
+  - /git\b(?:\s+[^\s;&|]+)*?\s+push\b[^;&|\n]*\s["']?(?:--de(?:l(?:e(?:t(?:e)?)?)?)?|-[a-z]*d[a-z]*)["']?(?:\s|$)/
+  # A deletion refspec has an EMPTY source (":destination"). A nonempty
+  # source such as "refs/tags/v1.0:refs/tags/v1.0" is an ordinary additive push.
+  # Empty quote pairs before the colon still mean an empty source to the shell.
+  - /git\b(?:\s+[^\s;&|]+)*?\s+push\b[^;&|\n]*\s(?:''|"")*["']?:[^\s;&|]+/
+  # Tolerates the same intervening git global options as the block-tier force
+  # rule (`git -c k=v push --force-with-lease` used to fall through to a bare
+  # pass — no confirm at all — since `git\s+push\s+` required the two tokens
+  # contiguous). (M — global-option evasion, sibling of the force-push fix)
+  - /git\b(?:\s+\S+)*?\s+push\b[^;&|\n]*--force-with-lease/ # safer force push, but still rewrites remote (reachable now the block rule excludes it — hooks-m1)
+
+  # --- Package management: publish (irreversible — public registry) ---
+  - npm publish                        # publishing to npm registry (irreversible)
+
+
+# ============================================================
+# FOUR-TIER PATH SCHEMA (A3 — P2.5)
+# ============================================================
+# Extended from PI Agent's damage-control four-tier model
+# (`docs/research/competitive/_hooks-and-core-scripts-comparison.md` §A3).
+# Operation-aware path tiers — the first matching tier wins.
+#
+#   zeroAccessPaths  — read AND write AND delete blocked
+#   readOnlyPaths    — read allowed; write AND delete blocked
+#   noDeletePaths    — read AND write allowed; delete blocked
+#
+# Integration status:
+#   Shell delete ops (Bash and PowerShell: rm / del / erase / unlink /
+#     Remove-Item and its aliases ri / rd / rmdir, including `cmd /c`)
+#                                                    — ENFORCED by guardrail.cjs.
+#   Edit / Write / MultiEdit / NotebookEdit tool ops — ENFORCED by
+#     path-guardrail.cjs (PreToolUse), through `_lib/guardrail-rules.js`
+#     (`checkPathAccess`) and `_lib/command-blocker.js` (`checkFreezeState`).
+#   Known advisory gaps (not recognized as deletes): nested shells
+#     (`powershell -c "ri .env"`, `pwsh -Command …`, `bash -c "rm .env"`),
+#     pipelines (`gci .git | ri -r -fo` is only nudged), and .NET or script
+#     APIs (`[IO.File]::Delete('.env')`). The hook is a speed-bump, not a boundary.
+#
+# Globs: `path/` (directory prefix), `*` (non-slash wildcard), `name.ext`
+# (suffix match). No `**` support yet.
+# ============================================================
+
+# Tier 1 — zero-access: the guardrail blocks ALL operations.
+# Enforcement today: any `rm <path>` against these entries is blocked.
+zeroAccessPaths:
+  - .env                               # root .env (local secrets)
+  - .env.local                         # local override secrets
+  - .env.production                    # production secrets
+  - .git                               # deleting .git destroys all VCS history — catastrophic + irreversible
+  - .git/                              # ...and its internals; non-escalatable so `rm -rf .git # guardrail:confirm` can't downgrade to a user-confirm (sweep C-followup: .git was demonstrated as a chained bypass but was never a protected tier). Segment-anchored matching keeps .gitignore/.github/.gitattributes clear.
+# .githooks/ removed 2026-05-09 — secret-scanner runs as a Claude Code
+# PreToolUse hook now (see .claude/hooks/secret-scanner.cjs); no git hook
+# is scaffolded by adopters, so a tier-1 rule here would be defending an
+# empty boundary.
+
+# Tier 2 — read-only: reads allowed, writes/deletes blocked.
+# Pre-populated (A6 from ECC — `everything-claude-code` §config-protection)
+# with linter/formatter/build-tool configs that should only be edited
+# intentionally, not by automation. Do not edit this file to lift one: a
+# project that needs automation to rewrite an entry (e.g. `npm init`
+# regenerating package-lock) lists the exact entry under `except:
+#   readOnlyPaths:` in the project-owned .claude/guardrail-rules.project.yaml,
+# which updates never overwrite (this file is replaced by every update).
+#
+# 2026-04-25 audit pass — first day with the PreToolUse:Edit/Write
+# path-guardrail hook live. Three entries removed because they break
+# legitimate /update-config + /create:project-architecture + Vitest tuning
+# workflows; the hook would block its own home file in the case of
+# .claude/settings.json. Kept entries are low-friction (rare edits + low
+# false-positive risk).
+readOnlyPaths:
+  - package-lock.json                  # lockfile — only npm manages this (Bash, not Edit/Write)
+  - .eslintrc*                         # ESLint config (A6 — ECC)
+  - .prettierrc*                       # Prettier config (A6 — ECC)
+  - .editorconfig                      # EditorConfig (A6 — ECC)
+  - .claude/guardrail-rules.project.yaml  # project-owned override: a person edits it (an agent that could write it could lift its own guardrails)
+# Removed 2026-04-25:
+#   .claude/settings.json         — /update-config skill must be able to edit this
+#   docs/architecture/overview.md — /create:project-architecture + /review:update-docs write here
+#   vitest.config*                — test tuning during refactor work is routine; explicit handoff flag
+# Removed 2026-07-16 (harvested from an adopter):
+#   tsconfig*.json                — the old "project does not use TS so zero friction" rationale
+#                                   doesn't hold at template level: TS-heavy adopters legitimately
+#                                   create/edit per-package tsconfigs as routine work (same rationale
+#                                   as the vitest.config* removal).
+
+# Tier 3 — no-delete: reads/writes allowed, deletes blocked.
+# (Empty by default — populate with paths your workflow must not remove.)
+# Empty forms accepted (all equivalent): `noDeletePaths:` (no children),
+# `noDeletePaths: []`, or `noDeletePaths: {}`. See `_lib/yaml-parser.js` header.
+noDeletePaths:
+
+# ============================================================
+# DANGEROUS PATTERNS (A3 — bash-level hard block)
+# ============================================================
+# Parallel channel to block_patterns above — use this list when a pattern
+# comes from a competitor-adopted safety rule so provenance is visible.
+# Functionally identical to block_patterns (hard block). Keep both lists
+# populated where appropriate so the rule source is self-documenting.
+# ============================================================
+
+dangerousPatterns:
+
+# ============================================================
+# PATH RULES (LEGACY — RESERVED PRE-P2.5)
+# ============================================================
+# Kept for backward compatibility with downstream projects that loaded the
+# older schema. P2.5 (this file) introduced `zeroAccessPaths` / `readOnlyPaths` /
+# `noDeletePaths` above; those are the enforced tiers. `path_rules` is
+# documented placeholders only — neither `evaluate()` nor `checkPathAccess()`
+# act on it.
+# ============================================================
+
+path_rules:
+
+  # Paths that should NEVER be touched by any automated command.
+  # Add absolute or relative paths. Wildcards are not yet supported.
+  zero_access:
+    - .env                             # root .env (local secrets)
+    - .env.local                       # local override secrets
+    - .env.production                  # production secrets
+# .githooks/ removed 2026-05-09 — see zeroAccessPaths comment above.
+
+  # Paths that can be read but must not be overwritten or deleted.
+  read_only:
+    - .claude/settings.json            # hook registry — only the orchestrator edits this
+    - package-lock.json                # lockfile — only npm manages this
+    - docs/architecture/overview.md            # architecture source of truth
