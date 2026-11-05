@@ -1,0 +1,41 @@
+{
+  "skill_name": "excalidraw-diagram",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Plan an editable Excalidraw sketch of our support escalation flow for a five-minute workshop. It has a triage step, a billing branch and a technical branch that rejoins at resolution. Our project already uses charcoal text and teal accents. Available capabilities: official Excalidraw CLI 0.2.0, installed Chromium, file tools and an image viewer. No cloud account. Write a short artifact and verification plan before creating any diagram; this is a standalone request.",
+      "expected_output": "A concise plan for an editable .excalidraw scene and locally rendered preview, using project colors and an actual render/view/fix loop without creating a PRD or requiring cloud services.",
+      "files": [],
+      "assertions": [
+        "The plan retains an editable .excalidraw source and uses the existing artifact path or docs/design/.",
+        "The plan prioritizes the supplied project colors and limits diagram detail to the workshop audience.",
+        "The plan includes the official local render command with --out and inspection of rendered pixels followed by source fixes if needed.",
+        "The plan does not require account creation, upload, Python/uv setup, a PRD or a full design specification."
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "We have a manually edited docs/design/review-flow.excalidraw and a design spec. Change only the text on node billing-owner to Billing Operations and fix its connector destination. Keep my annotations, image, colors, positions and other nodes. Before editing, write the safe patch and validation plan. The scene has not yet been read and the editor/package version is unknown; file tools, a browser and the official CLI are available.",
+      "expected_output": "A plan to read the current scene, verify the actual version/format, patch the requested elements and bindings, preserve unrelated manual work, and record render inspection in the existing design spec.",
+      "files": [],
+      "assertions": [
+        "The plan reads the current scene and verifies matching official schema/API evidence before prescribing concrete binding fields.",
+        "The plan preserves unrelated IDs, element order, manual annotations and embedded image data rather than regenerating the whole scene.",
+        "The plan updates affected text and connectors together and separates source integrity checks from rendered inspection.",
+        "The plan records source/preview links, opening instructions and inspection status under the existing design spec's Design Artifacts section."
+      ]
+    },
+    {
+      "id": 3,
+      "prompt": "Give me an editable Excalidraw overview of a three-step deployment process. First write the approach and handoff I can expect. This host has file read/write and shell commands, but discovery found no Excalidraw CLI, no compatible browser and no image viewer. Do not install anything or upload files. I would like a native interactive chat canvas if you have one; no such widget tool was discovered.",
+      "expected_output": "An honest source-first approach with compatible format research, an editable artifact path and opening instructions, explicitly unperformed rendering/inspection and no invented native canvas or installation.",
+      "files": [],
+      "assertions": [
+        "The approach preserves an editable .excalidraw deliverable and explains how to open it in a compatible editor.",
+        "The approach explicitly states that rendered visual inspection cannot run with the discovered capabilities and does not claim a PNG was inspected.",
+        "The approach does not install packages, create accounts, upload source or imply a native interactive chat canvas exists.",
+        "The approach does not claim valid editable schema evidence from JSON parsing alone."
+      ]
+    }
+  ]
+}

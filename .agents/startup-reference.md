@@ -56,7 +56,7 @@ Tier column: `standard ⇡` selects `deep` for the higher-stakes cases in the ro
 - `/interview` — Interactive Q&A to gather requirements
 - `/create:project-brief` — Strategic vision → `product/brief.md`
 - `/create:project-requirements` — PRD with FRs/NFRs → `product/requirements.md`
-- `/create:project-design` — UX spec, wireframes, themes, mock → `docs/design/`
+- `/create:project-design` — Scoped UX spec plus selected artifacts and inspection → `docs/design/spec.md`
 - `/create:project-architecture` — Tech stack, ADRs → `architecture/overview.md`
 - `/create:project-epics` — Break requirements into stories → `work/backlog.md`
 - `/create:project-todo` — Master implementation index → `TODO_{ProjectName}.md`
@@ -121,7 +121,7 @@ docs/
 ├── CLAUDE.md               # The navigation contract (auto-loaded)
 ├── product/                # brief.md requirements.md context.md brainstorm.md research.md
 ├── architecture/           # overview.md api.md data-model.md decisions/NNNN-*.md (ADRs)
-├── design/                 # spec.md wireframes.md theme.{light,dark}.md mock.html
+├── design/                 # spec.md → selected artifacts/tools/opening/inspection in ## Design Artifacts
 ├── engineering/            # setup.md conventions.md testing.md
 ├── operations/             # deploy.md observability.md security.md runbooks/
 ├── work/                   # WHAT now & next — the living plan (durable only)
@@ -321,7 +321,7 @@ Secret hooks share `secret-patterns.cjs`. The scanner fires on two paths: (1) th
 
 Authored implementations live in `.agents/core/`; execute through the active native `.claude/core/` or `.codex/core/` entry point. Important helpers: `gate.js` (build/test gate, auto-detect) · `constants.js` (system constants, phase artifacts, doc chain, `MEMORY_DECAY`) · `daily-log.js` · `memory-manager.js` (CRUD + search + decay + lint, JSON + SQLite FTS5) · `memory-extractor.js` (manual/brownfield only) · `memory-curator.js` (Sonnet dedup, strict) · `memory-promoter.js` · `gen-timeline.js` · `telemetry-log.js` (self-instrument user-typed commands) · `feedback-digest.js` (`/review:feedback` rollup, headless) · `_lib/doc-drift.js` (`isRealDoc()` + `gradeDoc()`/`grade` CLI deterministic PRD quality gate + legacy/dup planning-doc detection) · `skill-conformance.js` · `skill-eval.js` (differential eval math) · `skill-evolution.js` (`/review:evolve-skills` intake) · `council.js` (council aggregation) · `metrics.js` · `template-updater.js` (zone-aware sync) · `guardrail-stats.js` (guardrail hit-counter reporter — reads `guardrail-events.jsonl`) · `status.js` · `scaffold.js` (seeds from `SKILL_TEMPLATE_MANIFEST`) · `branch-audit.js` (`npm run branch:audit` — read-only safe-to-prune audit of local branches + worktrees; never deletes) · `adr-lint.js` (`npm run adr:lint` — ADR registry consistency linter over `docs/architecture/decisions/`; exit 1 on ERROR) · `path-drift-lint.js` (`npm run path:lint` — writer/reader path-drift lint: legacy `.output` tokens, flat-handoff literals, unknown compartments vs `OUTPUT_PATHS`; wired into `/review:check-templates`; `path-lint:keep` marks intentional legacy examples) · `memory-backup.js` (`npm run memory:backup` — mirrors the memory store to an out-of-repo sibling, with db integrity check + dated snapshots) · `_lib/hook-telemetry.js` (`emitHookEvent` timing + `emitGuardrailHit` hit counter).
 
-`.agents/`: canonical `config/version.json` · `roles/*.md` (11 roles) · `skills/` (49 workflow entry points and 23 knowledge skills) · `core/`, `hooks/`, `templates/` · `adapters/{claude,codex}/` (runtime metadata/protocol) · `render-state.json` (source/native ownership ledger). Native `.claude/` and `.codex/` roles/hooks/helpers are generated delivery; `.claude/version.json` is rendered compatibility metadata. `runtime-context.js`, `_lib/project-root.js` and `_lib/memory-paths.js` distinguish installed assets, active source and ignored shared state.
+`.agents/`: canonical `config/version.json` · `roles/*.md` (11 roles) · `skills/` (50 workflow entry points and 24 knowledge skills) · `core/`, `hooks/`, `templates/` · `adapters/{claude,codex}/` (runtime metadata/protocol) · `render-state.json` (source/native ownership ledger). Native `.claude/` and `.codex/` roles/hooks/helpers are generated delivery; `.claude/version.json` is rendered compatibility metadata. `runtime-context.js`, `_lib/project-root.js` and `_lib/memory-paths.js` distinguish installed assets, active source and ignored shared state.
 
 `docs/reference/agents/`: the toolkit's reference home (reaches a project only through the publish artifact; install and update do not deliver it) — `system-map.md` (system inventory + workflow graphs) · `customization.md` (zone map) · `commands.md` · `getting-started.md` · `concepts/` · `guides/` · `README.md` (mirror of `docs/README.md`, relative links rewritten) + `LICENSE` (mirror of root LICENSE); edit their originals and refresh the copies. `migration-v6.md` explains canonical/native changes and local prepared-release distribution. Namespaced under `agents/` so it never collides with a project's own reference docs (`onboarding.md`, `glossary.md`, `links.md`) at `docs/reference/` root. `docs/engineering/conventions.md`: durable rules for contributors (moved from `reference/` in the domain-taxonomy migration).
 

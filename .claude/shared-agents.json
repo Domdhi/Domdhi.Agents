@@ -54,7 +54,6 @@
     },
     "ux-designer": {
       "model": "sonnet",
-      "tools": "Read, Write, Edit, Grep, Glob",
       "memory": "project"
     }
   }

@@ -4,259 +4,255 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{Project Name} — Layout Mock</title>
+    <title>{Project Name} — Optional Layout Mock</title>
     <style>
-        /* ========================================
-           {Project Name} Mock Layout
-           Generated from UX Spec + Theme Files
-           Self-contained — no external dependencies
+        /*
+           Optional portable HTML recipe, not a required deliverable.
+           Prefer the project's native components/preview when those answer the task.
+           These neutral sample values are not an approved project brand.
+           Replace/map tokens to approved definitions and inspect requested states/sizes.
 
-           This template mocks a full APPLICATION SHELL (header/sidebar/main/footer).
-           For a FOCUSED single screen/component (a popup, panel, modal, card),
-           keep the :root tokens but REPLACE the .app-shell markup + grid with just
-           that component, sized to its real surface (e.g. a 300px popup at 300px).
-           Don't ship an app grid around a single component.
-           ======================================== */
-
+           Full-shell example: keep .app-shell, header, sidebar and footer as needed.
+           Focused component: remove those wrappers/regions; place only the selected
+           component in <main class="component-preview">, set --size-component to its
+           real width, and remove unrelated markup/CSS. A full shell is optional.
+        */
         :root {
-            /* --- Brand --- */
-            --color-primary: {hex};
-            --color-secondary: {hex};
-            --color-accent: {hex};
+            --color-action: #1d4ed8;
+            --color-action-hover: #1e40af;
+            --color-on-action: #ffffff;
+            --color-bg-page: #f3f4f6;
+            --color-bg-surface: #ffffff;
+            --color-bg-navigation: #e5e7eb;
+            --color-bg-hover: #d1d5db;
+            --color-text-primary: #111827;
+            --color-text-secondary: #374151;
+            --color-border: #6b7280;
+            --color-focus: #1d4ed8;
 
-            /* --- Backgrounds --- */
-            --color-bg-page: {hex};
-            --color-bg-card: {hex};
-            --color-bg-sidebar: {hex};
-            --color-bg-header: {hex};
+            --space-xs: 0.25rem;
+            --space-sm: 0.5rem;
+            --space-md: 1rem;
+            --space-lg: 1.5rem;
+            --space-xl: 2rem;
 
-            /* --- Text --- */
-            --color-text-primary: {hex};
-            --color-text-secondary: {hex};
+            --font-family: system-ui, sans-serif;
+            --font-size-small: 0.875rem;
+            --font-size-base: 1rem;
+            --font-size-heading: 1.25rem;
+            --font-size-title: 1.75rem;
+            --font-weight-normal: 400;
+            --font-weight-strong: 700;
+            --line-height-body: 1.5;
+            --line-height-heading: 1.2;
 
-            /* --- Semantic --- */
-            --color-success: {hex};
-            --color-warning: {hex};
-            --color-danger: {hex};
-
-            /* --- Spacing --- */
-            --space-xs: 4px;
-            --space-sm: 8px;
-            --space-md: 16px;
-            --space-lg: 24px;
-            --space-xl: 32px;
-
-            /* --- Typography --- */
-            --font-family: {font}, system-ui, sans-serif;
-            --font-size-base: 14px;
-            --font-size-lg: 18px;
-            --font-size-xl: 24px;
-
-            /* --- Shadows --- */
-            --shadow-sm: 0 1px 3px rgba(0,0,0,0.12);
-            --shadow-md: 0 4px 6px rgba(0,0,0,0.15);
+            --size-navigation: 15rem;
+            --size-content-max: 70rem;
+            --size-card-min: 16rem;
+            --size-component: 20rem;
+            --size-target-min: 2.75rem;
+            --size-page-min: 100dvh;
+            --border-width: 1px;
+            --radius-control: 0.25rem;
+            --radius-surface: 0.5rem;
+            --focus-width: 3px;
+            --focus-offset: 3px;
+            --motion-duration: 120ms;
         }
 
-        * { margin: 0; padding: 0; box-sizing: border-box; }
+        * { box-sizing: border-box; }
 
         body {
+            margin: 0;
             font-family: var(--font-family);
             font-size: var(--font-size-base);
+            font-weight: var(--font-weight-normal);
+            line-height: var(--line-height-body);
             color: var(--color-text-primary);
             background: var(--color-bg-page);
         }
 
-        /* --- App Shell --- */
+        a { color: var(--color-action); }
+        a:hover { color: var(--color-action-hover); }
+        a, button, summary { touch-action: manipulation; }
+
+        :focus-visible {
+            outline: var(--focus-width) solid var(--color-focus);
+            outline-offset: var(--focus-offset);
+        }
+
+        h1, h2, p { margin: 0; }
+        h1, h2 { line-height: var(--line-height-heading); }
+        h1 { font-size: var(--font-size-title); }
+        h2 { font-size: var(--font-size-heading); }
+
+        .skip-link {
+            position: absolute;
+            inset-inline-start: var(--space-md);
+            inset-block-start: var(--space-md);
+            padding: var(--space-sm) var(--space-md);
+            background: var(--color-bg-surface);
+            z-index: 2;
+            transform: translateY(calc(-100% - var(--space-xl)));
+        }
+        .skip-link:focus { transform: none; }
+
         .app-shell {
             display: grid;
+            grid-template-columns: var(--size-navigation) minmax(0, 1fr);
             grid-template-rows: auto 1fr auto;
-            grid-template-columns: 240px 1fr;
-            grid-template-areas:
-                "header header"
-                "sidebar main"
-                "footer footer";
-            min-height: 100vh;
+            grid-template-areas: "header header" "sidebar main" "footer footer";
+            min-height: var(--size-page-min);
         }
 
         .header {
             grid-area: header;
-            background: var(--color-bg-header);
-            padding: var(--space-md);
             display: flex;
+            flex-wrap: wrap;
             align-items: center;
             justify-content: space-between;
-            box-shadow: var(--shadow-sm);
-            z-index: 10;
+            gap: var(--space-md);
+            padding: var(--space-md);
+            background: var(--color-bg-surface);
+            border-bottom: var(--border-width) solid var(--color-border);
         }
-
-        .header .logo {
-            font-size: var(--font-size-xl);
-            font-weight: 700;
-            color: var(--color-primary);
-        }
+        .logo { font-size: var(--font-size-heading); font-weight: var(--font-weight-strong); }
 
         .sidebar {
             grid-area: sidebar;
-            background: var(--color-bg-sidebar);
             padding: var(--space-md);
-            border-right: 1px solid var(--color-secondary);
+            background: var(--color-bg-navigation);
         }
-
-        .sidebar nav a {
-            display: block;
+        .sidebar nav { display: flex; flex-direction: column; gap: var(--space-sm); }
+        .sidebar a {
+            display: flex;
+            align-items: center;
+            min-height: var(--size-target-min);
             padding: var(--space-sm) var(--space-md);
+            border-radius: var(--radius-control);
             color: var(--color-text-primary);
-            text-decoration: none;
-            border-radius: 4px;
-            margin-bottom: var(--space-xs);
+            text-underline-offset: var(--space-xs);
+            transition: background-color var(--motion-duration);
         }
-
-        .sidebar nav a:hover { background: var(--color-bg-card); }
-        .sidebar nav a.active { background: var(--color-primary); color: white; }
+        .sidebar a:hover { background: var(--color-bg-hover); }
+        .sidebar a[aria-current] { background: var(--color-action); color: var(--color-on-action); }
 
         .main {
             grid-area: main;
+            min-width: 0;
+            width: 100%;
+            max-width: var(--size-content-max);
             padding: var(--space-lg);
-            overflow-y: auto;
         }
 
-        .page-title {
-            font-size: var(--font-size-xl);
-            margin-bottom: var(--space-lg);
-        }
-
-        .card {
-            background: var(--color-bg-card);
-            border-radius: 8px;
-            padding: var(--space-lg);
-            box-shadow: var(--shadow-sm);
-            margin-bottom: var(--space-md);
-        }
-
-        .card-title {
-            font-size: var(--font-size-lg);
-            margin-bottom: var(--space-md);
-        }
-
+        .stack { display: grid; gap: var(--space-lg); }
         .card-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+            grid-template-columns: repeat(auto-fit, minmax(min(100%, var(--size-card-min)), 1fr));
             gap: var(--space-md);
         }
-
-        .data-table { width: 100%; border-collapse: collapse; }
-        .data-table th, .data-table td {
-            padding: var(--space-sm) var(--space-md);
-            text-align: left;
-            border-bottom: 1px solid var(--color-secondary);
+        .card {
+            min-width: 0;
+            padding: var(--space-lg);
+            border: var(--border-width) solid var(--color-border);
+            border-radius: var(--radius-surface);
+            background: var(--color-bg-surface);
+            overflow-wrap: anywhere;
         }
-        .data-table th { font-weight: 600; color: var(--color-text-secondary); }
-
-        .btn {
+        .muted { color: var(--color-text-secondary); }
+        .action {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-height: var(--size-target-min);
             padding: var(--space-sm) var(--space-md);
-            border: none;
-            border-radius: 4px;
-            cursor: pointer;
-            font-size: var(--font-size-base);
+            border-radius: var(--radius-control);
+            background: var(--color-action);
+            color: var(--color-on-action);
+            font-weight: var(--font-weight-strong);
+            text-decoration: none;
+            transition: background-color var(--motion-duration);
         }
-        .btn-primary { background: var(--color-primary); color: white; }
-        .btn-secondary {
-            background: transparent;
-            border: 1px solid var(--color-secondary);
-            color: var(--color-text-primary);
+        .action:hover { background: var(--color-action-hover); color: var(--color-on-action); }
+
+        summary { min-height: var(--size-target-min); cursor: pointer; }
+        details p { margin-block-start: var(--space-sm); }
+
+        .component-preview {
+            width: min(100%, var(--size-component));
+            margin: var(--space-md) auto;
+            padding: var(--space-md);
         }
 
         .footer {
             grid-area: footer;
-            background: var(--color-bg-header);
             padding: var(--space-md);
-            text-align: center;
+            background: var(--color-bg-surface);
+            border-top: var(--border-width) solid var(--color-border);
+            font-size: var(--font-size-small);
             color: var(--color-text-secondary);
-            font-size: 12px;
         }
 
-        @media (max-width: 768px) {
+        /* Select breakpoints from the real surface/content constraints. */
+        @media (max-width: 48rem) {
             .app-shell {
-                grid-template-columns: 1fr;
-                grid-template-areas: "header" "main" "footer";
+                grid-template-columns: minmax(0, 1fr);
+                grid-template-rows: auto auto 1fr auto;
+                grid-template-areas: "header" "sidebar" "main" "footer";
             }
-            .sidebar { display: none; }
+            .sidebar nav { flex-direction: row; flex-wrap: wrap; }
+            .main { padding: var(--space-md); }
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+            :root { --motion-duration: 0ms; }
         }
     </style>
 </head>
 <body>
+    <a class="skip-link" href="#overview">Skip to content</a>
     <div class="app-shell">
         <header class="header">
-            <div class="logo">{Project Name}</div>
-            <div><span>User Name</span></div>
+            <span class="logo">{Project Name}</span>
+            <span class="muted">Layout exploration</span>
         </header>
 
         <aside class="sidebar">
-            <nav>
-                <a href="#" class="active">Dashboard</a>
-                <a href="#">{Page 2}</a>
-                <a href="#">{Page 3}</a>
-                <a href="#">Settings</a>
+            <nav aria-label="Primary">
+                <a href="#overview" aria-current="location">Overview</a>
+                <a href="#recent">Recent items</a>
+                <a href="#help">Help</a>
             </nav>
         </aside>
 
-        <main class="main">
-            <h1 class="page-title">Dashboard</h1>
+        <main class="main stack" id="overview" tabindex="-1">
+            <h1>Overview</h1>
+            <p class="muted">Replace this example with the requested content and relevant states.</p>
             <div class="card-grid">
-                <div class="card">
-                    <div class="card-title">Metric 1</div>
-                    <div style="font-size: 32px; font-weight: 700;">42</div>
-                    <div style="color: var(--color-text-secondary);">Description</div>
-                </div>
-                <div class="card">
-                    <div class="card-title">Metric 2</div>
-                    <div style="font-size: 32px; font-weight: 700;">128</div>
-                    <div style="color: var(--color-text-secondary);">Description</div>
-                </div>
-                <div class="card">
-                    <div class="card-title">Metric 3</div>
-                    <div style="font-size: 32px; font-weight: 700;">97%</div>
-                    <div style="color: var(--color-text-secondary);">Description</div>
-                </div>
+                <section class="card stack" aria-labelledby="ready-title">
+                    <h2 id="ready-title">Ready for review</h2>
+                    <p>Three items need a decision.</p>
+                    <a class="action" href="#recent">Review items</a>
+                </section>
+                <section class="card stack" aria-labelledby="empty-title">
+                    <h2 id="empty-title">No upcoming work</h2>
+                    <p class="muted">New assignments will appear here.</p>
+                </section>
             </div>
-            <div class="card" style="margin-top: var(--space-md);">
-                <div class="card-title">Recent Items</div>
-                <table class="data-table">
-                    <thead>
-                        <tr>
-                            <th>Name</th>
-                            <th>Status</th>
-                            <th>Date</th>
-                            <th>Action</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <tr>
-                            <td>Item 1</td>
-                            <td>Active</td>
-                            <td>2025-01-01</td>
-                            <td><button class="btn btn-secondary">View</button></td>
-                        </tr>
-                        <tr>
-                            <td>Item 2</td>
-                            <td>Pending</td>
-                            <td>2025-01-02</td>
-                            <td><button class="btn btn-secondary">View</button></td>
-                        </tr>
-                        <tr>
-                            <td>Item 3</td>
-                            <td>Complete</td>
-                            <td>2025-01-03</td>
-                            <td><button class="btn btn-secondary">View</button></td>
-                        </tr>
-                    </tbody>
-                </table>
-            </div>
+            <section class="card stack" id="recent" aria-labelledby="recent-title">
+                <h2 id="recent-title">Recent items</h2>
+                <details>
+                    <summary>Review example item</summary>
+                    <p>This native disclosure demonstrates an inspectable interaction. Replace it with the actual task; record checks performed in the handoff.</p>
+                </details>
+            </section>
+            <section class="card stack" id="help" aria-labelledby="help-title">
+                <h2 id="help-title">Help</h2>
+                <p>Use the selected preview to inspect layout, focus order and navigation at the relevant sizes.</p>
+            </section>
         </main>
 
-        <footer class="footer">
-            &copy; {Year} {Project Name}. All rights reserved.
-        </footer>
+        <footer class="footer">{Project Name} — optional mock; inspection evidence belongs in the design handoff.</footer>
     </div>
 </body>
 </html>

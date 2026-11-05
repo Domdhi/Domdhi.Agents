@@ -132,7 +132,7 @@ Identify:
 - Stories `[!]` blocked → skip, report at end
 - Stories `[ ]` pending → execute
 
-If no Wave Plan exists in the TODO → compute one now (same rules: zero file overlap, dependency order). Refinement for *symmetric* file collisions (two stories share a file but neither consumes the other's output): serialize them **within** the same wave — commit story A, then story B starts from the committed state — rather than paying a whole extra wave for what is only a merge-conflict risk, not a sequencing requirement. Asymmetric data dependencies still require hard wave sequencing.
+If no Wave Plan exists in the TODO → compute one now (dependency order and coordinated writes under `.agents/startup.md`). File lists are starting assignments, not edit allowlists. Refinement for *symmetric* file collisions (two stories share a file but neither consumes the other's output): serialize them **within** the same wave — commit story A, then story B starts from the committed state — rather than paying a whole extra wave for what is only a merge-conflict risk, not a sequencing requirement. Separate worktrees may overlap when integration and conflict review are explicit. Asymmetric data dependencies still require hard wave sequencing.
 
 ### 3. Check for existing execution plan
 
@@ -236,6 +236,7 @@ Use the Write tool directly. Template:
 | 2 | ... |
 
 ## File Ownership Matrix
+Starting assignments and active writers; update when necessary file expansion is coordinated. Record handoffs, serialized edits or separate worktrees and the integration owner for shared files.
 - **{file}** — Wave {N}, Story {ID}
 - ...
 
@@ -313,11 +314,11 @@ For EACH story in the wave, Main Agent reads the actual files and builds a rich 
 Each context package contains:
 1. Story title, description, and full AC (verbatim from TODO)
 2. Research notes from the TODO story
-3. Exact files to modify with **current content pasted** (not just paths)
+3. Starting files with **current content pasted** (not just paths); the authorized outcome may require more files
 4. **Variable names, function signatures, types** — explicitly specified so dev and QA match
 5. Patterns from similar existing code
 6. Architecture constraints relevant to this story
-7. `DO NOT TOUCH` list — files owned by OTHER stories in this wave
+7. Active-writer map — who is editing shared files, how to coordinate a handoff or serialize edits, and any worktree integration owner
 8. Interface contract — shared between dev and QA agent prompts (identical)
 9. **Wave N delta briefing (Wave 2+ only, conditional).** One-liner stating what a prior wave in the same epic *retired, deleted, or rewrote* when the current story's conceptual area overlaps with that prior wave. Agents only read files as-edited — they cannot see deleted content. Without this briefing, a sibling-wave agent can inherit a stale mental model from content that was removed minutes earlier and author prose or code referencing the retired behavior.
 
@@ -386,7 +387,7 @@ Trade-off:
 - **Costs**: Less spec-vs-test review depth — Main Agent doesn't read tests before implementation lands
 - **Safety net**: Code review on M+ stories still catches the gap (caught a softened-AC + missing-seeding-assertion in TDD-6.1 even when tests were dev-authored)
 
-Preserve repository test ownership: if the caller/Main Agent must author tests, keep Step 2b and delegate implementation only. The fast path does not change the sole-builder rule, concurrency cap, file ownership or independent review requirements.
+Preserve repository test ownership: if the caller/Main Agent must author tests, keep Step 2b and delegate implementation only. The fast path does not change the sole-builder rule, concurrency cap, active-writer coordination or independent review requirements.
 
 Enable explicitly per wave: declare in the plan file (`Strategy: one-round dispatch — S-size only`) and call it out in dispatch prompts. Field-tested in Wave 5 (6 hooks, 6 agents DONE first try). Do not enable by default — the plan must say so. The fast-path dispatch uses the same Path B prompt template (including the PRIOR LEARNINGS block when memory matches exist), so per-story memory grounding is preserved even in one-round mode.
 
@@ -515,7 +516,14 @@ before reporting DONE:
   happy-path assertion is not coverage of an all-branches invariant (field case: an
   oauth callback cleared cookies on only 4 of 8 branches under exactly this gap).
 
-DO NOT TOUCH: {files owned by other stories in this wave}
+STARTING FILES: {files initially assigned to this story}
+ACTIVE WRITERS: {other writers' current files and coordination contact, or none}
+Follow the outcome-ownership contract in .agents/startup.md. Expand to files
+needed for the authorized outcome, reading them first. Before editing another
+active writer's file, coordinate a handoff or sequencing through Main Agent;
+continue independent work while it is arranged. Separate worktrees may overlap
+with explicit integration and conflict review. Report the actual changed files,
+why the set expanded, and the affected verification. Preserve others' work.
 
 DO NOT COMMIT / DO NOT `git add` / DO NOT `git commit` — the orchestrator (Main
 Agent) owns ALL commits. Create and modify files only, then report your STATUS.
@@ -601,7 +609,7 @@ One entry per dispatched story. The ledger lands at `docs/.output/.state/telemet
 | 2 | Missing test setup for new deps | Add setup to affected test files | No (expected) |
 | 3 | Guard test count drift | Update count assertions | No (expected) |
 | 4 | Missing test IDs in markup | Add data-testid attributes | No |
-| 5 | File outside ownership | Revert the file, note for prompt improvement | **Yes — always; it breaks wave isolation** |
+| 5 | Unexpected file edit or write collision | Inspect attribution and task relevance first. Keep necessary changes, reconcile collisions with the active writer, and update assignments plus affected checks. Never revert solely because a file was unlisted; preserve others' work. | Only for uncoordinated concurrent writes, unrelated changes or failure to report the changed set; coordinated expansion is expected |
 | 6 | Import path mismatch | Align imports to actual file locations | Yes |
 | 7 | Agent invented new names | Rename to match plan's variable names | Yes |
 | 8 | Agent added unrequested features | Remove the extras | Yes |
@@ -1118,7 +1126,7 @@ node .claude/hooks/organize.cjs
 |--------|-------|
 | Total agent dispatches | {n} |
 | Misalignments fixed | {n} |
-| File ownership violations | {n} |
+| Uncoordinated write collisions | {n} |
 | Signature mismatches | {n} |
 | Issues logged to docs/.output/evolution/agents/{YYYY-MM-DD}.md | {n} |
 
@@ -1173,7 +1181,7 @@ Stories that are read-only verification (no code changes):
 5. **Send variable names to dev agents.** Identical signatures, types, test IDs across all agents in a wave. This is the #1 misalignment source. Only applies to Path B.
 6. **Main Agent writes tests before dev agents run.** Tests are derived from AC (TDD), not from implementation. Dev agents implement to pass the tests Main Agent wrote. The wave verification (Step 5) builds and runs the grounded focused selection as a hard pass/fail — **including every suite the wave touched, not just `gate.js test`'s single command** (run a separate E2E/Playwright suite explicitly; see Step 5, F25), **plus the E2E leg (`gate.js e2e`) on contract-change waves or whenever `--e2e` is passed** (R1). The gate fails closed on a zero-collected run. **Exception:** test-authoring epics where the deliverable *is* the test invert this — skip pre-writing, dispatch one-round, and gate on "are the assertions real?" (Step 2b, F26).
    - **6a. The orchestrator owns wave verification and full-suite checkpoints — dev agents do NOT run heavy gates.** Parallel dev agents share one working tree and one gate lock; each running the full `gate.js test` causes lock contention and git-fixture flakes (transient FALSE failures, not regressions). The Path B dispatch prompt tells agents to verify only their narrow test file (`npx vitest run <file>`) or skip self-gating; the Step 5 scope-specific checks are the wave evidence of record, with full suites scheduled at baseline, midpoint (3+ waves) and final. See `workflows/parallel-agents-skip-full-gate-orchestrator-owns-it`.
-7. **ZERO file overlap within a wave.** Overlapping files = stomped changes. This applies to BOTH paths. Enforcement is currently **instruction-level** — the `DO NOT TOUCH` list in each dev prompt, plus Main Agent's Step-4b check (failure mode #5: revert any file written outside ownership and log it). There is no tool-level write-guard scoping each agent to its owned paths (known limitation, F27 — same family as the instruction-enforced gates, F8). On the parallel path the whole risk is concurrent writes, so treat an out-of-lane edit as a hard misalignment, not a nit.
+7. **Own the outcome; coordinate active writers.** Apply `.agents/startup.md` on both paths. Main Agent working alone may expand the file set as the task requires. In a shared checkout, keep one active writer per file; Main Agent arranges handoffs or serialized edits and updates the plan without asking the owner to approve routine reassignment. Separate worktrees may overlap with explicit integration and conflict review. Planned ownership is not a tool-enforced lock: track actual writers and changes. Step 4b reconciles unexpected edits without automatic reverts; only uncoordinated writes or unrelated scope are misalignments. Shared Git-index mutations remain coordinated even for disjoint files.
 8. **AC verification is a gate, not a formality.** Every AC bullet is checked. Failed AC = not done. This applies to BOTH paths.
 9. **Every wave commit regenerates the session handoff** (the run's single `$HANDOFF` file, captured once on wave 1). Phase 2 Step 8e is non-optional. If the run stops mid-way, the next session's `/prime` sees a handoff pointed at the right resume wave. Use the `session-handoff` skill.
 10. **Always update TODO after completing a story. Always commit after updating TODO.** Before starting a story, check for pending commits.

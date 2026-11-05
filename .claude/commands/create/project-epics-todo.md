@@ -150,19 +150,21 @@ Story {N}.{A} → Story {N}.{B} → Story {N}.{C}
 ### Wave Plan
 Concrete wave grouping `/run-todo` consumes directly (R4) — derived from the
 critical path + parallel workstreams above, but materialized as a table so the
-executor doesn't have to recompute it from prose. **Rule: zero file overlap
-within a wave** (two stories that edit the same file go in separate waves, even
-with no logical dependency), and respect dependency order across waves.
+executor doesn't have to recompute it from prose. Apply `.agents/startup.md`:
+file assignments are starting scope; shared-checkout files have one active writer
+at a time. Use handoffs or serialized edits within a wave for contention without
+a logical dependency. Separate worktrees may overlap with explicit integration
+and conflict review. Respect actual dependency order across waves.
 
-| Wave | Stories | Strategy | Files Owned (no overlap within a wave) |
+| Wave | Stories | Strategy | Starting Files and Writer Coordination |
 |------|---------|----------|----------------------------------------|
 | 1 | {N}.1 | direct (1 story) | {files} |
 | 2 | {N}.{x} | direct / parallel | {files} |
 | 3 | {N}.{y} + {N}.{z} | parallel (disjoint surfaces) | {y: files} \| {z: files} |
 
-> If two stories share a file (e.g. both edit `content.js`), they MUST be in
-> different waves — that's file contention, not a logical dependency. Note such
-> serialization groups explicitly so the executor doesn't parallelize them.
+> If two stories share a file (e.g. both edit `content.js`), record the handoff,
+> serialized edits or separate-worktree integration explicitly. A shared file
+> alone does not force another wave or forbid necessary file expansion.
 
 ---
 

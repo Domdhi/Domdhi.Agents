@@ -1,6 +1,6 @@
 # Domdhi.Agents — System Map
 
-The toolkit has 49 workflows, 11 shared roles and 23 knowledge skills. [Commands](commands.md) is the complete workflow inventory with both native names and procedure links; [skills](concepts/skills.md) owns the knowledge catalog. This map shows source/delivery wiring and runtime responsibilities without duplicating their procedures.
+The toolkit has 50 workflows, 11 shared roles and 24 knowledge skills. [Commands](commands.md) is the complete workflow inventory with both native names and procedure links; [skills](concepts/skills.md) owns the knowledge catalog. This map shows source/delivery wiring and runtime responsibilities without duplicating their procedures.
 
 ## Source and delivery
 
@@ -43,7 +43,7 @@ flowchart LR
 | `qa-engineer` | qa-engineer, verification-before-completion | [Role](../../../.agents/roles/qa-engineer.md) |
 | `security-auditor` | code-review | [Role](../../../.agents/roles/security-auditor.md) |
 | `shadow` | ghostwriting, content-formats | [Role](../../../.agents/roles/shadow.md) |
-| `ux-designer` | ux-design, brand-guidelines, design-taste-frontend, redesign-existing-projects, verification-before-completion | [Role](../../../.agents/roles/ux-designer.md) |
+| `ux-designer` | ux-design, brand-guidelines, verification-before-completion | [Role](../../../.agents/roles/ux-designer.md) |
 
 Roles declare a model tier (`standard`, `deep`, `audit`, `fast`) in each adapter's `shared-agents.json`; the adapter's `model-tiers.json` maps each tier to a native model, and tokenized prose in workflows and roles renders from the same map. Claude's `standard` tier is Sonnet, so its ordinary role floor is Sonnet; security-auditor is pinned Opus and routing policy escalates selected high-stakes calls. Codex uses its configured model and native dispatcher. Read [agents](concepts/agents.md) for roles, limitations and selection. Claude's built-in Explore is not a twelfth authored toolkit role. Project specialization can add canonical roles and skills.
 

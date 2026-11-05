@@ -10,7 +10,7 @@ The agents are not redundant with each other. `general-purpose` (Forge) implemen
 |-------|-------|------|--------------------|
 | `product-strategist` | sonnet | Brainstorming, research, briefs, PRDs | project-planning, verification-before-completion |
 | `architect` | sonnet | System design, ADRs, tech stack | architecture, verification-before-completion |
-| `ux-designer` | sonnet | UX specs, wireframes, themes | ux-design, brand-guidelines, design-taste-frontend, redesign-existing-projects, verification-before-completion |
+| `ux-designer` | sonnet | UX specs, wireframes, themes | ux-design, brand-guidelines, verification-before-completion |
 | `project-planner` | sonnet | Epics, stories, backlog | project-planning, verification-before-completion |
 | `general-purpose` | sonnet | Code implementation | full-output-enforcement, systematic-debugging, verification-before-completion, finishing-a-development-branch, using-git-worktrees |
 | `code-reviewer` | sonnet | Code quality review (read-only) | code-review |

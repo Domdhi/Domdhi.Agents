@@ -1,0 +1,38 @@
+{
+  "skill_name": "ux-design",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Plan the design deliverables for a 300px browser-extension popup with account status and a connect button. The project already uses Vue and its component library. Cover empty, loading and connected states. Available capabilities: edit Vue components, run the existing preview and inspect it in a browser. No design integration is connected.",
+      "expected_output": "A scoped artifact-selection and inspection plan matching available capabilities without mandatory unrelated files.",
+      "files": [],
+      "assertions": [
+        "Uses the existing Vue component/preview path as the visual deliverable rather than requiring a duplicate standalone HTML mock.",
+        "Does not require multiple pages, an application shell, separate theme files or ASCII wireframes for this one surface.",
+        "Records relevant states and real width, editable artifact location, opening instructions and planned rendered inspection without claiming it already occurred."
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "Plan deliverables to explain sign-in, invalid-password recovery and successful entry for a product review. We need a flow diagram maintained alongside repository Markdown. Available capabilities: file editing, Mermaid CLI mmdc, and image viewing; no cloud integrations are connected.",
+      "expected_output": "A scoped artifact-selection and inspection plan matching available capabilities without mandatory unrelated files.",
+      "files": [],
+      "assertions": [
+        "Selects Mermaid editable source or a Mermaid Markdown block for this flow diagram.",
+        "Includes a local render and visual inspection step with the available CLI/viewer, and does not imply Markdown source alone proves rendering.",
+        "Does not require HTML, screen wireframes, both theme modes or a five-file suite to explain the flow."
+      ]
+    },
+    {
+      "id": 3,
+      "prompt": "Plan an editable spatial sketch to compare navigation arrangements for a settings panel. Available capabilities: local file editing, the official Excalidraw CLI, an installed Chromium executable and image viewing. Python and uv are not installed. Keep work local; project brand colors are already defined in the brand skill.",
+      "expected_output": "A scoped artifact-selection and inspection plan matching available capabilities without mandatory unrelated files.",
+      "files": [],
+      "assertions": [
+        "Selects editable .excalidraw source and a local PNG preview using the official excalidraw render command.",
+        "Uses project brand values and preserves editable content; does not require upstream colors or fonts.",
+        "Does not require Python/uv, an upload/account, a second page or a replacement HTML mock; distinguishes planned inspection from performed inspection."
+      ]
+    }
+  ]
+}

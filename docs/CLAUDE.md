@@ -11,7 +11,7 @@ project, so any path here is correct everywhere (ADR: docs/ Domain Taxonomy).
 |--------|---------------------|--------------------|
 | **product/** | *Why does this exist & what must it do?* | `brief.md`, `requirements.md`, `context.md`, `brainstorm.md`, `research.md` |
 | **architecture/** | *How is it built & why these choices?* | `overview.md`, `api.md`, `data-model.md`, `decisions/NNNN-*.md` (ADRs) |
-| **design/** | *How is it experienced?* (UI only) | `spec.md`, `wireframes.md`, `theme.light.md`, `theme.dark.md`, `mock.html` |
+| **design/** | *How is it experienced?* (UI only) | `spec.md` plus selected editable diagrams, prototypes, wireframes or theme artifacts |
 | **engineering/** | *How do we work on it?* | `setup.md`, `conventions.md`, `testing.md` |
 | **operations/** | *How do we ship & run it?* | `deploy.md`, `observability.md`, `security.md`, `runbooks/*.md` |
 | **work/** | *What now & next?* (the living plan) | `backlog.md`, `roadmap.md`, `timeline.md`, `todo/` (+ `_archive/`) |
@@ -46,7 +46,7 @@ docs/
 │   └── decisions/             # ADRs — NNNN-title.md, append-only, never deleted
 │
 ├── design/                    # HOW it's experienced (UI only)
-│   ├── spec.md  wireframes.md  theme.light.md  theme.dark.md  mock.html
+│   ├── spec.md                # Design Artifacts links selected outputs and inspection evidence
 │
 ├── engineering/               # HOW we work on it
 │   └── setup.md  conventions.md  testing.md

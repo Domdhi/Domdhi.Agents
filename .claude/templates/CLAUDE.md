@@ -11,7 +11,7 @@ project, so any path here is correct everywhere (ADR: docs/ Domain Taxonomy).
 |--------|---------------------|--------------------|
 | **product/** | *Why does this exist & what must it do?* | `brief.md`, `requirements.md`, `context.md`, `brainstorm.md`, `research.md` |
 | **architecture/** | *How is it built & why these choices?* | `overview.md`, `api.md`, `data-model.md`, `decisions/NNNN-*.md` (ADRs) |
-| **design/** | *How is it experienced?* (UI only) | `spec.md`, `wireframes.md`, `theme.light.md`, `theme.dark.md`, `mock.html` |
+| **design/** | *How is it experienced?* | `spec.md` as the entry point; selected design artifacts/references listed in its `## Design Artifacts` section |
 | **engineering/** | *How do we work on it?* | `setup.md`, `conventions.md`, `testing.md` |
 | **operations/** | *How do we ship & run it?* | `deploy.md`, `observability.md`, `security.md`, `runbooks/*.md` |
 | **work/** | *What now & next?* (the living plan) | `backlog.md`, `roadmap.md`, `timeline.md`, `todo/` (+ `_archive/`) |
@@ -45,8 +45,8 @@ docs/
 │   ├── data-model.md          # Persistent data shape (optional)
 │   └── decisions/             # ADRs — NNNN-title.md, append-only, never deleted
 │
-├── design/                    # HOW it's experienced (UI only)
-│   ├── spec.md  wireframes.md  theme.light.md  theme.dark.md  mock.html
+├── design/                    # HOW it's experienced (when design applies)
+│   └── spec.md                # Selected scope, artifacts, tools, opening/inspection record
 │
 ├── engineering/               # HOW we work on it
 │   └── setup.md  conventions.md  testing.md
@@ -84,6 +84,13 @@ docs/
 - **Every domain is a folder, even single-file ones.** Predictability beats saving
   a directory level — the set degrades by leaving a folder empty/absent, never by
   relocating its file.
+- **Design artifacts follow scope and medium.** `design/spec.md` remains the
+  discoverable entry point. Its `## Design Artifacts` record links selected
+  editable sources or verified references with opening instructions and inspection
+  evidence. Conventional companions (`wireframes.md`, `theme.light.md`,
+  `theme.dark.md`, `mock.html`) are optional; diagrams, Excalidraw sketches and
+  project-native prototypes can use appropriate locations, including source paths
+  outside `docs/design/`. Unselected scaffold stubs are not deliverables.
 - **Cross-cutting concerns are not domains.** Security/performance/accessibility
   live *within* domains (the threat model is `architecture/decisions/`, secret
   handling is `operations/security.md`), never as a sibling folder.
@@ -111,7 +118,7 @@ mkdir -p docs/modules/{module-name}
 | Understand the product | `docs/product/requirements.md` |
 | Understand the tech stack | `docs/architecture/overview.md` |
 | Find an architecture decision | `docs/architecture/decisions/` |
-| Understand the design system | `docs/design/spec.md` |
+| Understand the design and open selected artifacts | `docs/design/spec.md` → `## Design Artifacts` |
 | Learn how we work / conventions | `docs/engineering/conventions.md` |
 | Ship & run it | `docs/operations/` |
 | Understand a specific module | `docs/modules/{module}/brief.md` |

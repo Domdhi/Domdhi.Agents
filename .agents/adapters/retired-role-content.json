@@ -1,4 +1,11 @@
 {
   "schemaVersion": 1,
-  "roles": {}
+  "roles": {
+    "ux-designer": {
+      "soulZone": [
+        "5dba75043f0003089fa5c8ca7d81600fbcd27c2ee36d8cac2dedebdddf2cd685"
+      ],
+      "description": []
+    }
+  }
 }

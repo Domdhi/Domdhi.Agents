@@ -29,7 +29,7 @@
   "listen": "description: Aggregate post-MVP signals (git, telemetry, agent-updates, backlog drift, external) into a dated intake file\nargument-hint: [optional --since {YYYY-MM-DD} | \"14d\" | source filter]",
   "review-memory-defrag": "description: Identify memory store overlap clusters and walk the user through merge / split / cross-ref proposals",
   "review-qa": "description: Generate automated tests for existing code using acceptance criteria from stories\nargument-hint: [story number, file path, or module name]",
-  "create-project-design": "description: Create UX design artifacts \u2014 spec, wireframes, themes, and mock layout\nargument-hint: [project name or prd path] [--yolo]",
+  "create-project-design": "description: Create scoped UX designs with selected tools, editable artifacts, and rendered inspection\nargument-hint: [project name or prd path] [--yolo]",
   "create-module": "description: Scaffold a new module \u2014 brainstorm, decide, document, plan, and generate its TODO\nargument-hint: [module description]",
   "review-promote-memories": "description: Surface high-confidence memory concepts for promotion into templates, skills, and agents",
   "create-project-requirements": "description: Create a Product Requirements Document (PRD) with functional and non-functional requirements\nargument-hint: [project name or project-brief path] [--yolo]",

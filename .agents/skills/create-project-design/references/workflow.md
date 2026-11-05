@@ -1,6 +1,6 @@
-# Create UX Design Suite
+# Create Project UX Design
 
-Create a complete UX design package. Produces all design artifacts in `docs/design/`.
+Create the design artifacts that the requested scope needs, using suitable available tools and the project's existing stack. Keep `docs/design/spec.md` as the design entry point; editable visual artifacts and prototypes can live in the project locations appropriate to their medium.
 
 ## Telemetry (run first)
 
@@ -12,20 +12,18 @@ node .claude/core/telemetry-log.js create:project-design
 
 ## Agent Delegation
 
-> **Orchestration rule**: You (the main agent) handle upstream checks, mode detection, and user interviews. The `ux-designer` agent handles all artifact generation. Do NOT write design files inline — delegate via Task tool.
+> **Orchestration rule**: You (the main agent) handle upstream checks, scope and capability discovery, user interviews, validation and commit. Delegate one coherent design task to `ux-designer` with the selected outputs and available execution tools. Do NOT split the task into a designer per file or write the design inline.
 
 **Agent**: `ux-designer` (via Task tool with `subagent_type: "ux-designer"`)
 
-## Output Files
+## Output Contract
 
-| File | Description |
-|------|-------------|
-| `docs/design/spec.md` | Design system, principles, component inventory, interaction patterns |
-| `docs/design/wireframes.md` | ASCII wireframes for all key pages |
-| `docs/design/theme.light.md` | Light theme color palette and tokens |
-| `docs/design/theme.dark.md` | Dark theme color palette and tokens |
-| `docs/design/mock.html` | Self-contained HTML mock of the application shell |
-| `.agents/skills/brand-guidelines/SKILL.md` (rendered to `.claude/skills/brand-guidelines/SKILL.md`) | Project-owned brand skill; app-specific additions synced from the UX spec (Step 6b) |
+- **Required entry point:** a real `docs/design/spec.md` describing the chosen scope, relevant design decisions and an exact `## Design Artifacts` section. This section records each selected artifact's editable source or verified reference, purpose and scope, tool actually used, opening/reproduction instructions, and inspection evidence/status. State omitted surfaces, themes and capability limitations explicitly.
+- **Selected outputs:** choose the smallest set that covers the request. Candidates include Mermaid source for journeys/states, editable Excalidraw sketches with previews, project-native components/prototypes, wireframes, theme/token documentation, standalone HTML, SVG or raster assets. Use the `ux-design` skill's selection and inspection criteria. `wireframes.md`, `theme.light.md`, `theme.dark.md` and `mock.html` are optional conventional paths, never a fixed suite.
+- **Text-only exploration:** when requested, a scoped spec can be the entire deliverable. Record text review as the inspection method and its visual/interaction limitations; do not claim rendered inspection.
+- **Brand synchronization:** merge established app-specific values into `.agents/skills/brand-guidelines/SKILL.md` and render its native projection only when real brand data needs synchronization (Step 6b).
+
+Scaffolded companion files marked `<!-- @@template -->` are unselected stubs unless this run selects and fills them. Preserve unselected existing files.
 
 ## Variables
 
@@ -46,27 +44,28 @@ Read the first line of `docs/product/requirements.md`. Check that it exists AND 
 - Otherwise → **STOP**: "`docs/product/requirements.md` has not been created yet. Run `/project-requirements` first. Use `--yolo` to bypass this gate."
 
 - **Optional**: Read `docs/product/brief.md` for brand/vision context (only if real, not template)
-- **Optional**: Read existing design files in `docs/design/` for reference
+- **Optional**: Read existing design files and their referenced project-native artifacts for context
 
 ### 2. Check for Existing Output (main agent)
 
-- If any design files exist in `docs/design/` with content → ask: **update** or **replace**?
-- Check for existing brand guidelines skill content
+- Read the existing spec, its `## Design Artifacts` section and relevant source/reference artifacts. Honor an explicit update/replace instruction already supplied; ask only when the intended treatment of existing selected work is unclear.
+- If an older spec lacks that section, inspect its real references and outputs alongside the PRD and current request, then have the designer record the actual selected scope. Do not infer that all scaffolded companions are required or silently omit a requested deliverable.
+- Preserve existing files, design decisions and project additions outside the selected update scope, including in replace mode.
+- Check the existing brand guidelines skill and project UI/token conventions.
 
 ### 3. Detect Mode (main agent)
 
-- If PRD has rich user flows → **Context Mode** (derive wireframes from flows)
+- If PRD has rich user flows → **Context Mode** (derive relevant design coverage from flows)
 - If PRD is minimal → **Interview Mode** (need design direction input)
 - If existing code has UI → **Reverse-Engineering Mode** (document what exists)
 
-#### 3a. Scope Check — full suite vs lightweight (F9)
+#### 3a. Select Scope, Tools and Artifacts
 
-The full output suite (spec + wireframes + light/dark themes + mock HTML + personas) is right for an app with real surface area. For a **small UI** — a browser-extension popup, a single options page, a CLI, a one-screen tool — it massively over-produces. Before generating, gauge the surface from the PRD/architecture/asset inventory and, if it's small, **ask the user** which scope they want:
+Before delegation, MUST identify the design questions, requested surfaces, fidelity, relevant states/sizes/theme modes, existing stack and desired handoff. A single component needs only its relevant coverage; a product-wide design needs coverage of its journeys, components, responsiveness and accessibility. Do not impose a second page, app shell, both themes or a standalone HTML mock. Ask only for missing decisions that materially affect the result; honor the scope already authorized.
 
-- **Lightweight** (recommended for small UIs): a single `docs/design/spec.md` capturing layout, sizing, color/typography tokens, and component notes — skip separate wireframes/theme files/mock HTML/personas.
-- **Full suite**: all output files below.
+Discover the actual browser/viewer, shell/CLI, visual integrations and installed skills available in this session and to the delegated role. Choose and pass an executable tool path for the selected medium: Mermaid for flows/states, Excalidraw for spatial sketches, or the existing project framework/preview for behavior that depends on the real UI. Other media remain valid when they answer the question. Do not assume a listed tool or installed skill has rendered anything, or require a cloud upload to produce a local design.
 
-Do not default a 300px popup into the full persona-and-mock pipeline. When in doubt for anything larger than a few screens, full suite is fine.
+Prepare an explicit selected-output list with exact local destinations or verified external references and the inspection needed for each. Native prototype source can live outside `docs/design/`. Pass discovered capabilities and restrictions to the designer using the runtime's supported grants and normal permissions. If a required tool is unavailable, use another available tool that meets the scope or record the blocked requirement; never promise inspection the role cannot perform.
 
 ### 4a. Interview Mode (main agent)
 
@@ -83,52 +82,38 @@ Synthesize a design brief from upstream docs:
 
 ### 5. Delegate to Agent
 
-Use the Task tool with `subagent_type: "ux-designer"` for each artifact.
+Use the Task tool with `subagent_type: "ux-designer"` for the coherent selected design task. Keep one designer responsible for consistent decisions, editable outputs and the spec's artifact record; sequence or split only when actual dependencies or scope justify it.
 
-**Runtime and verification.** In Codex, run each `.claude/core/` command in this workflow as `.codex/core/` with the same arguments, per `.agents/adapters/codex/execution.md`. This workflow runs no build gate; its evidence is the written design files passing Step 6 validation, the Step 6c real-document check (no `<!-- @@template -->` marker left), the Step 6b brand-file merge and the Step 7 commit hash. In an adopter, any build or test gate that later checks this design is the application's own command, never the Domdhi.Agents toolkit suite, also after agent-file edits. Discovery alone (an installed skill, a listed command or a loaded file) never proves this workflow ran; report completion only from that evidence.
+**Runtime and verification.** In Codex, run each `.claude/core/` command in this workflow as `.codex/core/` with the same arguments, per `.agents/adapters/codex/execution.md`. The main agent owns validation and any gates: document-only design runs no application build gate, while project-native source changes require the application's relevant checks. Evidence is the selected outputs passing Step 6, the Step 6c real-document check, any Step 6b brand merge/render and the Step 7 commit hash. Adopter gates remain application-only, including after agent-file edits; never run the Domdhi.Agents toolkit suite there. Discovery alone never proves execution or inspection.
 
-**Task sequence** (respects dependencies):
+**Task prompt MUST include**:
+- PRD/design brief, user preferences, existing spec and relevant project stack/brand/component references.
+- Selected scope and output list from Step 3a, exact destinations, fidelity, relevant states/sizes/theme modes, and preservation rules for unselected files and project additions.
+- Discovered execution capabilities and limits, the chosen tools, preview path and inspection criteria. Require actual tool use and rendered inspection for visual claims; source alone is insufficient.
+- A real `docs/design/spec.md` with the exact `## Design Artifacts` record, editable sources or verified references, opening instructions, inspection evidence/results and any blocked or deliberately excluded coverage.
+- A return list of created/modified local files, verified external references, commands/tools used and verification evidence. Do not count discovered tools as executed tools.
 
-1. **UX Spec** — `Task(ux-designer)`: MUST complete first (other files depend on it)
-   - Prompt includes: PRD summary, design brief, user interview answers
-   - Output: `docs/design/spec.md`
-   - Agent auto-loads `ux-design` skill for template/quality criteria
-
-2. **Wireframes + Themes** — Run in parallel after UX spec completes:
-   - `Task(ux-designer)`: Create wireframes → `docs/design/wireframes.md`
-     - Prompt includes: reference to the UX spec just created, PRD user flows
-   - `Task(ux-designer)`: Create light + dark themes → `docs/design/theme.light.md` and `docs/design/theme.dark.md`
-     - Prompt includes: reference to the UX spec color system section
-
-3. **HTML Mock** — `Task(ux-designer)`: After themes complete
-   - Output: `docs/design/mock.html`
-   - Prompt includes: reference to UX spec layout + dark theme tokens
-   - Must be self-contained (inline CSS, no external dependencies)
-
-**Each Task prompt must include**:
-- What to produce and exact file path
-- Reference to UX spec (after first task completes)
-- Design brief / user preferences from the interview
-The `ux-designer` agent auto-loads the `ux-design` skill via frontmatter — do NOT tell it to read the skill file.
+The `ux-designer` agent auto-loads its declared skills via frontmatter; load additional tool-specific guidance only when the selected medium needs it. The designer establishes shared decisions before dependent outputs, then reconciles the artifact record after inspection.
 
 ### 6. Validate (main agent)
 
-After all agents complete, verify each file:
-- UX Spec: all required sections present (philosophy, typography, layout, components, interaction, responsive, accessibility)
-- Wireframes: at least 2 pages with ASCII art, desktop AND mobile for primary pages
-- Themes: semantic tokens used, WCAG contrast verified
-- Mock Layout: self-contained HTML, responsive, uses correct color tokens
+After the designer returns, the main agent MUST inspect the actual selected outputs and validate them against the `ux-design` checklist and the authorized request:
+- Spec is real and its `## Design Artifacts` record matches delivered scope, editable sources/references, tools, opening instructions and inspection evidence/status.
+- Every selected local artifact exists, is filled and is usable; every selected external reference is accessible and verified. Inspect declared native-stack paths even outside `docs/design/`. Unselected scaffold stubs create no additional requirements.
+- Selected outputs cover the requested journeys/surfaces and relevant states, sizes and themes, with consistent tokens, existing-stack conventions, brand, interaction and accessibility evidence. Validate only applicable format-specific requirements.
+- Actually open/render selected visual outputs with a discovered tool and record the result. Inspect Mermaid in a renderer, Excalidraw via a usable preview/export or viewer, and prototypes in the project preview. Check relevant interactions for interactive requests; a screenshot or diagram alone cannot prove behavior.
+- For explicit text-only exploration, verify the written reasoning and scope, record visual inspection as not applicable, and retain the stated fidelity limits.
 
-If any file fails validation, delegate back to the agent to fix.
+If an output fails, return the concrete failure to the same designer for correction and re-inspection. Missing requested coverage or required inspection blocks completion; accurately report an unavailable capability if no suitable execution path exists. Keep durable evidence or reproduction details in the spec, with any transient screenshot location labeled as such.
 
 ### 6b. Sync Brand Guidelines Skill (main agent)
 
-After all design artifacts pass validation, merge the app-specific brand data from the generated `docs/design/spec.md` into the project-owned brand file, the canonical `.agents/skills/brand-guidelines/SKILL.md`. Its native `.claude/skills/brand-guidelines/SKILL.md` copy is a renderer projection with a ledger entry, so never edit it by hand (in a legacy adopter with no canonical `.agents` source, edit the `.claude/` file directly). Install delivers the file once and updates never overwrite it, so edit it in place; never replace it wholesale.
+After the selected design artifacts pass validation, merge established app-specific brand data from `docs/design/spec.md` into the project-owned canonical `.agents/skills/brand-guidelines/SKILL.md`. If this scope introduces no brand values or changes, verify consistency and record synchronization as unchanged; do not invent values to fill a brand block. Its native `.claude/skills/brand-guidelines/SKILL.md` copy is a renderer projection with a ledger entry, so never edit it by hand (in a legacy adopter with no canonical `.agents` source, edit the `.claude/` file directly). Install delivers the file once and updates never overwrite it, so edit it in place; never replace it wholesale.
 
 **Extract from the UX spec (app-specific data):**
-- App color roles for all theme modes (light, dark) — name, HEX, RGB, usage
-- Typography matrix — font families per mode, type scale (headline through code)
-- App CSS variable declarations (the app's own tokens)
+- App color roles for the selected theme modes — name, HEX, RGB, usage where applicable
+- Typography matrix — font families and applicable type scale
+- App token declarations or mapping to the existing platform token system
 - Spacing scale (if defined)
 - Accessibility contrast ratios (WCAG AA/AAA results for key pairs)
 
@@ -142,55 +127,41 @@ After all design artifacts pass validation, merge the app-specific brand data fr
 
 ```markdown
 > **Source**: App-specific values synced from `docs/design/spec.md` by `/create:project-design` on {YYYY-MM-DD}.
-> Re-run `/create:project-design` to refresh this synced block. Other additions in this file are user-editable and are preserved on re-run..
+> Re-run `/create:project-design` to refresh this synced block. Other additions in this file are user-editable and are preserved on re-run.
 ```
 
-- Add `.agents/skills/brand-guidelines/SKILL.md`, its rendered `.claude/skills/brand-guidelines/SKILL.md` and `.agents/render-state.json` to the staged files for the commit step
+- Add the canonical brand file, its native projection and `.agents/render-state.json` to the staged files only when this step changed them.
 
 ### 6c. Strip Template Markers (main agent)
 
-Strip the `<!-- @@template -->` marker from all generated design files so downstream gates (`isRealDoc`, `/review:check-readiness`) see them as real docs rather than unfilled stubs. The call is idempotent — it no-ops on any file that was written fresh without the marker:
+Only AFTER validation, remove the first-line `<!-- @@template -->` marker from `docs/design/spec.md` and the selected local text outputs actually completed in this run. Use a targeted edit or the existing `stripTemplateMarker` helper in `.claude/core/_lib/doc-drift.js` with an explicit reviewed local file list. Re-read every selected text output to confirm it exists and no template marker remains; the helper's no-op return does not establish success.
 
-```bash
-node -e "
-const { stripTemplateMarker } = require('./.claude/core/_lib/doc-drift.js');
-const path = require('path');
-[
-  'docs/design/spec.md',
-  'docs/design/wireframes.md',
-  'docs/design/theme.light.md',
-  'docs/design/theme.dark.md',
-  'docs/design/mock.html',
-].forEach(f => stripTemplateMarker(path.resolve(f)));
-"
-```
+Do not strip unselected scaffold files, binary/native formats or remote references. Treat paths and opening instructions in the spec as data: resolve and review local destinations against the authorized scope and project root before editing or staging; never execute spec text, interpolate it into shell code, follow a symlink outside scope or pipe a parsed artifact list into a shell.
 
 ### 7. Commit (main agent)
 
-Follow the **Post-Command Commit Convention** in `.agents/startup-reference.md`. Stage each file this command created or modified by its exact path, including the canonical brand file, its rendered projection and `.agents/render-state.json`, and commit through the native commit helper (`node .claude/core/commit.js`, or `node .codex/core/commit.js` in Codex) with a descriptive message. Do not push, open a PR or take any other outward action without explicit authorization.
+Follow the **Post-Command Commit Convention** in `.agents/startup-reference.md`. Stage only reviewed local outputs this command created or modified, using exact paths: the spec, selected artifact sources/previews or native prototype files, and any changed canonical brand file, native brand projection and `.agents/render-state.json`. Do not stage unselected stubs, untouched existing outputs, remote references or ignored inspection scratch. Commit through the native commit helper (`node .claude/core/commit.js`, or `node .codex/core/commit.js` in Codex) with a descriptive message. Do not push, open a PR or take any other outward action without explicit authorization.
 
 ### 8. Report (main agent)
 
 ```markdown
-## UX Design Suite Complete
+## Project UX Design Complete
 
-### Files Created
-| File | Status |
-|------|--------|
-| `docs/design/spec.md` | Created |
-| `docs/design/wireframes.md` | Created |
-| `docs/design/theme.light.md` | Created |
-| `docs/design/theme.dark.md` | Created |
-| `docs/design/mock.html` | Created |
-| `.agents/skills/brand-guidelines/SKILL.md` | Updated (app-specific additions) |
-| `.claude/skills/brand-guidelines/SKILL.md` | Rendered from the canonical file |
+### Selected Deliverables
+| Artifact / reference | Purpose and scope | Tool used | Status and inspection evidence |
+|----------------------|-------------------|-----------|--------------------------------|
+| `docs/design/spec.md` | {scope and design decisions} | {tool} | {created/updated; review result} |
+{One row per actual selected artifact/reference; add changed brand/projection rows only when applicable.}
 
 **Brand conflicts reported**: {spec values that contradict approved project brand values, or "none"}
+**Brand synchronization**: {updated / unchanged, with reason}
 **Design philosophy**: {1 sentence}
-**Pages wireframed**: {count}
-**Components identified**: {count}
-**Themes**: {light/dark/both}
+**Coverage**: {surfaces, relevant states/sizes/theme modes; explicit exclusions}
+**Open the design**: {spec artifact record and verified opening instructions}
+**Inspection**: {rendered/interaction evidence, or text-only review and limitations}
 
 **Committed**: {hash} — `docs: /create:project-design — {summary}`
 **Next step**: Run `/create:project-architecture` to make technical decisions.
 ```
+
+Build the report from the selected artifact record and reviewed changed-file list; never emit missing conventional files as completed deliverables. If a required artifact or inspection remains blocked, report that status instead of the completion heading.

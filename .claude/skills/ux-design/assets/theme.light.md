@@ -1,99 +1,45 @@
 <!-- @@template -->
-# Light Theme: {Project Name}
+# Light Theme: {Project or Surface Name}
 
 | Attribute | Value |
-|-----------|-------|
-| **Version** | 1.0 |
-| **Status** | Draft |
-| **Author** | {name} |
-| **Date** | {YYYY-MM-DD} |
-| **Source** | Based on UX Spec v{X} |
+|---|---|
+| Version / status | {version} / {status} |
+| Author / date | {name} / {YYYY-MM-DD} |
+| Design entry point | [spec.md](spec.md) |
+| Coverage | {selected surfaces, states and sizes} |
 
----
+This optional reference is for a selected light theme. Use the project's existing token format and approved brand values; the semantic roles below do not require CSS custom properties or a separate dark-theme file. Omit unused roles/regions.
 
-## Color Palette
+## Semantic Token Mapping
 
-### Brand Colors
-| Token | Hex | RGB | Usage |
-|-------|-----|-----|-------|
-| `--color-brand-primary` | {hex} | {rgb} | Primary brand color |
-| `--color-brand-secondary` | {hex} | {rgb} | Secondary brand color |
-| `--color-brand-accent` | {hex} | {rgb} | Accent/highlight color |
+| Semantic role | Existing platform token / definition | Light value | Usage |
+|---|---|---|---|
+| Primary action / on-action text | {verified token paths} | {values} | {action and foreground pair} |
+| Page / raised surface | {verified token paths} | {values} | {selected surfaces} |
+| Primary / secondary text | {verified token paths} | {values} | {text hierarchy} |
+| Border / visible focus | {verified token paths} | {values} | {boundaries and focus treatment} |
+| Success / warning / danger | {verified token paths} | {values} | {feedback with non-color cues} |
 
-### Semantic Colors
-| Token | Hex | Usage |
-|-------|-----|-------|
-| `--color-primary` | {hex} | Primary actions, links, key elements |
-| `--color-secondary` | {hex} | Secondary elements, borders |
-| `--color-accent` | {hex} | Highlights, active states |
-| `--color-success` | {hex} | Success states, confirmations |
-| `--color-warning` | {hex} | Warning states, caution |
-| `--color-danger` | {hex} | Error/danger states, destructive actions |
-| `--color-info` | {hex} | Informational states |
+## Typography, Spacing and Elevation
 
-### Background Colors
-| Token | Hex | Usage |
-|-------|-----|-------|
-| `--color-bg-page` | {hex} | Page background |
-| `--color-bg-card` | {hex} | Card/panel background |
-| `--color-bg-sidebar` | {hex} | Sidebar background |
-| `--color-bg-header` | {hex} | Header background |
-| `--color-bg-input` | {hex} | Form input background |
-| `--color-bg-hover` | {hex} | Hover state background |
-| `--color-bg-active` | {hex} | Active/selected state background |
-
-### Text Colors
-| Token | Hex | Usage |
-|-------|-----|-------|
-| `--color-text-primary` | {hex} | Primary text, headings |
-| `--color-text-secondary` | {hex} | Secondary/muted text |
-| `--color-text-disabled` | {hex} | Disabled state text |
-| `--color-text-inverse` | {hex} | Text on dark backgrounds |
-| `--color-text-link` | {hex} | Link text |
-
-### Border Colors
-| Token | Hex | Usage |
-|-------|-----|-------|
-| `--color-border-default` | {hex} | Default borders |
-| `--color-border-focus` | {hex} | Focus ring color |
-| `--color-border-error` | {hex} | Error state borders |
-
----
-
-## Elevation & Shadows
-
-| Token | Value | Usage |
-|-------|-------|-------|
-| `--shadow-sm` | {value} | Subtle depth (cards) |
-| `--shadow-md` | {value} | Medium depth (dropdowns) |
-| `--shadow-lg` | {value} | High depth (modals) |
-
----
+{Reference existing type/spacing tokens and the applicable elevation strategy. Define only foundations needed for the selected scope.}
 
 ## Component State Mapping
 
-| Component | Default | Hover | Active | Focus | Disabled |
-|-----------|---------|-------|--------|-------|----------|
-| Button Primary | `--color-primary` | {darker} | {darkest} | + ring | {muted} |
-| Button Secondary | `--color-bg-card` | `--color-bg-hover` | `--color-bg-active` | + ring | {muted} |
-| Input | `--color-bg-input` | — | — | `--color-border-focus` | {muted} |
-| Card | `--color-bg-card` | — | — | — | — |
-| Link | `--color-text-link` | {underline} | {darker} | + ring | {muted} |
+| Component | Relevant state | Foreground / background / border tokens | Non-color treatment |
+|---|---|---|---|
+| {component} | {default, hover, active, focus, disabled, loading or error} | {verified tokens} | {label, icon, underline, focus outline or other cue} |
 
----
+## Contrast Verification
 
-## WCAG Compliance
+| Actual foreground / background pair and state | Measured ratio | Applicable threshold | Result / method |
+|---|---|---|---|
+| {pair} | {ratio} | {text, large text or non-text requirement} | {pass/fail and calculation method} |
 
-| Combination | Contrast Ratio | Requirement | Pass |
-|------------|---------------|-------------|------|
-| `--color-text-primary` on `--color-bg-page` | {ratio} | 4.5:1 (AA) | {Y/N} |
-| `--color-text-secondary` on `--color-bg-page` | {ratio} | 4.5:1 (AA) | {Y/N} |
-| `--color-text-inverse` on `--color-primary` | {ratio} | 4.5:1 (AA) | {Y/N} |
-| `--color-primary` on `--color-bg-page` | {ratio} | 3:1 (AA Large) | {Y/N} |
+## Rendered Inspection
 
----
+{Selected artifact/source references, tool/open instructions, sizes and states viewed, evidence and results. Record limitations and pending checks; a palette table alone is not a rendered UI inspection. Keep the project spec's Design Artifacts record in sync.}
 
-## Related Documents
-- UX Spec: [../design/spec.md](../design/spec.md)
-- Dark Theme: [theme.dark.md](theme.dark.md)
-- Mock Layout: [mock.html](mock.html)
+## Selected Companion References
+
+{Link only selected, existing companions or verified external artifacts. A dark-theme companion is optional.}

@@ -101,7 +101,7 @@ These checks and the Step 6 overlap scan are structural: they prove the backlog'
 
 ### 6. Detect File Overlap (main agent)
 
-Run the epic-overlap CLI against the new `backlog.md` to surface any inadvertent file-ownership overlaps between epics. The wave-based execution model in `/run-todo` requires zero file overlap within a wave — overlaps that aren't explicitly acknowledged will produce silent merge conflicts during parallel dispatch.
+Run the epic-overlap CLI against the new `backlog.md` to surface shared files between epics. Under `.agents/startup.md`, these starting assignments guide coordination, not edit authorization: a shared checkout needs one active writer per file, and separate-worktree overlaps need explicit integration and conflict review. Document handoffs or serialization rather than forcing another wave solely for a shared file.
 
 ```bash
 node .claude/core/_lib/epic-overlap.js docs/work/backlog.md

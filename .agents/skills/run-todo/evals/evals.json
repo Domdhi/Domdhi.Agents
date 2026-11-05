@@ -1,0 +1,38 @@
+{
+  "skill_name": "run-todo",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Dry-run the implementation policy; do not edit application files or run a real workflow. You are the only implementation agent. The owner authorized correcting CSV date formatting. The initial file list names exporter.ts and its test. You discover that completing the same acceptance criterion also requires fixing date-format.ts and adding one regression fixture. No other writer is active, there are no protected paths or public-contract changes, and the new files do not broaden the requested behavior. The initial file budget is already spent. What do you do next, who needs to approve it, and what must the completion report and verification cover? Also state whether this permits unrelated formatting cleanup in the same module.",
+      "expected_output": "Read and fix the necessary additional files without a new owner approval or blocking solely on the initial file list/budget. Update the plan, actual file set and affected verification. Keep unrelated cleanup outside the task.",
+      "files": [],
+      "assertions": [
+        "Proceeds with necessary unlisted files without fresh owner approval or a mandatory split solely for the spent file budget",
+        "Reports actual file expansion and updates the plan and affected verification",
+        "Keeps unrelated cleanup outside the authorized outcome"
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "Dry-run the implementation policy; no actual edits, commits or dispatch. Two developers share one checkout. Your authorized story now needs a change in router.ts, which was not assigned to you and is actively being edited by the other developer. The Main Agent can arrange a handoff now; the owner is offline. The stories have no logical dependency requiring separate waves. Describe the coordination and when you can write, whether another owner approval or whole extra wave is mandatory, and who stages/commits. Then explain the alternative if the developers use separate worktrees but still edit the same file.",
+      "expected_output": "Coordinate an explicit writer handoff or serialize edits in the same wave through Main Agent; no concurrent same-file writes, no new owner approval for routine reassignment. Orchestrator coordinates the shared index. Separate worktrees may overlap with integration/conflict review.",
+      "files": [],
+      "assertions": [
+        "Waits for coordinated handoff or serialization before editing the other active writer's shared-checkout file",
+        "Allows Main Agent to reassign or serialize within the wave without new owner approval",
+        "Keeps shared staging and commits coordinated and requires integration/conflict review for overlapping worktrees"
+      ]
+    },
+    {
+      "id": 3,
+      "prompt": "Dry-run the implementation policy; no actual file or Git changes. As orchestrator, you receive a completed developer change that includes an unlisted validator.ts fix necessary for the authorized acceptance criterion. The developer coordinated with the prior writer, preserved their changes and reported the added file. Separately, git status shows an unrelated unlisted edit from an unknown session. A report-only code reviewer has also found a production bug and asks to patch application code. Explain what to do with each of the three changes, whether an unlisted filename is by itself a misalignment, and what evidence and verification to record.",
+      "expected_output": "Keep the coordinated necessary fix, update assignments and verification without a violation solely for being unlisted. Preserve the unknown session's edit and investigate attribution without reverting it. The report-only reviewer reports the bug and an implementation owner fixes it.",
+      "files": [],
+      "assertions": [
+        "Keeps the coordinated necessary fix and updates plan/verification without a violation merely for being unlisted",
+        "Preserves the unknown session's change and investigates attribution without automatic revert",
+        "Retains report-only reviewer write limits and routes the production fix to an implementation owner"
+      ]
+    }
+  ]
+}

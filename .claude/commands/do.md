@@ -371,8 +371,12 @@ The prompt to the implementation agent MUST include all of the following. **Cont
 2. ACCEPTANCE CRITERIA:
    {Every AC bullet from the story — verbatim, not summarized}
 
-3. FILES TO MODIFY:
+3. STARTING FILES (follow the outcome-ownership contract in .agents/startup.md):
    {Full paths from the story's file list}
+   Expand to other files needed for this authorized task. Read them first, report
+   the reason and actual changed set, and update affected verification. Coordinate
+   a handoff or sequencing before editing another active writer's file; the
+   orchestrator can arrange this without new owner approval. Preserve others' work.
 
 4. CURRENT CODE (paste relevant snippets from Step 3):
    {The actual current content of files being modified — key sections}
@@ -429,7 +433,7 @@ The prompt to the implementation agent MUST include all of the following. **Cont
      (Main Agent) owns ALL commits and uses the project's `commit.js` convention.
      Create/modify files only, then report STATUS. (Most common delegated-agent
      misalignment in this template.)
-   - Modify files not listed above
+   - Edit a file concurrently with another active writer without coordinating
    - Add dependencies not in the architecture doc
    - Change public interfaces without updating tests
    - Add features beyond what AC specifies
@@ -490,11 +494,11 @@ Read the agent's STATUS and act accordingly:
 
 Regardless of status, review what the agent produced:
 
-- **Misalignment** — agent used wrong names, touched wrong files, deviated from plan
+- **Misalignment** — agent used wrong names, made unrelated changes, or wrote concurrently without coordination
 - **Quality issues** — missing error handling, wrong patterns, incomplete implementation
 - **Good decisions** — agent discovered something useful not in the plan
 
-If misalignment: fix it directly (Main Agent), and log the issue for docs/.output/evolution/agents/{YYYY-MM-DD}.md (Step 8).
+If misalignment: reconcile attribution and fix it directly (Main Agent), preserving others' work, and log the issue for docs/.output/evolution/agents/{YYYY-MM-DD}.md (Step 8). Necessary, coordinated file expansion is expected: update the plan and verification for the actual changed set. Never revert a file solely because it was absent from the starting list.
 
 #### B6. Inbox curation — promote sub-agent memory drafts
 

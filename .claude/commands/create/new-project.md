@@ -144,7 +144,7 @@ Classify the project from the interview answers:
 
 Update the `## Derived routing` section of `new-project-interview.md` with the chosen tier and path before proceeding.
 
-**Runtime and verification.** The project's build and test gate (`gate.js`, configured by `/review:specialize`) runs the application's own commands and never the Domdhi.Agents toolkit suite, including after agent-file edits. In Codex, run each `.claude/core/` command in this workflow as `.codex/core/` with the same arguments, per `.agents/adapters/codex/execution.md`, and invoke each sub-command through its native skill. Discovery alone (an installed skill, a listed command or a loaded file) never proves a sub-command ran: count a phase complete only when its document exists and passes the real-document check (no `<!-- @@template -->` first line), and report the Step 10 commit hash.
+**Runtime and verification.** The project's build and test gate (`gate.js`, configured by `/review:specialize`) runs the application's own commands and never the Domdhi.Agents toolkit suite, including after agent-file edits. In Codex, run each `.claude/core/` command in this workflow as `.codex/core/` with the same arguments, per `.agents/adapters/codex/execution.md`, and invoke each sub-command through its native skill. Discovery alone (an installed skill, a listed command or a loaded file) never proves a sub-command ran: count a phase complete only when its required documents pass the real-document check (no `<!-- @@template -->` first line) and its selected deliverables pass that sub-command's validation. For design, this includes the spec's `## Design Artifacts` record and actual inspection of selected artifacts, including native-stack paths outside `docs/design/`. Report the Step 10 commit hash.
 
 ### 5. Phase 1 — Analysis (complex projects only)
 
@@ -162,8 +162,10 @@ Update the `## Derived routing` section of `new-project-interview.md` with the c
    - May ask additional interview questions for FRs/NFRs
    - Show output summary
 3. Run `/create:project-design` — only if the Round 2 "Has UI" answer was yes
-   - Produces the UX design suite (spec, wireframes, light/dark themes, mock layout)
-   - Show output summary
+   - Pass the authorized UI scope, existing stack, interview answers and discovered tool capabilities; the design workflow selects the relevant artifacts and delegates one coherent UX task.
+   - Produces a real `docs/design/spec.md` with `## Design Artifacts`: selected editable outputs/references, purpose/scope, tools used, opening instructions and inspection evidence/status. Mermaid, Excalidraw, project-native prototypes or other suitable media are optional choices; explicit text-only exploration remains supported.
+   - Validate and retain the actual selected-output list and inspection results for readiness, context and final reporting. Do not require a second page, both themes or a separate HTML mock; unselected scaffold stubs remain unfilled and existing unselected artifacts remain unchanged.
+   - Show the selected scope and actual output summary. Missing requested deliverables or required inspection keeps this phase incomplete.
 
 ### 7. Phase 3 — Solutioning
 
@@ -243,7 +245,7 @@ This step is **self-contained** — it does NOT call the built-in `/init` comman
 
 ### 9. Generate Project Context
 
-Write `docs/product/context.md`:
+Write `docs/product/context.md`. Populate design links from the validated spec's `## Design Artifacts` record, resolving relative local links from `docs/product/context.md` (native prototypes may live outside `docs/design/`). Include only actual selected outputs or verified references; link the spec for opening/inspection details and label intentional exclusions. Do not advertise unselected scaffold files as available designs. For a project without a design phase, omit design artifact rows and record that design is not applicable.
 
 ```markdown
 # Project Context: {Project Name}
@@ -258,10 +260,11 @@ Write `docs/product/context.md`:
 - **PRD**: [docs/product/requirements.md](requirements.md)
 - **Architecture**: [docs/architecture/overview.md](../architecture/overview.md)
 - **UX Design**: [docs/design/spec.md](../design/spec.md) (if UI project)
-- **Wireframes**: [docs/design/wireframes.md](../design/wireframes.md) (if UI project)
-- **Themes**: [docs/design/theme.light.md](../design/theme.light.md) / [theme.dark.md](../design/theme.dark.md) (if UI project)
-- **Mock Layout**: [docs/design/mock.html](../design/mock.html) (if UI project)
+{Add links for actual selected design artifacts/references only, with their purpose and verified opening/inspection status.}
 - **Backlog**: [docs/work/backlog.md](../work/backlog.md)
+
+## Design Scope
+{Selected surfaces, states/sizes/theme modes and artifact tools; link the spec's Design Artifacts record for opening instructions and inspection evidence. Record text-only scope or intentional omissions explicitly, or state not applicable.}
 
 ## Implementation Commands
 - `/create:module` — plan and document a new feature
@@ -335,10 +338,7 @@ Answer the self-review honestly from this run (friction, what broke, one change 
 | Project Brief | docs/product/brief.md | {Created / Skipped — tier routing} |
 | PRD | docs/product/requirements.md | Created |
 | UX Design | docs/design/spec.md | {Created / Skipped — no UI} |
-| Wireframes | docs/design/wireframes.md | {Created / Skipped — no UI} |
-| Light Theme | docs/design/theme.light.md | {Created / Skipped — no UI} |
-| Dark Theme | docs/design/theme.dark.md | {Created / Skipped — no UI} |
-| Mock Layout | docs/design/mock.html | {Created / Skipped — no UI} |
+{Add one row per actual selected design artifact/reference with its real path/reference and created/updated/verified status; omit unselected scaffold companions.}
 | Architecture | docs/architecture/overview.md | Created |
 | Backlog | docs/work/backlog.md | Created |
 | Feature Ideas | docs/work/todo/feature-ideas.md | {Created — complex tier only / Skipped} |
@@ -348,6 +348,8 @@ Answer the self-review honestly from this run (friction, what broke, one change 
 ### Specialization: {report summary}
 
 ### Readiness Check: {PASS / CONCERNS}
+
+**Design scope and inspection**: {selected coverage/tools, verified opening instructions and inspection results, or not applicable; link docs/design/spec.md when present}
 
 **Committed**: {hash} — `feat: /create:new-project — {summary}`
 

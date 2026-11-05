@@ -31,7 +31,7 @@ Each authored-body link opens the procedure, including supported arguments, outp
 | `/create:new-project` | `$create-new-project` | Interview, scaffold missing docs, run planning chain, specialize and write context. | [Read](../../../.agents/skills/create-new-project/references/workflow.md) |
 | `/create:project-architecture` | `$create-project-architecture` | Write architecture/overview.md and architecture decisions from the PRD. | [Read](../../../.agents/skills/create-project-architecture/references/workflow.md) |
 | `/create:project-brief` | `$create-project-brief` | Write product/brief.md from verified product context. | [Read](../../../.agents/skills/create-project-brief/references/workflow.md) |
-| `/create:project-design` | `$create-project-design` | Write UX spec, wireframes, both themes and mock layout. | [Read](../../../.agents/skills/create-project-design/references/workflow.md) |
+| `/create:project-design` | `$create-project-design` | Write a scoped UX spec with selected tools, editable artifacts and inspection evidence. | [Read](../../../.agents/skills/create-project-design/references/workflow.md) |
 | `/create:project-epics-todo` | `$create-project-epics-todo` | Write per-epic story/AC checklists under docs/work/todo/. | [Read](../../../.agents/skills/create-project-epics-todo/references/workflow.md) |
 | `/create:project-epics` | `$create-project-epics` | Turn PRD/architecture into docs/work/backlog.md. | [Read](../../../.agents/skills/create-project-epics/references/workflow.md) |
 | `/create:project-requirements` | `$create-project-requirements` | Write product/requirements.md from real planning inputs. | [Read](../../../.agents/skills/create-project-requirements/references/workflow.md) |
@@ -84,7 +84,7 @@ A first-line `<!-- @@template -->` is an unfilled scaffold, not a prerequisite. 
 | create-project-brief | Verified product context/input | `docs/product/brief.md` |
 | create-project-requirements | Brief, brainstorm or research | `docs/product/requirements.md` |
 | create-project-architecture | PRD | `docs/architecture/overview.md` |
-| create-project-design | PRD | `docs/design/` suite |
+| create-project-design | PRD | `docs/design/spec.md` plus selected artifacts |
 | create-project-epics | PRD and architecture | `docs/work/backlog.md` |
 | create-project-todo | Backlog | Master `docs/TODO_{Project}.md` |
 | create-project-epics-todo | Backlog | `docs/work/todo/TODO_epicNN_{slug}.md` |

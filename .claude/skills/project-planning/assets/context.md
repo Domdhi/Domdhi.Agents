@@ -16,13 +16,21 @@
 | Project Brief | [product/brief.md](brief.md) | {status} |
 | PRD | [product/requirements.md](requirements.md) | {status} |
 | UX Spec | [design/spec.md](../design/spec.md) | {status} |
-| Wireframes | [design/wireframes.md](../design/wireframes.md) | {status} |
-| Light Theme | [design/theme.light.md](../design/theme.light.md) | {status} |
-| Dark Theme | [design/theme.dark.md](../design/theme.dark.md) | {status} |
-| Mock Layout | [design/mock.html](../design/mock.html) | {status} |
 | Architecture | [architecture/overview.md](../architecture/overview.md) | {status} |
 | Epics | [work/backlog.md](../work/backlog.md) | {status} |
 | Feature Ideas | [work/todo/feature-ideas.md](../work/todo/feature-ideas.md) | {status} |
+
+---
+
+## Design Scope and Artifacts
+
+{When design applies, summarize selected surfaces, fidelity, relevant states/sizes/theme modes and intentional exclusions. Use docs/design/spec.md's exact ## Design Artifacts record as the source for the selected outputs, tools, opening instructions and inspection evidence. For no design phase, state "Not applicable" and omit design links/table rows.}
+
+| Selected artifact / reference | Purpose and scope | Open / inspection status |
+|-------------------------------|-------------------|--------------------------|
+| {actual editable source or verified reference link} | {purpose and coverage} | {verified opening instructions or link to spec record; inspection result} |
+
+{Add only actual selected artifacts, including project-native paths outside docs/design when applicable. Resolve local links relative to docs/product/context.md. Omit unselected scaffold companions; do not imply omitted visual or interactive coverage was verified. Explicit text-only exploration is valid with its documented limits.}
 
 ---
 

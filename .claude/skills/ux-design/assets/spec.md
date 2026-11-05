@@ -1,147 +1,73 @@
 <!-- @@template -->
-# UX Design Specification: {Project Name}
+# UX Design Specification: {Project or Surface Name}
 
 | Attribute | Value |
-|-----------|-------|
-| **Version** | 1.0 |
-| **Status** | Draft |
-| **Author** | {name} |
-| **Date** | {YYYY-MM-DD} |
-| **Source** | Based on PRD v{X} |
+|---|---|
+| Version / status | {version} / {status} |
+| Author / date | {name} / {YYYY-MM-DD} |
+| Requirements source | {PRD version or focused task reference} |
 
----
+Use this scaffold for project design; scale its sections to the selected scope. Reference existing foundations for a focused change. Remove unrelated rows/sections rather than inventing pages, components or themes.
 
-## 1. Design Philosophy
+## Scope and User Goal
 
-{2-3 sentences describing the overall design approach. Examples: "Cockpit-style data density", "Minimal and focused", "Playful and approachable"}
+{User outcome, entry points, requested surfaces, fidelity and relevant recovery paths. State intentional exclusions.}
 
-### Design Principles
-1. **{Principle}**: {explanation}
-2. **{Principle}**: {explanation}
-3. **{Principle}**: {explanation}
+## Design Artifacts
 
----
+| Selected artifact / editable source or verified reference | Scope and relevant states | Sizes / viewports | Theme coverage | Chosen tool and reason |
+|---|---|---|---|---|
+| {real source path and preview/export path, or verified external reference} | {surface, journey and relevant states} | {actual dimensions or relevant sizes} | {requested modes or not applicable} | {tool and why it fits} |
 
-## 2. Typography
+| Artifact | Open / reproduce | Rendered inspection evidence and status | Interaction evidence | Limitations |
+|---|---|---|---|---|
+| {selected artifact} | {verified opening steps, preview command, renderer/version or access requirements} | {viewer/method, date, sizes/themes inspected, evidence path/reference, result or unverified status} | {observed checks and result, or not claimed} | {fidelity, capability/access gaps, pending checks} |
 
-| Role | Font | Weight | Size | Line Height |
-|------|------|--------|------|-------------|
-| H1 | {font} | {weight} | {size} | {lh} |
-| H2 | {font} | {weight} | {size} | {lh} |
-| H3 | {font} | {weight} | {size} | {lh} |
-| Body | {font} | {weight} | {size} | {lh} |
-| Caption | {font} | {weight} | {size} | {lh} |
-| Code | {monospace font} | {weight} | {size} | {lh} |
+For text-only scope, record rendered inspection as not applicable and explain why. For visual scope, inspect the rendered result; source review or a successful export command alone does not prove appearance. A diagram or screenshot does not establish working interactions. If inspection is blocked, record the attempted path and exact limitation without claiming completion. Preserve editable sources. Link only selected artifacts that exist or external references verified with authorized access.
 
----
+## Design Philosophy
 
-## 3. Layout System
+{Clear direction and principles tied to the user task and approved brand.}
 
-### Shell Structure
-```
-+----------------------------------------------------------+
-|  [Logo]           Navigation Bar              [User Menu] |
-+----------------------------------------------------------+
-|        |                                                  |
-| Sidebar|              Main Content                        |
-|        |                                                  |
-|  Nav   |  +------------------------------------------+   |
-|  Items |  |                                          |   |
-|        |  |         Content Area                     |   |
-|        |  |                                          |   |
-|        |  +------------------------------------------+   |
-|        |                                                  |
-+----------------------------------------------------------+
-|                     Footer                                |
-+----------------------------------------------------------+
-```
+## Typography and Tokens
 
-### Grid System
-- **Container**: {max-width, padding}
-- **Columns**: {grid system — 12-col, etc.}
-- **Gutter**: {spacing between columns}
-- **Breakpoints**:
-  - Mobile: {px}
-  - Tablet: {px}
-  - Desktop: {px}
-  - Wide: {px}
+{Reference the existing platform token definitions, or define the needed semantic roles. Separate theme documents are optional.}
 
-### Spacing Scale
-| Token | Value | Usage |
-|-------|-------|-------|
-| `--space-xs` | {value} | {usage} |
-| `--space-sm` | {value} | {usage} |
-| `--space-md` | {value} | {usage} |
-| `--space-lg` | {value} | {usage} |
-| `--space-xl` | {value} | {usage} |
+| Role / token | Existing definition or value | Usage |
+|---|---|---|
+| {type role / token} | {verified source or value} | {hierarchy and readability} |
+| {spacing / color role} | {verified source or value} | {usage} |
 
----
+## Layout System
 
-## 4. Component Inventory
+{Describe the selected surface and reference its inspected layout artifact. Include a shell only when the requested scope needs one.}
 
-### Core Components
-| Component | Variants | Usage |
-|-----------|----------|-------|
-| Button | Primary, Secondary, Ghost, Danger | Actions |
-| Card | Standard, Compact, Interactive | Content containers |
-| Table/DataGrid | Sortable, Filterable, Virtual scroll | Data display |
-| Form Field | Text, Select, Checkbox, Radio, Date | Data input |
-| Modal/Dialog | Standard, Confirmation, Full-screen | Overlays |
-| Toast/Notification | Info, Success, Warning, Error | Feedback |
-| Navigation | Sidebar, Tabs, Breadcrumbs | Wayfinding |
+| Constraint | Decision |
+|---|---|
+| Surface dimensions / container | {real dimensions, min/max width and padding} |
+| Grid / spacing | {existing layout system or selected rules} |
+| Responsive behavior | {specific changes at relevant sizes; bounded surface behavior if applicable} |
 
-### Component States
-All interactive components must define: Default, Hover, Active, Focus, Disabled, Loading, Error
+## Component Inventory and States
 
----
+| Component / existing implementation | Relevant variants and states | Behavior / token references |
+|---|---|---|
+| {component} | {default, focus, disabled, empty, loading, error, overflow as applicable} | {verified API/tokens and behavior} |
 
-## 5. Interaction Patterns
+## Interaction Patterns
 
-### Navigation
-- {How users move between sections}
+{Navigation/entry and exit paths, input/validation timing, feedback and recovery for the selected task. Separate requirements from interactions actually observed in the artifact record.}
 
-### Data Entry
-- {Form validation timing — on blur, on submit, real-time}
-- {Error display — inline, toast, summary}
-- {Auto-save behavior}
+## Accessibility
 
-### Data Display
-- {Loading states — skeleton, spinner, progressive}
-- {Empty states — illustration, call-to-action}
-- {Error states — retry, fallback}
+| Requirement / check | Evidence or implementation requirement |
+|---|---|
+| Target standard | {project accessibility target} |
+| Contrast | {measured foreground/background pairs, ratios and applicable threshold} |
+| Keyboard / focus | {tab order, visible focus, focus return and observed or pending checks} |
+| Semantics / labels | {names, roles, label/error association and screen-reader requirements} |
+| Motion / touch | {reduced-motion behavior and target sizes where relevant} |
 
-### Feedback
-- {Success confirmation — toast, redirect, inline}
-- {Error messaging — specificity, recovery actions}
-- {Progress indicators — determinate, indeterminate}
+## Selected Companion References
 
----
-
-## 6. Responsive Behavior
-
-| Breakpoint | Layout Changes |
-|------------|---------------|
-| Mobile (<{px}) | {what changes} |
-| Tablet ({px}-{px}) | {what changes} |
-| Desktop (>{px}) | {what changes} |
-
----
-
-## 7. Accessibility
-
-- **Target**: WCAG {2.1 AA / 2.1 AAA}
-- **Color Contrast**: Minimum {4.5:1} for text, {3:1} for large text
-- **Keyboard Navigation**: All interactive elements reachable via Tab
-- **Screen Reader**: All images have alt text, forms have labels
-- **Focus Indicators**: Visible focus ring on all interactive elements
-- **Motion**: Respect `prefers-reduced-motion`
-
----
-
-## Related Documents
-- PRD: [../product/requirements.md](../product/requirements.md)
-- Wireframes: [wireframes.md](wireframes.md)
-- Light Theme: [theme.light.md](theme.light.md)
-- Dark Theme: [theme.dark.md](theme.dark.md)
-- Mock Layout: [mock.html](mock.html)
-- Architecture: [../architecture/overview.md](../architecture/overview.md)
+{Link only actual selected companions and relevant existing requirements/architecture. Omit this section when the artifact record contains all needed references.}

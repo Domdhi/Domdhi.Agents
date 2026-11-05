@@ -88,16 +88,16 @@ node .claude/core/memory-manager.js search "<INPUT topic + module keywords>"
 
 **Skip condition:** If `search` returns 0 results OR all results have `decayed_confidence < 0.3`, proceed silently to story sizing.
 
-### Per-Agent File Budget (HARD CAP — this drives story slicing)
+### Per-Agent File Budget (planning cap — this guides story slicing)
 
 Every story maps to exactly **one** dev agent at `/run-todo` time. Size each story so that agent's scope is small enough it **physically cannot fill its context window and compact mid-implementation.** A compacting agent silently drops AC items and fabricates "done" — this is the single most common cause of a TODO that builds green but ships incomplete.
 
-**Hard cap per story / per dev agent:**
+**Initial planning cap per story / per dev agent:**
 - **≤ 5 files MODIFIED**
 - **≤ 2 files CREATED**
 - (test files count toward these limits)
 
-If a unit of work exceeds the cap, **SPLIT it** into parallel sub-stories partitioned by orthogonal concern (e.g. service slice / component slice / wiring slice / test slice). **Strongly prefer more, smaller stories and more parallel agents over fewer fat ones** — narrow agents finish faster, never compact, and parallelize. There is no penalty for a 12-story TODO of tiny stories; there is a real penalty for a 4-story TODO of 10-file stories (a fat-scope agent that compacted mid-task dropped an acceptance criterion with a fabricated "deferred" comment).
+If an initial estimate exceeds the cap, split it into coherent sub-stories partitioned by concern (e.g. service slice / component slice / wiring slice / test slice). During execution, these estimates are not edit allowlists: follow `.agents/startup.md` for necessary file expansion, update the plan and affected checks, and split/resequence if the work has grown enough to warrant it. Parallelize only when active writers and dependencies permit it.
 
 **Split sub-stories are sibling H2 headers (`## Story N.M.K`), NEVER H3 (`### Story N.M.K`) nested under a wrapping `## Story N.M` parent.** `status.js --regen-master` counts only H2 story headers — a nested-H3 split is structurally invisible to the master index (Stories/Hours undercount). When splitting, delete or demote the wrapping parent header so it isn't double-counted.
 
@@ -147,7 +147,7 @@ Agent(
   6. Identify overlaps — which files appear in multiple changes?
   7. Build dependency graph — which changes must complete before others?
   8. **Hotspot detection:** identify any file that would be touched by 3+ stories. If ALL stories share a single hotspot file, flag the TODO as single-hotspot — Main Agent will apply the collapse shape in Phase 3.
-  9. Compute candidate wave groupings under both shapes: (a) file-overlap partitioning (zero overlap per wave) and (b) functional grouping for single-hotspot collapse. Leave the final shape decision to Main Agent.
+  9. Compute candidate wave groupings under both shapes: (a) file-overlap partitioning for concurrent writers in a shared checkout and (b) functional grouping for single-hotspot collapse. Identify shared files that need serialized edits, handoffs or separate-worktree integration. Leave the final shape decision to Main Agent.
   10. **Shared-git-index check:** if a wave's stories each run `git mv` / `git rm` / `git add` on the SAME working tree, they contend on `.git/index.lock` even when their files are disjoint — disjoint files ≠ disjoint git state. Flag such a wave `git-serial`: it must execute Main Agent direct sequentially, NOT as parallel agents, regardless of file-overlap partitioning. (Field-proven: skill-owned-templates Wave 2, six disjoint `git mv` migrations — ran sequential to avoid index-lock races.)
 
   Write findings to: docs/.output/.state/work/{YYYY-MM-DD}/{slug}/{HHMM}-research-codebase.md
@@ -276,11 +276,11 @@ Main Agent writes the TODO directly. Do NOT delegate assembly to a subagent — 
 | {ID} | general-purpose | {files} | {n}/{m} | Yes/No |
 
 ### Shared Hotspot Files
-- **{file}** — touched by stories {X, Y}. In file-overlap shape: must be in different waves. In single-hotspot shape: expected (this is the hotspot that drove collapse).
+- **{file}** — touched by stories {X, Y}. Record serialized edits or a writer handoff within a wave, dependency-ordered waves, or separate-worktree integration. In single-hotspot shape: expected (this is the hotspot that drove collapse).
 
 ### Critical Path & Parallel Workstreams (REQUIRED)
 - **Critical path:** {Story → Story → Story} — the longest dependency chain; ~{hours} of summed story effort. No number of agents shortens it; elapsed time also includes dispatch, gate and review time, so do not report effort hours as elapsed time.
-- **Parallel workstreams:** {N} independent chains that run concurrently — {chain A} ∥ {chain B} ∥ {chain C}. Each chain owns a disjoint file set.
+- **Parallel workstreams:** {N} independent chains that run concurrently — {chain A} ∥ {chain B} ∥ {chain C}. Shared-checkout writes have one active writer per file; separate worktrees may overlap with an explicit integration owner.
 - **Max concurrent agents:** {N} (the widest wave).
 - **Bottleneck:** {Story ID} — {why; e.g. it adds the interface every Wave-2 story consumes}. If it slips, everything downstream slips.
 
@@ -297,17 +297,17 @@ Main Agent writes the TODO directly. Do NOT delegate assembly to a subagent — 
 ### Template Rules (NON-NEGOTIABLE)
 
 1. **Every story has AC bullets with checkboxes** — specific, testable, used as gates by `/do` and `/run-todo`
-2. **Every story has a Files section** — exact paths from codebase research, not guesses
+2. **Every story has a Files section** — researched starting paths, not guesses or an edit allowlist; apply the outcome-ownership contract in `.agents/startup.md` when execution discovers necessary files
 3. **Every story has Research notes** — what exists now, patterns to follow, gotchas
 4. **Every story has an Estimate** — XS (< 30 min), S (30-60 min), M (1-2 hr), L (2-4 hr)
 4b. **Every story has a Complexity score (1–10)** — the persisted routing signal `/do` reads (see Complexity Score below). Wall-clock effort (Estimate) and routing complexity are distinct: a long-but-mechanical story is high-Estimate / low-Complexity.
 5. **Story Index with wave column** — `/run-todo` reads this to know execution order
 6. **Wave Plan with file ownership, QA flag, and Shape line** — `/run-todo` reads this directly. Shape line is required (see Wave Shape Decision below).
-7. **File overlap constraint depends on the Shape** — in `file-overlap partitioned` shape, zero overlap per wave is mandatory. In `single-hotspot collapsed` shape, the hotspot file appears across waves *by design*. In `role-based` shape, overlap is allowed at the role-wave level but stories within a role-wave have zero overlap when dispatched in parallel.
+7. **Coordinate writes for every Shape.** Shared-checkout files have one active writer at a time; overlaps can use handoffs or serialized edits within a wave. Separate worktrees may overlap with explicit integration and conflict review. In `single-hotspot collapsed` shape, the hotspot file appears across waves by design. Starting assignments can expand within the authorized task; record the resulting coordination and verification changes.
 8. **Dependency Graph** — ASCII art showing what blocks what
 9. **No code blocks** — file paths and descriptions only. Implementation is the dev agent's job
 10. **AC bullets are NEVER stripped or summarized** — they flow verbatim into `/do` and `/run-todo`
-11. **Every story carries an Agent budget line within the HARD CAP** — ≤5 files modified / ≤2 files created (tests count). Split anything larger into parallel sub-stories. Bias toward more, smaller stories + more agents.
+11. **Every story carries an Agent budget line within the planning cap** — ≤5 files modified / ≤2 files created (tests count). At authoring time, split larger estimates into coherent sub-stories. These budgets size planned work, not runtime edit permissions: necessary file expansion follows `.agents/startup.md`; update estimates and split/resequence when the work warrants it.
 12. **Sub-story splits use sibling H2 headers (`## Story N.M.K`), never H3 nested under a wrapping H2** — `status.js --regen-master` only counts H2 headers (see the SPLIT rule above).
 13. **Surface the project's recurring implementation constraints in the story's Research Notes at authoring time** — any constraint that has bitten implementers ≥2 times (per memory, retros, or project CLAUDE.md) gets named explicitly in each affected story's Research Notes; memory recall alone has proven insufficient for implementers. Typical shapes: a per-file registration/exports step with no barrel, a write-boundary guard set that must be re-visited by name on every related change, an expensive (AI/embedding) call that must be ordered after every cheap check that could obviate it.
 14. **Every story names production, test and review ownership** — read the repository's actual test-authorship rule before assigning it; do not import another repository's rule. In this toolkit, `/run-todo` Step 2b has the Main Agent write AC tests before dev dispatch (with its documented one-round and cross-story test-ownership exceptions); dev agents own production edits; a fresh independent reviewer owns review. A deviation from the actual rule is stated in the story, not hidden.
@@ -335,7 +335,7 @@ Complexity is **distinct from Estimate**: Estimate is wall-clock effort, Complex
 
 ### Wave Shape Decision (Main Agent — apply before writing the Wave Plan)
 
-Wave shape is not always file-overlap partitioning. Choose the shape that minimizes ceremony for the TODO's story composition, then fill in file ownership as a constraint within each wave.
+Wave shape is not always file-overlap partitioning. Choose the shape that minimizes ceremony for the TODO's story composition, then record starting file assignments and active-writer coordination within each wave.
 
 Evaluate in this order and pick the first that fits:
 
@@ -344,11 +344,11 @@ Evaluate in this order and pick the first that fits:
   - Target: 2–3 bundled stories, 2–3 waves.
   - **Required warning line in the Executive Summary:** `Wave shape: single-hotspot collapsed — collapsed {N_original} stories into {M_bundled} bundled stories by functional grouping. File-overlap partitioning would have produced {N_original} forced-serial waves.`
   - Why: under pure file-overlap partitioning, one-hotspot TODOs force `waves = stories`. That pays full per-wave machinery (commits, handoff regen, gate runs, review cycles) for zero parallelism benefit. Field-measured cost on a 6-story single-hotspot TODO: ~30 min total, ~15 min pure ceremony, ~80k context on orchestration, and no offsetting speedup.
-  - **Budget still applies:** each bundled story must respect the ≤5/≤2 file cap. If a functional bundle would exceed it, keep it split even though that forces an extra serial wave — correctness (no compaction) beats ceremony savings.
+  - **Planning budget still applies:** author bundles within the initial ≤5/≤2 estimate by splitting larger work into coherent stories. During execution, necessary file expansion follows `.agents/startup.md`; update estimates and resequence when needed rather than treating a count as an edit prohibition.
 
 **Shape B — Role-based (Tests / Code / Verify) — the default for heterogeneous TODOs.** When stories span multiple files and conceptual areas and none of them qualifies for Shape A, organize as three role-scoped waves:
-  - **Wave 1 — Tests:** one story per eventual feature that authors failing tests from AC. These stories have no file-overlap with each other (one test file per feature) and dispatch in parallel.
-  - **Wave 2 — Code:** implementation stories that make the Wave 1 tests pass. Zero file-overlap within the wave; parallel dispatch.
+  - **Wave 1 — Tests:** one story per eventual feature that authors failing tests from AC, under the repository's test-authorship rule. Coordinate shared test files before parallel dispatch.
+  - **Wave 2 — Code:** implementation stories that make the Wave 1 tests pass. Parallel dispatch uses one active writer per shared-checkout file, or separate worktrees with explicit integration and conflict review.
   - **Wave 3 — Verify:** AC verification, E2E coverage, code review, and final commit.
 
   This replaces the old "file-overlap is the only partitioning rule" default. `/run-todo`'s per-wave TDD rhythm (Step 2b) still applies *within* each role-wave, but redundancy is minimized because Wave 1 is explicitly and solely about tests.
@@ -379,11 +379,11 @@ Before handing off to external review, Main Agent scans its own output for plan 
 - [ ] Any story is missing its **Complexity** score (1–10) — the persisted routing signal `/do` reads
 - [ ] Any story references an undefined story ID in Dependencies
 - [ ] Wave Plan is missing the **Shape** line (role-based | single-hotspot collapsed | file-overlap partitioned) — required for every TODO
-- [ ] In `file-overlap partitioned` shape: any wave has file overlap between stories (must be zero)
+- [ ] Any concurrent shared-checkout writers overlap without a handoff or serialized-edit plan, or separate-worktree overlaps lack an integration/review plan
 - [ ] In `single-hotspot collapsed` shape: Executive Summary is missing the required warning line (collapsed N → M stories) OR any bundled story is larger than M
 - [ ] Research Agent 1 flagged single-hotspot but Main Agent chose a different shape without a one-sentence rationale in the Executive Summary
 - [ ] Story Index is missing stories that appear in the body
-- [ ] Any story exceeds the HARD CAP (> 5 files modified or > 2 files created) — split it into parallel sub-stories
+- [ ] At authoring time, any story's estimate exceeds the planning cap (> 5 files modified or > 2 files created) without splitting it into coherent sub-stories; execution-time expansion follows `.agents/startup.md`
 - [ ] Any story is missing its **Agent budget** line
 - [ ] Wave Plan is missing the **Critical Path & Parallel Workstreams** block
 - [ ] Any story is missing its **Ownership** line, or its test owner contradicts the repository's actual test-authorship rule without a stated deviation
@@ -395,7 +395,7 @@ Before handing off to external review, Main Agent scans its own output for plan 
 - [ ] Story/index parity — every story in the body appears in the Story Index and every index row has a body story; split sub-stories are sibling H2 headers so `status.js --regen-master` counts them
 - [ ] Dependencies — every Dependencies ID exists, and no story depends on a story in the same or a later wave
 - [ ] Budget — every Agent budget line matches its Files list and stays within ≤5 modified / ≤2 created
-- [ ] Path collisions — per the declared Shape, no unintended file is owned by two stories dispatched in parallel
+- [ ] Path collisions — no shared-checkout file has two active writers; shared files have handoffs/serialized edits or a separate-worktree integration plan
 - [ ] Forward outputs — a story that reads or edits a file another story creates sits in a later wave than its creator
 - [ ] Critical path — the stated chain is the longest dependency chain, its hours are summed story effort, and nothing reports them as elapsed time
 
@@ -428,11 +428,11 @@ Agent(
 
   ## Coverage
   1. Every AC is specific and testable (no "properly", "correctly", "as needed")
-  2. File lists are complete — no story references files outside its list
+  2. File lists name the researched starting scope; necessary expansion follows .agents/startup.md and is not rejected merely for being unlisted
   3. Missing error/empty/loading states in ACs
 
   ## Structure
-  4. Wave groupings have zero file overlap (check file ownership)
+  4. Wave groupings coordinate shared-checkout writers; handoffs/serialized edits or separate-worktree integration cover shared files
   5. Dependencies are correct — no story depends on something in a later wave
   6. ACs don't contradict each other across stories
 
@@ -519,7 +519,7 @@ Stage exactly these tracked files. The research and review files under `docs/.ou
 6. **The TODO is a contract** — `/run-todo` and `/do` trust it completely. If it's wrong, they fail.
 7. **No code blocks in stories** — file paths and descriptions only. Implementation is the dev agent's job.
 8. **Always regenerate the session handoff (Phase 7) and commit (Phase 8).** A newly-created TODO that isn't surfaced in the handoff won't be picked up by the next session's `/prime`. Use the `session-handoff` skill (path via `handoff-path.js write todo`).
-9. **Per-agent file budget is a HARD CAP** — ≤5 files modified / ≤2 files created per dev agent. More small stories + more parallel agents beats fewer fat ones. No background agent should ever compact mid-implementation.
+9. **Per-agent file budgets guide initial story slicing** — plan for ≤5 files modified / ≤2 files created per dev agent. File discovery during execution can expand the assignment under `.agents/startup.md`; update the budget and coordination plan, and split when the actual work warrants it.
 10. **Reuse warm session agents when they already hold the context** — resume via SendMessage over cold-spawn; still persist findings to the research file.
 11. **Ownership is explicit and grounded** — every story names production, test and review ownership per the repository's actual test-authorship rule (Template Rule 14).
 12. **Review is fresh, closure is warm** — a fresh independent reviewer reads the persisted scope; the same reviewer confirms finding closure (Phase 4/5).

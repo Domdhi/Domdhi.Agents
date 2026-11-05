@@ -1,93 +1,49 @@
 <!-- @@template -->
-# Dark Theme: {Project Name}
+# Dark Theme: {Project or Surface Name}
 
 | Attribute | Value |
-|-----------|-------|
-| **Version** | 1.0 |
-| **Status** | Draft |
-| **Author** | {name} |
-| **Date** | {YYYY-MM-DD} |
-| **Source** | Based on UX Spec v{X}, Light Theme v{X} |
+|---|---|
+| Version / status | {version} / {status} |
+| Author / date | {name} / {YYYY-MM-DD} |
+| Design entry point | [spec.md](spec.md) |
+| Coverage | {selected surfaces, states and sizes} |
 
----
+This optional reference can describe a dark-only design. Preserve the project's token format, approved brand and existing theme behavior. A light-theme document is not a prerequisite. Omit unused roles/regions.
 
 ## Design Notes
 
-Dark theme is derived from the light theme with these principles:
-- Backgrounds use dark surfaces (not pure black — use `#121212` or similar)
-- Text lightens to maintain contrast
-- Semantic colors may shift saturation/brightness for dark backgrounds
-- Elevation is conveyed through lighter surfaces, not shadows
+{Explain surface separation, hierarchy, semantic feedback and elevation for this product. Choose colors for the actual environment and contrast requirements rather than blindly inverting another palette. When other modes are selected, retain equivalent semantic roles and component behavior.}
 
----
+## Semantic Token Mapping
 
-## Color Palette
+| Semantic role | Existing platform token / definition | Dark value | Usage / relation to other selected modes |
+|---|---|---|---|
+| Primary action / on-action text | {verified token paths} | {values} | {action and foreground pair} |
+| Page / raised surface | {verified token paths} | {values} | {selected surfaces and elevation} |
+| Primary / secondary text | {verified token paths} | {values} | {text hierarchy} |
+| Border / visible focus | {verified token paths} | {values} | {boundaries and focus treatment} |
+| Success / warning / danger | {verified token paths} | {values} | {feedback with non-color cues} |
 
-### Semantic Colors
-| Token | Light Value | Dark Value | Notes |
-|-------|------------|------------|-------|
-| `--color-primary` | {light hex} | {dark hex} | {adjustment notes} |
-| `--color-secondary` | {light hex} | {dark hex} | {adjustment notes} |
-| `--color-accent` | {light hex} | {dark hex} | {adjustment notes} |
-| `--color-success` | {light hex} | {dark hex} | {adjustment notes} |
-| `--color-warning` | {light hex} | {dark hex} | {adjustment notes} |
-| `--color-danger` | {light hex} | {dark hex} | {adjustment notes} |
-| `--color-info` | {light hex} | {dark hex} | {adjustment notes} |
+## Typography, Spacing and Elevation
 
-### Background Colors
-| Token | Light Value | Dark Value | Notes |
-|-------|------------|------------|-------|
-| `--color-bg-page` | {light hex} | {dark hex} | Base surface |
-| `--color-bg-card` | {light hex} | {dark hex} | Elevated surface |
-| `--color-bg-sidebar` | {light hex} | {dark hex} | Navigation surface |
-| `--color-bg-header` | {light hex} | {dark hex} | Top bar surface |
-| `--color-bg-input` | {light hex} | {dark hex} | Input fields |
-| `--color-bg-hover` | {light hex} | {dark hex} | Hover state |
-| `--color-bg-active` | {light hex} | {dark hex} | Active/selected |
+{Reference existing type/spacing tokens. Describe applicable surface/border/shadow treatments for cards and overlays; do not add unused application regions.}
 
-### Text Colors
-| Token | Light Value | Dark Value | Notes |
-|-------|------------|------------|-------|
-| `--color-text-primary` | {light hex} | {dark hex} | Primary text |
-| `--color-text-secondary` | {light hex} | {dark hex} | Muted text |
-| `--color-text-disabled` | {light hex} | {dark hex} | Disabled text |
-| `--color-text-inverse` | {light hex} | {dark hex} | On colored bg |
-| `--color-text-link` | {light hex} | {dark hex} | Links |
+## Component State Mapping
 
-### Border Colors
-| Token | Light Value | Dark Value | Notes |
-|-------|------------|------------|-------|
-| `--color-border-default` | {light hex} | {dark hex} | Default borders |
-| `--color-border-focus` | {light hex} | {dark hex} | Focus ring |
-| `--color-border-error` | {light hex} | {dark hex} | Error borders |
+| Component | Relevant state | Foreground / background / border tokens | Non-color treatment |
+|---|---|---|---|
+| {component} | {default, hover, active, focus, disabled, loading or error} | {verified tokens} | {label, icon, underline, focus outline or other cue} |
 
----
+## Contrast Verification
 
-## Elevation & Shadows
+| Actual foreground / background pair and state | Measured ratio | Applicable threshold | Result / method |
+|---|---|---|---|
+| {pair} | {ratio} | {text, large text or non-text requirement} | {pass/fail and calculation method} |
 
-In dark mode, elevation is conveyed through surface lightness rather than shadows:
+## Rendered Inspection
 
-| Level | Surface Color | Shadow | Usage |
-|-------|--------------|--------|-------|
-| Base (0) | `--color-bg-page` | none | Page background |
-| Raised (1) | {hex} | subtle | Cards, panels |
-| Overlay (2) | {hex} | medium | Dropdowns, popovers |
-| Modal (3) | {hex} | strong | Modals, dialogs |
+{Selected artifact/source references, tool/open instructions, sizes and states viewed, evidence and results. Record limitations and pending checks; a palette table alone is not a rendered UI inspection. Keep the project spec's Design Artifacts record in sync.}
 
----
+## Selected Companion References
 
-## WCAG Compliance
-
-| Combination | Contrast Ratio | Requirement | Pass |
-|------------|---------------|-------------|------|
-| `--color-text-primary` on `--color-bg-page` | {ratio} | 4.5:1 (AA) | {Y/N} |
-| `--color-text-secondary` on `--color-bg-page` | {ratio} | 4.5:1 (AA) | {Y/N} |
-| `--color-text-inverse` on `--color-primary` | {ratio} | 4.5:1 (AA) | {Y/N} |
-| `--color-primary` on `--color-bg-page` | {ratio} | 3:1 (AA Large) | {Y/N} |
-
----
-
-## Related Documents
-- UX Spec: [../design/spec.md](../design/spec.md)
-- Light Theme: [theme.light.md](theme.light.md)
-- Mock Layout: [mock.html](mock.html)
+{Link only selected, existing companions or verified external artifacts. A light-theme companion is optional.}

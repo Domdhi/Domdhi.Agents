@@ -1,97 +1,44 @@
 <!-- @@template -->
-# Wireframes: {Project Name}
+# Layout and Wireframe Notes: {Project or Surface Name}
 
 | Attribute | Value |
-|-----------|-------|
-| **Version** | 1.0 |
-| **Status** | Draft |
-| **Author** | {name} |
-| **Date** | {YYYY-MM-DD} |
-| **Source** | Based on UX Spec v{X} |
+|---|---|
+| Version / status | {version} / {status} |
+| Author / date | {name} / {YYYY-MM-DD} |
+| Design entry point | [spec.md](spec.md) |
 
----
+This optional companion covers only selected surfaces. One component or page is enough when that is the request. Use the representation that answers the question: Excalidraw for spatial exploration, Mermaid for flows, a project-native prototype for component behavior, or text/ASCII for an explicitly text-only exploration.
 
-## Page Inventory
+## Surface Inventory
 
-| Page | Priority | Entry Points | Notes |
-|------|----------|-------------|-------|
-| {Page Name} | Primary | {how users arrive} | {notes} |
-| {Page Name} | Primary | {how users arrive} | {notes} |
-| {Page Name} | Secondary | {how users arrive} | {notes} |
+| Surface / journey | Purpose and entry points | Relevant states | Sizes / theme coverage |
+|---|---|---|---|
+| {selected surface} | {user task and entry} | {relevant states} | {actual dimensions or sizes and modes} |
 
----
+## Artifact References
 
-## Navigation Flow
+| Editable source / verified reference | Preview / export | Tool and open / reproduce instructions | Rendered inspection status and evidence |
+|---|---|---|---|
+| {source path or verified reference} | {selected preview path or verified view} | {actual tool/version and opening steps} | {method, sizes/themes, result, evidence or capability limitation} |
 
-```
-{ASCII diagram showing how pages connect to each other}
-```
+## Layout Decisions
 
----
+{Describe hierarchy, regions, content priorities, overflow and relevant responsive changes. Include or link the selected rendered layout; no ASCII layout or second page is required. For text-only work, include the requested sketch and mark visual inspection not applicable.}
 
-## Page: {Page Name}
+## Flow and Behavior
 
-### Desktop Layout
-```
-+----------------------------------------------------------+
-|  [Logo]           Navigation Bar              [User Menu] |
-+----------------------------------------------------------+
-|        |                                                  |
-| Sidebar|              Main Content                        |
-|        |                                                  |
-|  Nav   |  +------------------------------------------+   |
-|  Items |  |                                          |   |
-|        |  |         Content Area                     |   |
-|        |  |                                          |   |
-|        |  +------------------------------------------+   |
-|        |                                                  |
-+----------------------------------------------------------+
-|                     Footer                                |
-+----------------------------------------------------------+
-```
-
-### Mobile Layout
-```
-+-------------------------+
-| [=]  Logo    [User]     |
-+-------------------------+
-|                         |
-|    Main Content         |
-|                         |
-+-------------------------+
-| [Nav] [Nav] [Nav] [Nav] |
-+-------------------------+
-```
-
-**Purpose**: {what this page does}
-**Entry Points**: {how users get here}
-**Key Interactions**:
-- {interaction 1}
-- {interaction 2}
-**Data Displayed**: {key data shown}
-**Actions Available**: {what users can do}
-
----
-
-## Page: {Page Name}
-
-{Repeat for each page...}
-
----
+{Document navigation, actions and recovery where relevant. Include a rendered flow diagram only when it helps the task. A flow diagram describes intended behavior; record actual interaction checks separately.}
 
 ## Shared Components
 
-### {Component Name}
-```
-{ASCII wireframe of reusable component}
-```
-**Used on**: {list of pages}
-**Variants**: {different states or configurations}
+| Component | Used on | Variants / relevant states | Existing system reference |
+|---|---|---|---|
+| {component} | {selected surface} | {states} | {verified token/component reference} |
 
----
+## Inspection and Limitations
 
-## Related Documents
-- UX Spec: [../design/spec.md](../design/spec.md)
-- Light Theme: [theme.light.md](theme.light.md)
-- Dark Theme: [theme.dark.md](theme.dark.md)
-- Mock Layout: [mock.html](mock.html)
+{What was visually inspected, corrections and reinspection; interactions actually checked; unresolved fidelity/capability limits. Keep the project spec's Design Artifacts record in sync.}
+
+## Selected Companion References
+
+{Link only selected, existing companions or verified external artifacts; omit unused theme/mock links.}
