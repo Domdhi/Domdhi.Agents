@@ -90,10 +90,19 @@ function checkDescription(desc, max = DESC_MAX) {
  * Evaluate one skill's parsed facts into a list of findings.
  * Pure — takes values, not file paths, so it is testable without fs.
  */
-function evaluateSkill({ dir, name, description, lineCount }) {
+function evaluateSkill({ dir, name, description, lineCount, vendored = false }) {
     const findings = [];
 
-    const body = checkBody(lineCount);
+    // A VENDORED skill (its directory is a symlink into a shared store such as ../.agents/skills/)
+    // is still checked for HARD spec violations below — name/description govern whether it triggers
+    // correctly in THIS project, so they matter regardless of who authored it. But the body budget
+    // is ADVISORY and, for a vendored skill, unactionable: trimming it would mutate a shared
+    // upstream source other projects read, and the edit would be clobbered on the next sync.
+    // Reporting it forever trains the reader to ignore the warning, which then masks the budget
+    // signal for skills we CAN act on. (Seen in practice: the single largest "over-budget skill"
+    // in three consecutive sweep reports was a symlink to a vendored third-party skill and was
+    // never ours to consolidate.)
+    const body = vendored ? null : checkBody(lineCount);
     if (body) {
         findings.push({
             ...body,
@@ -147,6 +156,17 @@ function scanAll(skillsRoot) {
         .map((d) => d.name)
         .sort();
 
+    // Resolved separately from the filter above: a skill dir reached via symlink is VENDORED.
+    // lstatSync, not statSync — statSync follows the link and would report every skill as a
+    // plain directory, which is exactly the distinction we need here.
+    const isVendored = (dir) => {
+        try {
+            return fs.lstatSync(path.join(skillsRoot, dir)).isSymbolicLink();
+        } catch {
+            return false;
+        }
+    };
+
     for (const dir of dirs) {
         const skillPath = path.join(skillsRoot, dir, 'SKILL.md');
         if (!fs.existsSync(skillPath)) continue;
@@ -158,6 +178,7 @@ function scanAll(skillsRoot) {
                 name: parseField(frontmatter, 'name'),
                 description: parseField(frontmatter, 'description'),
                 lineCount: countLines(content),
+                vendored: isVendored(dir),
             }),
         );
     }

@@ -422,6 +422,14 @@ class MemoryManager {
      * re-scans into a health-check run that writes a probe memory). This does
      * its own minimal read — file content only enough to check `invalid_at` —
      * so it stays outside the listMemories call-count contract entirely.
+     *
+     * The JSON files stay the authority here (NOT the SQLite index): the index is
+     * a derived cache that can legitimately lag a file written out-of-band, and
+     * undercounting would let a write slip past the per-category cap. What IS
+     * skipped is the `JSON.parse` — a file that doesn't contain the literal key
+     * `"invalid_at"` anywhere cannot have a top-level `invalid_at`, so it's live
+     * by inspection. Only the (rare) files that do contain the substring are
+     * parsed, which is what made this scan expensive at ~350 memories per category.
      */
     async getMemoryCount(category) {
         const dir = path.join(this.memoriesDir, category);
@@ -432,6 +440,7 @@ class MemoryManager {
                 if (!file.endsWith('.json')) continue;
                 try {
                     const raw = await fs.readFile(path.join(dir, file), 'utf-8');
+                    if (!raw.includes('"invalid_at"')) { count++; continue; }
                     const memory = JSON.parse(raw);
                     if (!memory.invalid_at) count++;
                 } catch {
@@ -512,15 +521,23 @@ class MemoryManager {
             }
         }
 
-        // Memory explosion guard
-        const count = await this.getMemoryCount(category);
-        if (count >= MAX_MEMORIES_PER_CATEGORY * PRUNE_THRESHOLD_PERCENT) {
+        // Memory explosion guard.
+        // The second count is only taken when a prune actually RAN — otherwise the
+        // store is provably unchanged since the first scan and the recount was a
+        // duplicate whole-category read+parse on every single create (two full
+        // scans per write at ~350 files/category). It is NOT derived arithmetically
+        // from `pruned`: pruneStaleMemories deletes by age+confidence regardless of
+        // `invalid_at`, so its return value can include tombstones that never
+        // counted as live, and `count - pruned` would UNDERcount and let a write
+        // slip past the cap.
+        let currentCount = await this.getMemoryCount(category);
+        if (currentCount >= MAX_MEMORIES_PER_CATEGORY * PRUNE_THRESHOLD_PERCENT) {
             const pruned = await this.pruneStaleMemories(category);
             if (pruned > 0) {
                 console.log(`⚠️  Memory guard: auto-pruned ${pruned} stale memories from ${category}`);
+                currentCount = await this.getMemoryCount(category);
             }
         }
-        const currentCount = await this.getMemoryCount(category);
         if (currentCount >= MAX_MEMORIES_PER_CATEGORY) {
             console.log(`⛔ Memory guard: ${category} has ${currentCount} entries (max ${MAX_MEMORIES_PER_CATEGORY}). Skipping write for ${id}. Run prune or increase limit.`);
             return null;

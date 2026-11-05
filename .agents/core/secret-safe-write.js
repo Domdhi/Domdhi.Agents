@@ -33,8 +33,13 @@ const { scanContent, redactSecretsInText } = require('../hooks/secret-patterns.c
  * @returns {string}         Redacted content on a hit, else the original content.
  */
 function redactSecretsForWrite(content, filePath, logTag = 'secret-safe-write') {
-    const findings = scanContent(content, filePath);
-    if (!findings || findings.length === 0) return content;
+    // CONTENT findings only. `scanContent` also emits a `HIGH_RISK_FILE` finding
+    // derived from the FILENAME alone (a `.key`/`.pem`/`.env*` destination), which
+    // says nothing about the bytes being written — acting on it made every write to
+    // such a path print "redacted N secret finding(s)" over provably clean content,
+    // and `redactSecretsInText` (which is content-only) then changed nothing anyway.
+    const findings = (scanContent(content, filePath) || []).filter(f => f.type === 'SECRET_PATTERN');
+    if (findings.length === 0) return content;
     if (logTag) {
         const names = findings.map(f => f.name || f.type).join(', ');
         process.stderr.write(

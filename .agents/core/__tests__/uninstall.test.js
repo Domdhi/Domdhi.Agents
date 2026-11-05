@@ -75,7 +75,7 @@ describe('uninstall AC1: digest and ownership inventory', () => {
   });
 
   it.each(['AGENTS.md', 'CLAUDE.md', '.gitignore', 'docs/product/brief.md',
-    '.agents/learning-intake/identity.json', '.agents/gate.config.json',
+    '.agents/intake/identity.json', '.agents/learning-intake/identity.json', '.agents/gate.config.json',
     '.agents/config/distribution-policy.json', '.agents/config/custom.local.json',
     '.agents/roles/dev.md', '.claude/agents/dev.md', '.codex/agents/dev.toml',
     '.claude/settings.json', '.claude/settings.local.json', '.claude/update-config.json',

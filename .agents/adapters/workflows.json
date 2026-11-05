@@ -47,5 +47,6 @@
   "create-project-brief": ".claude/commands/create/project-brief.md",
   "create-project-epics-todo": ".claude/commands/create/project-epics-todo.md",
   "create-component": ".claude/commands/create/component.md",
-  "learning-intake": ".claude/commands/learning-intake.md"
+  "learning-intake": ".claude/commands/learning-intake.md",
+  "council": ".claude/commands/council.md"
 }

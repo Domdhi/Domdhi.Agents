@@ -299,6 +299,60 @@ describe('TODO scanning and parsing', () => {
         expect(s.in_progress).toBe(1);
     });
 
+    it('parseTodoFileStories — a file with BOTH bold checkboxes and a Story Index table counts each story once', () => {
+        // The body checklist and the summary table are two renderings of one story set.
+        const file = writeDoc('docs/work/todo/TODO_hybrid.md', [
+            '# Hybrid checklist',
+            '',
+            '- [x] **1.1 Story one**',
+            '- [ ] **1.2 Story two**',
+            '',
+            '## Story Index',
+            '| Story | Status |',
+            '| ----- | ------ |',
+            '| 1.1 | [x] |',
+            '| 1.2 | [ ] |',
+        ].join('\n'));
+        const { parseTodoFileStories } = loadMetrics(dir);
+        const s = parseTodoFileStories(file);
+        expect(s.total).toBe(2); // not 4
+        expect(s.done).toBe(1);  // not 2
+    });
+
+    it('parseTodoFileStories — INDENTED bold acceptance-criteria bullets are not stories', () => {
+        const file = writeDoc('docs/work/todo/TODO_ac.md', [
+            '# Checklist with nested AC bullets',
+            '',
+            '## Story Index',
+            '| Story | Status |',
+            '| ----- | ------ |',
+            '| 1.1 | [x] |',
+            '| 1.2 | [ ] |',
+            '',
+            '  - [x] **AC: first criterion**',
+            '  - [ ] **AC: second criterion**',
+        ].join('\n'));
+        const { parseTodoFileStories } = loadMetrics(dir);
+        const s = parseTodoFileStories(file);
+        // The indented bullets must neither count as stories nor suppress the table path.
+        expect(s.total).toBe(2);
+        expect(s.done).toBe(1);
+    });
+
+    it('parseTodoFileStories — a pure-table checklist still counts through the table path', () => {
+        const file = writeDoc('docs/work/todo/TODO_pure_table.md', [
+            '| Story | Status |',
+            '| ----- | ------ |',
+            '| A | [x] |',
+            '| B | [x] |',
+            '| C | [ ] |',
+        ].join('\n'));
+        const { parseTodoFileStories } = loadMetrics(dir);
+        const s = parseTodoFileStories(file);
+        expect(s.total).toBe(3);
+        expect(s.done).toBe(2);
+    });
+
     it('parseTodoFileStories — master index via Phase Map table', () => {
         const file = writeDoc('docs/TODO_Master.md', [
             '# Master Index',

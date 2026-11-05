@@ -17,8 +17,8 @@ const SECOND_ATTEMPT = '44444444-4444-4444-8444-444444444444';
 const NOW = '2026-10-14T14:00:00.000Z';
 const COMMIT = 'a'.repeat(40);
 const HASH = 'a'.repeat(64);
-const IDENTITY_FILE = '.agents/learning-intake/identity.json';
-const POLICY_FILE = '.agents/learning-intake/policy.json';
+const IDENTITY_FILE = '.agents/intake/identity.json';
+const POLICY_FILE = '.agents/intake/policy.json';
 const CEILINGS = {
   MAX_RECORD_BYTES: 65536, MAX_EXPORT_BYTES: 16384, MAX_FIELD_BYTES: 4096,
   MAX_REFERENCES: 20, MAX_RESPONSE_BYTES: 262144, MAX_BATCH: 10,
@@ -149,15 +149,15 @@ afterEach(() => {
 describe('learning-intake-store AC4.1 contracts and disabled initialization', () => {
   it('initialization_placesProjectAuthorityUnderAgents_withoutRootMetadata', () => {
     const initialized = store().initializeProject(options());
-    expect(JSON.parse(tmp.read('.agents/learning-intake/identity.json'))).toEqual(initialized.identity);
-    expect(JSON.parse(tmp.read('.agents/learning-intake/policy.json'))).toEqual(initialized.policy);
+    expect(JSON.parse(tmp.read('.agents/intake/identity.json'))).toEqual(initialized.identity);
+    expect(JSON.parse(tmp.read('.agents/intake/policy.json'))).toEqual(initialized.policy);
     expect(fs.existsSync(path.join(tmp.root, '.agents-learning-intake.identity.json'))).toBe(false);
     expect(fs.existsSync(path.join(tmp.root, '.agents-learning-intake.json'))).toBe(false);
   });
 
   it('initialization_symlinkedAuthorityDirectory_refusesBeforeOutsideMutation', async () => {
     fs.mkdirSync(path.join(tmp.root, '.agents'), { recursive: true });
-    fs.symlinkSync(external.root, path.join(tmp.root, '.agents/learning-intake'), process.platform === 'win32' ? 'junction' : 'dir');
+    fs.symlinkSync(external.root, path.join(tmp.root, '.agents/intake'), process.platform === 'win32' ? 'junction' : 'dir');
     await errorOf(() => store().initializeProject(options()), 'persistence-failed');
     expect(fs.readdirSync(external.root)).toEqual([]);
   });

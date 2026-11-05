@@ -496,6 +496,84 @@ describe('precommit', () => {
         tmp.cleanup();
         expect(exitCode).toBe(0);
     });
+
+    // `git diff --cached --name-only` C-quotes a non-ASCII path (core.quotepath, on by default):
+    // `café.md` comes out as the literal text `"caf\303\251.md"`. The scanner then could not read
+    // the staged blob, failed closed, and blocked EVERY commit staging such a file while blaming
+    // binary-ness. `-z` returns raw paths.
+    const NON_ASCII_NAME = 'café-notes.md';
+    const runPrecommit = repo => {
+        const scannerPath = path.resolve(fileURLToPath(import.meta.url), '..', '..', 'secret-scanner.cjs');
+        try {
+            execFileSync('node', [scannerPath, '--git-precommit'], {
+                cwd: repo.repoPath,
+                env: { ...process.env, CLAUDE_PROJECT_DIR: repo.repoPath },
+                stdio: 'pipe',
+            });
+            return { exitCode: 0, stderr: '' };
+        } catch (err) {
+            return { exitCode: err.status, stderr: err.stderr?.toString() || '' };
+        }
+    };
+
+    it.skipIf(!gitAvailable())('precommit_diagnosticPredicate_passesButCredentialStillBlocks', () => {
+        const tmp = createTmpDir();
+        const repo = createGitRepo({ root: tmp.root });
+        try {
+            repo.addCommit({ message: 'setup', files: [{ path: 'README.md', content: 'initial' }] });
+            const file = path.join(repo.repoPath, 'signup.tsx');
+            fs.writeFileSync(file, 'const errors = {\npassword: actionData.error.toLowerCase().includes("password")\n ? actionData.error : undefined,\n};\n');
+            execFileSync('git', ['add', 'signup.tsx'], { cwd: repo.repoPath, stdio: 'pipe' });
+            expect(runPrecommit(repo).exitCode).toBe(0);
+            fs.appendFileSync(file, `const password = "${'Winter' + '2024Pass'}";\n`);
+            execFileSync('git', ['add', 'signup.tsx'], { cwd: repo.repoPath, stdio: 'pipe' });
+            const blocked = runPrecommit(repo);
+            expect(blocked.exitCode).not.toBe(0);
+            expect(blocked.stderr).toMatch(/Password Assignment/);
+        } finally { tmp.cleanup(); }
+    });
+
+    it.skipIf(!gitAvailable())('precommit_nonAsciiFilenameCleanContent_exits0', () => {
+        const tmp = createTmpDir();
+        const repo = createGitRepo({ root: tmp.root });
+        repo.addCommit({ message: 'setup', files: [{ path: 'README.md', content: 'initial' }] });
+        fs.writeFileSync(path.join(repo.repoPath, NON_ASCII_NAME), '# notes\n');
+        execFileSync('git', ['add', NON_ASCII_NAME], { cwd: repo.repoPath, stdio: 'pipe' });
+
+        const result = runPrecommit(repo);
+        tmp.cleanup();
+
+        expect(result.exitCode, result.stderr).toBe(0);
+    });
+
+    it.skipIf(!gitAvailable())('precommit_nonAsciiFilenameWithSecret_stillBlocks', () => {
+        const tmp = createTmpDir();
+        const repo = createGitRepo({ root: tmp.root });
+        repo.addCommit({ message: 'setup', files: [{ path: 'README.md', content: 'initial' }] });
+        fs.writeFileSync(path.join(repo.repoPath, NON_ASCII_NAME), `key = "${'AKIA' + 'FAKETESTKEY1234567'}"\n`);
+        execFileSync('git', ['add', NON_ASCII_NAME], { cwd: repo.repoPath, stdio: 'pipe' });
+
+        const result = runPrecommit(repo);
+        tmp.cleanup();
+
+        expect(result.exitCode).not.toBe(0);
+        expect(result.stderr).toMatch(/AWS Access Key/);
+    });
+
+    it.skipIf(!gitAvailable())('precommit_isBinaryStagedFile_nonAsciiPath_matchesTheRealPath', () => {
+        const tmp = createTmpDir();
+        const repo = createGitRepo({ root: tmp.root });
+        repo.addCommit({ message: 'setup', files: [{ path: 'README.md', content: 'initial' }] });
+        const name = 'café.bin';
+        fs.writeFileSync(path.join(repo.repoPath, name), Buffer.from([0x00, 0x01, 0x02, 0x89, 0x50, 0x4e, 0x47, 0x00]));
+        execFileSync('git', ['add', name], { cwd: repo.repoPath, stdio: 'pipe' });
+
+        const result = isBinaryStagedFile(name, repo.repoPath);
+        tmp.cleanup();
+
+        // Without `-z` the numstat pathspec matched nothing, so a binary file read as "not binary".
+        expect(result).toBe(true);
+    });
 });
 
 // ─── isBinaryStagedFile / classifyUnreadableStagedFile ────────────────────────

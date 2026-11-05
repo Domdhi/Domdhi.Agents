@@ -495,11 +495,14 @@ describe('status', () => {
 
         it('regenerateMasterIndex_partialPhase_neverLowersExistingDone', () => {
             // M1 guard: a phase with an unresolved epic must NOT drop a higher prior
-            // Done (the unresolved epic may carry real, un-recomputable progress).
-            // Prior Done 9 > recomputed 2 → keep 9; only the Total recomputes.
+            // Done (the unresolved epic may carry real, un-recomputable progress), as long
+            // as the carried figure stays plausible: at most the resolved Done (2) plus the
+            // unresolved epic's whole total (3). Prior Done 4 > recomputed 2 → keep 4; only
+            // the Total recomputes. (A prior above that bound is clamped; see
+            // regenerateMasterIndex_carriedDoneNeverExceedsTotal.)
             const masterHighPrior = MASTER.replace(
                 '| 0 | Foundation | set up | 2 | 5 | 0 | PENDING |',
-                '| 0 | Foundation | set up | 2 | 5 | 9 | IN PROGRESS |',
+                '| 0 | Foundation | set up | 2 | 5 | 4 | IN PROGRESS |',
             );
             const root = makeProject({ master: masterHighPrior, epic01: EPIC01_ALL_DONE, backlog: BACKLOG });
             // intentionally do NOT write epic02 (unresolved)
@@ -507,8 +510,64 @@ describe('status', () => {
                 const { regenerateMasterIndex } = loadStatusWithRoot(root);
                 regenerateMasterIndex(root, { today: '2026-06-13' });
                 const out = fs.readFileSync(path.join(root, 'docs', 'TODO_MyProj.md'), 'utf8');
-                // Phase 0 Done stays 9 (not lowered to 2) — never drop a contribution.
-                expect(out).toMatch(/\| 0 \| Foundation \| set up \| 2 \| 5 \| 9 \| IN PROGRESS \|/);
+                // Phase 0 Done stays 4 (not lowered to 2) — never drop a contribution.
+                expect(out).toMatch(/\| 0 \| Foundation \| set up \| 2 \| 5 \| 4 \| IN PROGRESS \|/);
+            } finally {
+                fs.rmSync(root, { recursive: true, force: true });
+            }
+        });
+
+        it('regenerateMasterIndex_sharedChecklistAcrossEpics_countedOnce', () => {
+            // Regression: several Epic Index rows may legitimately resolve to ONE
+            // execution doc (a multi-epic subsystem tracked in a single checklist).
+            // Summing per-epic-id counted that file once PER ROW. Live case: five
+            // epic rows sharing one checklist reported 5x its stories.
+            // NOTE: both rows must use a link that actually RESOLVES
+            // (`work/todo/…`). With an unresolvable link, resolveEpicChecklist
+            // falls back to matching by epic NUMBER, so two rows could never
+            // share a file and the dedupe path would never be exercised.
+            const sharedMaster = MASTER
+                .replace('[TODO](todo/TODO_epic01_alpha.md)', '[TODO](work/todo/TODO_epic01_alpha.md)')
+                .replace('[TODO](todo/TODO_epic02_beta.md)', '[TODO](work/todo/TODO_epic01_alpha.md)');
+            const root = makeProject({
+                master: sharedMaster,
+                epic01: EPIC01_ALL_DONE, // 2 stories, both done
+                backlog: BACKLOG,
+            });
+            try {
+                const { regenerateMasterIndex } = loadStatusWithRoot(root);
+                regenerateMasterIndex(root, { today: '2026-06-13' });
+                const out = fs.readFileSync(path.join(root, 'docs', 'TODO_MyProj.md'), 'utf8');
+                // Both epic rows point at the same 2-story file → total is 2, NOT 4.
+                expect(out).toMatch(/\| \*\*Total\*\* \|  \|  \| \*\*2\*\* \| \*\*2\*\* \| \*\*2\*\* \| \*\*100%\*\* \|/);
+            } finally {
+                fs.rmSync(root, { recursive: true, force: true });
+            }
+        });
+
+        it('regenerateMasterIndex_carriedDoneNeverExceedsTotal', () => {
+            // Regression: the M1 "Done never regresses" carry trusted the prior
+            // value. After a TOTAL correction (e.g. a de-duplication fix), a stale
+            // prior recorded against the old inflated denominator survived and
+            // produced Done > Stories — a >100% completion figure.
+            const inflatedPrior = MASTER
+                .replace('| 0 | Foundation | set up | 2 | 5 | 0 | PENDING |',
+                         '| 0 | Foundation | set up | 2 | 999 | 999 | IN PROGRESS |');
+            const root = makeProject({
+                master: inflatedPrior,
+                epic01: EPIC01_ALL_DONE,
+                epic02: EPIC02_NONE,
+                backlog: BACKLOG,
+            });
+            try {
+                const { regenerateMasterIndex } = loadStatusWithRoot(root);
+                regenerateMasterIndex(root, { today: '2026-06-13' });
+                const out = fs.readFileSync(path.join(root, 'docs', 'TODO_MyProj.md'), 'utf8');
+                const phaseRow = out.split('\n').find(l => l.startsWith('| 0 | Foundation'));
+                const cells = phaseRow.split('|').map(c => c.trim());
+                const stories = parseInt(cells[5], 10);
+                const done = parseInt(cells[6], 10);
+                expect(done).toBeLessThanOrEqual(stories);
             } finally {
                 fs.rmSync(root, { recursive: true, force: true });
             }
@@ -622,6 +681,34 @@ describe('status', () => {
                 expect(r.stories.blocked).toBe(1);
                 expect(r.stories.deferred).toBe(1);
                 expect(r.stories.pending).toBe(1);
+            } finally {
+                fs.rmSync(dir, { recursive: true, force: true });
+            }
+        });
+
+        it('does NOT double-count a file carrying BOTH bold checkboxes and a Story Index table', () => {
+            // Regression: a checklist body plus a "Story Index" summary table is a
+            // common authoring style, and they are two renderings of the SAME story
+            // set. Counting both inflated such files ~2x — the live case that made
+            // one 73-story doc report 141. Bold checkboxes win when present.
+            const { parseTodoFile } = require('../status');
+            const content = [
+                '# TODO: Hybrid Checklist',
+                '',
+                '- [x] **1.1 Story one**',
+                '- [ ] **1.2 Story two**',
+                '',
+                '## Story Index',
+                '| Story | Status |',
+                '|-------|--------|',
+                '| 1.1 | [x] |',
+                '| 1.2 | [ ] |',
+            ].join('\n');
+            const { dir, file } = writeTmp('TODO_hybrid.md', content);
+            try {
+                const r = parseTodoFile(file);
+                expect(r.stories.total).toBe(2); // not 4
+                expect(r.stories.done).toBe(1);  // not 2
             } finally {
                 fs.rmSync(dir, { recursive: true, force: true });
             }
@@ -1016,6 +1103,37 @@ describe('status', () => {
                 // stories aggregated from Phase Map rows
                 expect(r.stories.total).toBe(8);
                 expect(r.stories.done).toBe(3);
+            } finally {
+                fs.rmSync(dir, { recursive: true, force: true });
+            }
+        });
+
+        it('prefers the explicit **Total** row over summing phase rows', () => {
+            // Regression: summing per-phase rows assumes phases PARTITION the work.
+            // That breaks when one checklist spans several phases — the file is
+            // counted once per phase, so the sum overshoots. The Total row is the
+            // already-deduped figure and must win. Here the phase rows sum to 12
+            // while the authored Total says 8.
+            const { parseTodoFile } = require('../status');
+            const SEP = '|-------|------|------|-------|---------|------|--------|';
+            const content = [
+                '# TODO: MyProj',
+                '',
+                '## Phase Map',
+                '',
+                '| Phase | Name | Goal | Epics | Stories | Done | Status |',
+                SEP,
+                '| 0 | Alpha | a | 1 | 8 | 5 | IN PROGRESS |',
+                '| 1 | Beta | b | 1 | 4 | 2 | IN PROGRESS |',
+                '| **Total** | | | **2** | **8** | **5** | **63%** |',
+                '',
+            ].join('\n');
+            const { dir, file } = writeTmp('TODO_MyProj.md', content);
+            try {
+                const r = parseTodoFile(file);
+                expect(r.stories.total).toBe(8); // not 12
+                expect(r.stories.done).toBe(5);  // not 7
+                expect(r.phases.length).toBe(2); // phase rows still listed
             } finally {
                 fs.rmSync(dir, { recursive: true, force: true });
             }

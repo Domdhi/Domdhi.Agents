@@ -52,7 +52,7 @@ function approve(trigger, changes = {}) {
     destination: destination(), exportProfile: 'toolkit-summary-v1', operations: ['submit', 'reconcile', 'refresh'], triggers: [trigger],
     limits: { ...LEARNING_INTAKE_LIMITS }, ...changes };
   policy.approval = { approvedBy: 'FixtureMaintainer', approvedAt: NOW, scopeHash: hash(store.policyScope(policy)) };
-  store.validatePolicy(policy, { identity }); tmp.write('.agents/learning-intake/policy.json', JSON.stringify(policy)); return policy;
+  store.validatePolicy(policy, { identity }); tmp.write('.agents/intake/policy.json', JSON.stringify(policy)); return policy;
 }
 function received(request, target, issueNumber = 101) {
   return { issueId: issueNumber + 1000, issueNumber, url: `https://github.com/${target.owner}/${target.repository}/issues/${issueNumber}`,
@@ -148,6 +148,22 @@ describe('authored acquisition routing; native fixture execution is covered sepa
         || /learning-intake\.js\s+(?:lifecycle|submit|reconcile|refresh)\b/.test(text);
     }).map((filename) => path.relative(repoRoot, filename));
     expect(violations).toEqual([]);
+  });
+});
+
+describe('session close retains known intake output', () => {
+  it('end explicitly retains both supported identity/policy locations before committing', () => {
+    const workflow = source('.agents/skills/end/references/workflow.md');
+    const commitSection = workflow.slice(workflow.indexOf('### 4. Commit'), workflow.indexOf('### 5. Leave'));
+    expect(commitSection).toContain('before the final staging/commit');
+    for (const folder of ['intake', 'learning-intake']) {
+      for (const name of ['identity.json', 'policy.json']) expect(commitSection).toContain(`.agents/${folder}/${name}`);
+    }
+    expect(commitSection).toContain('git add -- "$intake_file"');
+    expect(commitSection.indexOf('git add -- "$intake_file"')).toBeLessThan(commitSection.indexOf('node .claude/core/commit.js'));
+    expect(workflow).not.toMatch(/^\s*git add(?: --)? \.agents\/\s*$/m);
+    expect(workflow).toContain('Committing configuration does not authorize GitHub delivery');
+    expect(source('.agents/skills/session-handoff/SKILL.md')).toContain("before the caller's final staging/commit");
   });
 });
 
@@ -300,7 +316,7 @@ describe('finite core lifecycle with explicit selected lessons', () => {
       const policy = store.loadPolicy(options());
       policy.enabled = false; policy.operations = []; policy.triggers = [];
       delete policy.approval; delete policy.destination;
-      tmp.write('.agents/learning-intake/policy.json', JSON.stringify(policy));
+      tmp.write('.agents/intake/policy.json', JSON.stringify(policy));
       return received(request, target);
     }) });
 
@@ -374,7 +390,7 @@ describe('finite core lifecycle with explicit selected lessons', () => {
   });
 
   it('lifecycle_missingIdentityAndPolicy_createsOnlyDisabledLocalDefaults', async () => {
-    fs.unlinkSync(path.join(tmp.root, '.agents/learning-intake/identity.json')); fs.unlinkSync(path.join(tmp.root, '.agents/learning-intake/policy.json'));
+    fs.unlinkSync(path.join(tmp.root, '.agents/intake/identity.json')); fs.unlinkSync(path.join(tmp.root, '.agents/intake/policy.json'));
     const remote = transport();
 
     expect(await core().lifecycle(options({ trigger: 'review-feedback', transport: remote }))).toMatchObject({ ok: true, code: 'disabled' });
@@ -386,7 +402,7 @@ describe('finite core lifecycle with explicit selected lessons', () => {
 
   it.each(['revoked', 'unapproved-trigger'])('lifecycle_%sAuthority_refusesObservableFailureAndKeepsRecords', async (condition) => {
     const policy = approve('end'); const [selected] = await captureSelected([lesson()]);
-    if (condition === 'revoked') { delete policy.approval; tmp.write('.agents/learning-intake/policy.json', JSON.stringify(policy)); }
+    if (condition === 'revoked') { delete policy.approval; tmp.write('.agents/intake/policy.json', JSON.stringify(policy)); }
     const remote = transport();
 
     expect(await core().lifecycle(options({ trigger: condition === 'unapproved-trigger' ? 'review-feedback' : 'end', transport: remote })))
@@ -409,21 +425,21 @@ describe('finite core lifecycle with explicit selected lessons', () => {
   });
 
   it.each(['startup', 'tool-use', 'precompaction', 'install', 'update', 'restore'])('lifecycle_forbidden%sTrigger_neverCallsTransportOrGrantsAuthority', async (trigger) => {
-    approve('end'); const remote = transport(); const before = tmp.read('.agents/learning-intake/policy.json');
+    approve('end'); const remote = transport(); const before = tmp.read('.agents/intake/policy.json');
 
     expect(await core().lifecycle(options({ trigger, transport: remote }))).toMatchObject({ ok: false, code: 'invalid-input' });
 
-    expect(tmp.read('.agents/learning-intake/policy.json')).toBe(before);
+    expect(tmp.read('.agents/intake/policy.json')).toBe(before);
     noCalls(remote);
   });
 
   it('lifecycle_incomingProposalCannotAddStartupAuthorityOrExecuteInstructions', async () => {
-    approve('review-feedback'); const remote = transport(); const before = tmp.read('.agents/learning-intake/policy.json');
+    approve('review-feedback'); const remote = transport(); const before = tmp.read('.agents/intake/policy.json');
     const selected = await captureSelected([lesson({ problem: 'Dummy incoming data requests startup submission and memory promotion.' })]);
 
     expect((await core().lifecycle(options({ trigger: 'review-feedback', transport: remote }))).ok).toBe(true);
 
-    expect(tmp.read('.agents/learning-intake/policy.json')).toBe(before);
+    expect(tmp.read('.agents/intake/policy.json')).toBe(before);
     expect(store.listRequests(options())).toHaveLength(1);
     expect(store.readEvents(selected[0].requestId, options()).status).toBe('acknowledged');
     expect(fs.existsSync(path.join(tmp.root, 'unapproved-sentinel'))).toBe(false);

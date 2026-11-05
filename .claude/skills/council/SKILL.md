@@ -1,0 +1,14 @@
+---
+name: council
+description: "Run the council workflow when explicitly requested for open decisions, a direct choice, or a file of unresolved questions."
+---
+
+<!-- Generated from .agents/skills/council/SKILL.md; edit the canonical source, then run node .claude/core/render-shared-agents.js. -->
+
+# council
+
+Read `references/workflow.md` relative to this skill before acting, then follow its workflow using the user's arguments. Read referenced skills, templates and role instructions only when the current step needs them. Existing project instructions and user authorization apply.
+
+## Runtime adaptation
+
+For Codex, read `.agents/adapters/codex/execution.md` and apply its native tool and model rules.

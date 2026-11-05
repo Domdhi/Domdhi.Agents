@@ -2214,6 +2214,66 @@ describe('memory-manager', () => {
       expect(fs.existsSync(deadFile)).toBe(true); // history preserved
     });
 
+    // The cheap path skips JSON.parse for a file that never mentions the key. The JSON
+    // files stay the authority, so every shape of `invalid_at` must still count correctly.
+    it('MEM-6_getMemoryCount_invalidAtShapes_countOnlyTombstones', async () => {
+      const manager = makeManager();
+      const dir = path.join(manager.memoriesDir, 'patterns');
+      fs.mkdirSync(dir, { recursive: true });
+      const write = (name, body) => fs.writeFileSync(path.join(dir, name), JSON.stringify(body));
+      write('live-plain.json', { id: 'live-plain', description: 'no tombstone key at all' });
+      write('live-prose.json', { id: 'live-prose', description: 'mentions invalid_at in prose only' });
+      write('live-null.json', { id: 'live-null', invalid_at: null });
+      write('dead-set.json', { id: 'dead-set', invalid_at: '2026-01-01T00:00:00.000Z' });
+      fs.writeFileSync(path.join(dir, 'broken.json'), '{ not json "invalid_at"');
+      fs.writeFileSync(path.join(dir, 'notes.txt'), 'ignored: not a .json file');
+
+      // plain + prose + explicit null are live; the set one is dead; the malformed file is skipped
+      expect(await manager.getMemoryCount('patterns')).toBe(3);
+    });
+
+    it('MEM-6_getMemoryCount_missingCategory_isZero', async () => {
+      expect(await makeManager().getMemoryCount('patterns')).toBe(0);
+    });
+
+    it('MEM-6_createMemory_noPrune_scansTheCategoryOnce', async () => {
+      const manager = makeManager();
+      await manager.createMemory('patterns', 'scan_seed', { description: 'seed' });
+      const spy = vi.spyOn(manager, 'getMemoryCount');
+
+      await manager.createMemory('patterns', 'scan_second', { description: 'second' });
+
+      // Below the prune threshold nothing is deleted, so the first count is still exact.
+      expect(spy).toHaveBeenCalledTimes(1);
+    });
+
+    it('MEM-6_createMemory_overThresholdAndPruneRan_recountsBeforeDecidingTheCap', async () => {
+      const manager = makeManager();
+      vi.spyOn(manager, 'getMemoryCount').mockResolvedValueOnce(500).mockResolvedValueOnce(10);
+      const prune = vi.spyOn(manager, 'pruneStaleMemories').mockResolvedValue(3);
+      vi.spyOn(console, 'log').mockImplementation(() => {});
+
+      const created = await manager.createMemory('patterns', 'scan_after_prune', { description: 'fits now' });
+
+      // The prune freed room, so the fresh count (not the stale 500) decides the cap.
+      expect(prune).toHaveBeenCalledTimes(1);
+      expect(manager.getMemoryCount).toHaveBeenCalledTimes(2);
+      expect(created).not.toBeNull();
+    });
+
+    it('MEM-6_createMemory_overCapAndNothingPruned_refusesWithoutASecondScan', async () => {
+      const manager = makeManager();
+      vi.spyOn(manager, 'getMemoryCount').mockResolvedValue(500);
+      vi.spyOn(manager, 'pruneStaleMemories').mockResolvedValue(0);
+      vi.spyOn(console, 'log').mockImplementation(() => {});
+
+      const created = await manager.createMemory('patterns', 'scan_refused', { description: 'no room' });
+
+      // Nothing was deleted, so the store is unchanged since the first scan.
+      expect(created).toBeNull();
+      expect(manager.getMemoryCount).toHaveBeenCalledTimes(1);
+    });
+
     // ── MEM-8: supersede refuses a non-existent successor ─────────────────────────
     it('MEM-8_supersede_nonexistentSuccessor_refusesWithError', async () => {
       const manager = makeManager();

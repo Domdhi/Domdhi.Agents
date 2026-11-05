@@ -741,6 +741,138 @@ describe('gate', () => {
       expect(result.succeeded).toBe(true);
     });
 
+    // ── monorepo: one summary block PER package ───────────────────────────────
+    // A workspace run (pnpm -r, turbo, cargo --workspace, tox) prints one summary per
+    // package. Assigning kept only the last, so an earlier package's failures vanished
+    // and a trailing empty package zeroed the total.
+
+    it('parseTestOutput_monorepoVitestV2_accumulatesEveryPackage', () => {
+      const output = [
+        ' Tests  5 passed (5)',
+        ' Tests  2 failed | 3 passed (5)',
+      ].join('\n');
+
+      const result = parseTestOutput(output, 1);
+
+      expect(result.passed).toBe(8);
+      expect(result.failed).toBe(2);
+      expect(result.total).toBe(10);
+      expect(result.succeeded).toBe(false);
+    });
+
+    it('parseTestOutput_monorepoVitestV1_accumulatesEveryPackage', () => {
+      const output = ['Tests: 3 passed, 3 total', 'Tests: 4 passed, 1 failed, 5 total'].join('\n');
+
+      const result = parseTestOutput(output, 1);
+
+      expect(result.passed).toBe(7);
+      expect(result.failed).toBe(1);
+      expect(result.total).toBe(8);
+    });
+
+    it('parseTestOutput_monorepoRust_failingEarlierCrateIsNotHiddenByGreenLastCrate', () => {
+      const output = [
+        'test result: FAILED. 4 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out',
+        'test result: ok. 3 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out',
+      ].join('\n');
+
+      const result = parseTestOutput(output, 101);
+
+      expect(result.passed).toBe(7);
+      expect(result.failed).toBe(2);
+      expect(result.skipped).toBe(1);
+      expect(result.total).toBe(10);
+      expect(result.succeeded).toBe(false);
+    });
+
+    it('parseTestOutput_monorepoRust_trailingEmptyCrateDoesNotZeroTheTotal', () => {
+      const output = [
+        'test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out',
+        'test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out',
+      ].join('\n');
+
+      const result = parseTestOutput(output, 0);
+
+      expect(result.total).toBe(6);
+      expect(isZeroCollected(result)).toBe(false);
+      expect(result.succeeded).toBe(true);
+    });
+
+    it('parseTestOutput_monorepoPytest_accumulatesEveryPackage', () => {
+      const output = [
+        '===== 4 passed in 0.50s =====',
+        '===== 1 failed, 2 passed in 0.70s =====',
+      ].join('\n');
+
+      const result = parseTestOutput(output, 1);
+
+      expect(result.passed).toBe(6);
+      expect(result.failed).toBe(1);
+      expect(result.total).toBe(7);
+      expect(result.succeeded).toBe(false);
+    });
+
+    // ── false-green: a package that never ran its tests ───────────────────────
+
+    it('parseTestOutput_projectCollectedNoTests_failsEvenWhenRunnerExitsZero', () => {
+      // vitest exits 0 after a pool/worker crash, and the other package's summary
+      // lands last — the healthy tallies used to hide the dead project completely.
+      const output = [
+        ' Tests  no tests',
+        ' Tests  12 passed (12)',
+      ].join('\n');
+
+      const result = parseTestOutput(output, 0);
+
+      expect(result.deadProjects).toBe(1);
+      expect(result.passed).toBe(12);
+      expect(result.succeeded).toBe(false);
+    });
+
+    it('parseTestOutput_reportedErrorsOutsideCounts_failsEvenWhenAllCollectedPass', () => {
+      const output = [
+        ' Tests  8 passed (8)',
+        ' Errors  2 errors',
+      ].join('\n');
+
+      const result = parseTestOutput(output, 0);
+
+      expect(result.errorCount).toBe(2);
+      expect(result.succeeded).toBe(false);
+    });
+
+    it('parseTestOutput_reportedErrors_matchedBehindWorkspaceRunnerPrefix', () => {
+      // `pnpm -r` prefixes every line with "<pkg> test: ", so an anchored pattern
+      // would silently never match in the exact monorepo case this exists for.
+      const output = [
+        'web test:  Tests  8 passed (8)',
+        'web test:  Errors  1 error',
+      ].join('\n');
+
+      const result = parseTestOutput(output, 0);
+
+      expect(result.errorCount).toBe(1);
+      expect(result.succeeded).toBe(false);
+    });
+
+    it('parseTestOutput_proseMentioningErrors_isNotCountedAsReportedErrors', () => {
+      // The two-space gap before the count is what keeps prose from matching.
+      const output = ['Tests: 3 passed, 3 total', 'Errors 1 error was logged by the app'].join('\n');
+
+      const result = parseTestOutput(output, 0);
+
+      expect(result.errorCount).toBe(0);
+      expect(result.succeeded).toBe(true);
+    });
+
+    it('parseTestOutput_singleCleanRun_hasNoDeadProjectsOrErrors', () => {
+      const result = parseTestOutput('Tests: 5 passed, 5 total', 0);
+
+      expect(result.deadProjects).toBe(0);
+      expect(result.errorCount).toBe(0);
+      expect(result.succeeded).toBe(true);
+    });
+
     it('parseTestOutput_C11_pytestQuiet_allPassing', () => {
       // C11: pytest under `addopts = "-q"` prints a BARE summary with no =====
       // envelope. This is the exact line that false-greened a 32-test suite.

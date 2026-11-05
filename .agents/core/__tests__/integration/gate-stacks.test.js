@@ -191,4 +191,69 @@ describe('gate.js stack detection integration', () => {
         expect(testJson).toHaveProperty('passed');
         expect(testJson).toHaveProperty('failed');
     });
+
+    // ── lint leg folded into --test mode (F-lint) ─────────────────────────────
+    // Root-cause fix: a lint failure must fail the SAME gate invocation every
+    // `/do`/`/run-todo` Step 7 already calls (`gate.js test`) — not require a
+    // separate flag nobody remembers to pass.
+
+    it('node_testMode_lintScriptPasses_overallPasses', () => {
+        tmp.write('package.json', JSON.stringify({
+            name: 'fixture-node',
+            version: '1.0.0',
+            scripts: {
+                build: 'node -e "console.log(\'build ok\')"',
+                test: 'node -e "console.log(\'Tests: 1 passed, 1 total\')"',
+                lint: 'node -e "console.log(\'lint ok\')"',
+            },
+        }));
+
+        const { exitCode, stdout } = runGate(tmp.root, '--test');
+
+        expect(stdout).toContain('Lint: PASSED');
+        expect(exitCode).toBe(0);
+
+        const lintJsonPath = path.join(
+            tmp.root, 'docs', '.output', '.state', 'telemetry', '_latest-lint.json'
+        );
+        expect(fs.existsSync(lintJsonPath)).toBe(true);
+        expect(JSON.parse(fs.readFileSync(lintJsonPath, 'utf8')).succeeded).toBe(true);
+    });
+
+    it('node_testMode_lintScriptFails_overallFails', () => {
+        // The exact regression class this fork closes: a real lint failure must
+        // fail `gate.js test`, not slip through silently.
+        tmp.write('package.json', JSON.stringify({
+            name: 'fixture-node',
+            version: '1.0.0',
+            scripts: {
+                build: 'node -e "console.log(\'build ok\')"',
+                test: 'node -e "console.log(\'Tests: 1 passed, 1 total\')"',
+                lint: 'node -e "console.error(\'src/foo.ts:1:1: error Unexpected token\'); process.exit(1)"',
+            },
+        }));
+
+        const { exitCode, stdout } = runGate(tmp.root, '--test');
+
+        expect(stdout).toContain('Lint: FAILED');
+        expect(exitCode).not.toBe(0);
+    });
+
+    it('node_testMode_noLintScript_gracefulSkipOverallPasses', () => {
+        // A project with no lint script (the pre-fork norm) must never fail the
+        // lint leg — same graceful-missing contract as the e2e leg.
+        tmp.write('package.json', JSON.stringify({
+            name: 'fixture-node',
+            version: '1.0.0',
+            scripts: {
+                build: 'node -e "console.log(\'build ok\')"',
+                test: 'node -e "console.log(\'Tests: 1 passed, 1 total\')"',
+            },
+        }));
+
+        const { exitCode, stdout } = runGate(tmp.root, '--test');
+
+        expect(stdout).toContain('Lint: SKIPPED');
+        expect(exitCode).toBe(0);
+    });
 });

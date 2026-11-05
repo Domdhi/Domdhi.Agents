@@ -55,7 +55,8 @@
  */
 
 const {
-    shouldSkipPath,
+    isHardSkipPath,
+    isTestFilePath,
     scanContent,
     redactSecretsInText,
     readStdin,
@@ -159,13 +160,20 @@ function processEvent(parsedJson) {
 
     // Determine file context for findings + skip-path check
     let fileContext;
+    // Mirrors secret-scanner.cjs's write path exactly: HARD-skip is a full pass,
+    // but a test/spec file is NOT skipped — it is scanned in namedProvidersOnly
+    // mode. The union `shouldSkipPath` used to gate this read path, so a real
+    // provider key sitting in a `.test.ts` was write-BLOCKED yet read back into
+    // context completely unredacted.
+    let namedProvidersOnly = false;
     if (toolKind === 'Read') {
         fileContext = toolInput.file_path || '';
         if (!fileContext) return null;
-        if (shouldSkipPath(fileContext)) return null;
+        if (isHardSkipPath(fileContext)) return null;
+        namedProvidersOnly = isTestFilePath(fileContext);
     } else {
         // Bash — no file_path; use a synthetic context for findings labels.
-        // shouldSkipPath is bypassed because there's nothing to skip on.
+        // The skip check is bypassed because there's nothing to skip on.
         fileContext = '<bash output>';
     }
 
@@ -174,7 +182,7 @@ function processEvent(parsedJson) {
 
     // Full-length scan for both Read and Bash (no head/tail cap — see the
     // F70/F9 history comment above `inferToolKind` for why).
-    const findings = scanContent(toolOutput, fileContext);
+    const findings = scanContent(toolOutput, fileContext, { namedProvidersOnly });
     if (findings.length === 0) return null;
 
     // Build the redacted version. This may be byte-identical to the original

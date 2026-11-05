@@ -469,6 +469,86 @@ describe('scanContent', () => {
         });
     });
 
+    describe('form-data password reads', () => {
+        it.each([
+            'const currentPassword = (formData.get("currentPassword") as string | null) ?? "";',
+            "const currentPassword = (formData.get('currentPassword') as string | null) ?? '';",
+            'const currentPassword = (\nformData.get("currentPassword") as string | null\n) ?? "";',
+        ])('retains complete runtime read %s', (source) => {
+            expect(scanContent(source, 'src/account.tsx')).toEqual([]);
+            expect(redactSecretsInText(source, 'src/account.tsx')).toBe(source);
+        });
+        it.each([
+            '(formData.get("currentPassword") as string | null) ?? "Winter2024Pass";',
+            '(formData.get("currentPassword") as string | null)\n ?? "Winter2024Pass";',
+            '(formData.get("currentPassword") as string | null)\n ? "Winter2024Pass" : "";',
+            '(formData.get("currentPassword") as string | null) ?? "" + "Winter2024Pass";',
+            '(formData.get("Winter2024Pass") as string | null) ?? "";',
+            '(formData.get("currentPassword", "Winter2024Pass") as string | null) ?? "";',
+            '(formData.get("currentPassword") as string | null) ?? ""\n || "Winter2024Pass";',
+            '(formData.get("currentPassword") as string | null) ?? ""\n' + '\n'.repeat(8) + '|| "Winter2024Pass";',
+            '(formData.get("currentPassword") as string | null) ?? ""',
+        ])('keeps suspicious or incomplete expression %s', (rhs) => {
+            const source = 'const currentPassword = ' + rhs;
+            expect(scanContent(source, 'src/account.tsx').length).toBeGreaterThan(0);
+            expect(redactSecretsInText(source, 'src/account.tsx')).not.toBe(source);
+        });
+        it.each(['config.yaml', '.env', 'README.md', 'config.json'])(
+            'keeps data/config finding %s', (file) => {
+                const source = 'currentPassword = (formData.get("currentPassword") as string | null) ?? "";';
+                expect(scanContent(source, file).length).toBeGreaterThan(0);
+            });
+        it('does not exempt comment or quoted command text', () => {
+            for (const source of [
+                '// currentPassword = (formData.get("currentPassword") as string | null) ?? "";',
+                '`currentPassword = (formData.get("currentPassword") as string | null) ?? "";`',
+            ]) expect(scanContent(source, 'src/account.tsx').length).toBeGreaterThan(0);
+        });
+        it('keeps a sibling literal and named-provider finding', () => {
+            const source = 'const currentPassword = (formData.get("currentPassword") as string | null) ?? "";\nconst password = "Winter2024Pass";\nconst token = "' + fakeAwsKey() + '";';
+            expect(scanContent(source, 'src/account.tsx').map(f => f.name)).toContain('Password Assignment');
+            expect(scanContent(source, 'src/account.tsx').map(f => f.name)).toContain('AWS Access Key');
+        });
+    });
+
+    describe('diagnostic password predicates', () => {
+        it.each([
+            'password: actionData.error.toLowerCase().includes("password")',
+            "password: result.error.toLowerCase().includes('password')",
+        ])('scanContent_errorPredicate_retainsSource %s', (line) => {
+            const receiver = line.includes('result.error') ? 'result.error' : 'actionData.error';
+            const source = `const errors = {\n${line}\n ? ${receiver} : undefined,\n};`;
+            expect(scanContent(source, 'src/signup.tsx')).toEqual([]);
+            expect(redactSecretsInText(source, 'src/signup.tsx')).toBe(source);
+        });
+        it.each([
+            'password: actionData.error.toLowerCase().includes("Winter2024Pass")',
+            'password: actionData.error.toLowerCase().includes("letmeinplease")',
+            'password: actionData.error.toLowerCase().includes("password") || "Winter2024Pass"',
+            'password: actionData.error.toLowerCase().includes("password") ? "Winter2024Pass" : undefined',
+            'password: getError("Winter2024Pass").toLowerCase().includes("password")',
+            'password: actionData.error.toLowerCase().includes("password", "Winter2024Pass")',
+            'password: hash("password")',
+            'password: "Winter2024Pass"',
+        ])('scanContent_errorPredicateLookalike_keepsFinding %s', (line) => {
+            expect(scanContent(line, 'src/signup.tsx').filter(f => /Password/.test(f.name)).length).toBeGreaterThan(0);
+        });
+        it.each([
+            '\n ? "Winter2024Pass" : undefined,',
+            '\n || "Winter2024Pass",',
+            '\n ? load("Winter2024Pass") : undefined,',
+            '\n ? actionData.error : "Winter2024Pass",',
+        ])('scanContent_multilineDiagnostic_keepsLiteralFinding %s', (suffix) => {
+            const source = 'const errors = {\npassword: actionData.error.toLowerCase().includes("password")' + suffix + '\n};';
+            expect(scanContent(source, 'src/signup.tsx').filter(f => /Password/.test(f.name)).length).toBeGreaterThan(0);
+            expect(redactSecretsInText(source, 'src/signup.tsx')).not.toBe(source);
+        });
+        it.each(['config.yaml', '.env', 'README.md'])(
+            'scanContent_predicateText_inDataStillDetected %s', (file) => {
+                expect(scanContent('password: actionData.error.toLowerCase().includes("password")', file).length).toBeGreaterThan(0);
+            });
+    });
+
     // ─── False-positive boundary tests ───────────────────────────────────────
 
     describe('scanContent_falsePositives', () => {

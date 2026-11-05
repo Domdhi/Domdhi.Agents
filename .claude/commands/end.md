@@ -58,6 +58,8 @@ Follow the `session-handoff` skill template. Tailor for the `/end` case (Step 4 
 
 ### 4. Commit the handoff (and prune old ones for this branch)
 
+Finish the shared writer's memory-inbox review and finite learning-intake lifecycle **before the final staging/commit**. That lifecycle can create project-owned `.agents/intake/identity.json` and `policy.json`, even when delivery is disabled. Review their exact changes, validate their project identity/policy, and retain them in this local handoff commit. A legacy project may still use `.agents/learning-intake/`; review and retain those exact two files instead. Do not leave session-generated intake configuration uncommitted merely because it is under `.agents/`. This is a narrow exception for reviewed intake configuration, not permission to stage the whole `.agents/` tree. Durable request/event records under `docs/.output/evolution/` are also retained when created by the authorized lifecycle; locks and scratch stay ignored. Committing configuration does not authorize GitHub delivery; delivery follows the existing project policy.
+
 Refresh the master tracker from the per-epic checklists before committing — best-effort, silently no-ops if the project has no `TODO_{Project}.md` (offline + idempotent, always safe to call):
 
 ```bash
@@ -102,6 +104,13 @@ Then run:
 
 ```bash
 git add "$HANDOFF"
+# After reviewing the session-created/changed intake configuration, stage only
+# the known existing ordinary files. Never use git add .agents/.
+for intake_file in .agents/intake/identity.json .agents/intake/policy.json .agents/learning-intake/identity.json .agents/learning-intake/policy.json; do
+  if [ -f "$intake_file" ] && [ ! -L "$intake_file" ]; then
+    git add -- "$intake_file"
+  fi
+done
 # Stage the master tracker ONLY if it exists — guarded so an unmatched glob never aborts the add (zsh NOMATCH):
 ls docs/TODO_*.md >/dev/null 2>&1 && git add docs/TODO_*.md
 node .claude/core/commit.js
@@ -131,7 +140,7 @@ If anything remains, **review the list before staging** (this is the safety step
    git add -u                       # tracked modifications + deletions
    git add docs/ .claude/           # new artifacts in the safe zones (gitignore already excludes memories/telemetry/sessions)
    ```
-3. **Do NOT auto-stage anything outside those zones** — new files in the repo root, `src/`, `tools/`, or anywhere unexpected. List them in the Report under "Left uncommitted (review these)" so the user decides deliberately. Same for anything that looked like a secret or unfinished WIP in step 1.
+3. **Do NOT auto-stage unrelated files outside those zones.** The reviewed intake configuration named in Step 4 is an explicit exception and belongs in the session commit; never sweep the whole `.agents/` directory. For other new files in the repo root, `src/`, `tools/`, or anywhere unexpected, list them in the Report under "Left uncommitted (review these)" so the user decides deliberately. Same for anything that looked like a secret or unfinished WIP in step 1.
 4. Commit the swept files (skip if step 2 staged nothing):
    ```
    chore: /end — session cleanup ({N} stray files)
@@ -151,6 +160,6 @@ Independently of `/end`, the `session-end-doc-sync.cjs` hook fires on every `Ses
 
 All rules live in the `session-handoff` skill — read them there. A few reminders specific to `/end`:
 
-- **Commit, don't push.** `/end` commits the handoff *and* sweeps up any other session work into a cleanup commit (Step 5) so the next session opens on a clean tree — but it does NOT auto-push. The user decides when to push. The cleanup is *reviewed*, never a blind `git add .`: only the `docs/` and `.claude/` safe zones are auto-staged; anything outside them is surfaced for a deliberate decision, not committed.
+- **Commit, don't push.** `/end` commits the handoff and reviewed session output so the next session opens on a clean tree, including its exact intake configuration files. It does NOT auto-push. Cleanup remains reviewed: use explicit file paths for intake, `docs/` and `.claude/` for reviewed session artifacts, and surface unrelated new files rather than sweeping them into a commit.
 - **Memory acquisition happens via the session-handoff skill's Step 6** (Main Agent writes 0–3 structured memories from handoff bullets that qualify as reusable learnings). The skill has the full procedure; the load-bearing rules are: **(a) check the inbox first** — `node .claude/core/memory-manager.js inbox-list`, then `inbox-promote`/`inbox-discard` each sub-agent draft; **(b) only promote bullets that generalize** — a pattern, constraint, workflow, or rejected-approach useful on a *future* session or a new project, never pure project state or 24-hour gotchas; **(c) score `importance` 1–5** (default 3) on each write — it's the decay retention floor, so be honest. Zero qualifying bullets is the common, correct outcome — don't manufacture memories to fill a quota. No auto-extraction fires from `/end` or any other command. The Stop hook still captures raw daily logs and runs the curator under `MEMORY_PROFILE=strict`. See `docs/.output/findings/reviews/2026-04-20-adr-memory-unification.md`.
 - **Supersession confirm:** Before committing the handoff (Step 4), review any write-time `supersedes_candidates` flags that were attached to memories created this session. For each flagged pair, decide: if the new memory genuinely replaces the old one, confirm by running `node .claude/core/memory-manager.js supersede <category> <oldId> <newId>`; otherwise skip it. This is always flag-then-confirm — nothing supersedes automatically. If no memories were created this session, skip this step.

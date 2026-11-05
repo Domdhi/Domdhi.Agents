@@ -206,19 +206,39 @@ function organizePlans(results) {
     }
 }
 
+// The canonical Work Document References row shape: Date | Document | Story | Topic.
+const WORK_REFS_COLUMNS = 4;
+
 /**
  * Locate the insertion point right after the Work Document References table's
- * header separator row. Returns null if the section/table isn't present.
+ * header separator row.
+ *
+ * @returns {{ index: number, columns: number } | null} — null when the
+ *   section/table isn't present. `columns` is the separator row's column count,
+ *   so a caller can flag a table whose shape doesn't match the row it writes.
  */
 function findWorkRefsInsertPoint(content) {
     const workRefsIndex = content.indexOf('## Work Document References');
     if (workRefsIndex === -1) return null;
 
     const afterHeader = content.slice(workRefsIndex);
-    const sepMatch = afterHeader.match(/\|[-\s]+\|[-\s]+\|[-\s]+\|[-\s]+\|/);
+    // Layout-generic separator match. The old pattern hardcoded FOUR columns and
+    // omitted `:`, so it rejected both a 3- or 5-column table and the perfectly
+    // ordinary alignment syntax `|:---|:---|:---|:---|` — and `updateWorkRefs`
+    // then returned silently, never recording the plan. Now: ≥2 columns, `:`
+    // allowed, and no newline in the character class so the match can't span rows.
+    // At least one `-` is required so a blank row (`|   |   |`) isn't mistaken
+    // for the separator.
+    let sepMatch = null;
+    for (const m of afterHeader.matchAll(/\|[ \t:-]+(?:\|[ \t:-]+)+\|/g)) {
+        if (m[0].includes('-')) { sepMatch = m; break; }
+    }
     if (!sepMatch) return null;
 
-    return workRefsIndex + afterHeader.indexOf(sepMatch[0]) + sepMatch[0].length;
+    return {
+        index: workRefsIndex + sepMatch.index + sepMatch[0].length,
+        columns: sepMatch[0].split('|').length - 2,
+    };
 }
 
 function updateWorkRefs(projectDir, dateFolderName, finalName, storyNumber, topic, originalName) {
@@ -254,7 +274,30 @@ function updateWorkRefs(projectDir, dateFolderName, finalName, storyNumber, topi
     // and this read under a concurrent organize pass — same race class as
     // organizePlans's per-plan read.
     const todoContent = safeReadFileSync(todoFile);
-    if (todoContent === null || findWorkRefsInsertPoint(todoContent) === null || todoContent.includes(finalName)) return;
+    if (todoContent === null) return;
+    const found = findWorkRefsInsertPoint(todoContent);
+    if (found === null) {
+        // Was a silent return: a tracker whose Work Refs table the matcher can't
+        // locate simply never got the plan row, with no signal anywhere. Name the
+        // file so the layout can be fixed. stderr only — organize is best-effort.
+        process.stderr.write(
+            `[organize] no usable "## Work Document References" table found in ` +
+            `${path.relative(projectDir, todoFile)} — plan row for "${finalName}" not recorded.\n`
+        );
+        return;
+    }
+    if (todoContent.includes(finalName)) return;
+    if (found.columns !== WORK_REFS_COLUMNS) {
+        // The row written below is Date|Document|Story|Topic. Which of those a
+        // differently-shaped table wants is not inferable, so write the canonical
+        // row anyway and say so — better a visible shape mismatch than a silent
+        // drop (the pre-fix behaviour) or a guessed column mapping.
+        process.stderr.write(
+            `[organize] "## Work Document References" in ${path.relative(projectDir, todoFile)} ` +
+            `has ${found.columns} column(s); writing the canonical ` +
+            `${WORK_REFS_COLUMNS}-column row (Date | Document | Story | Topic).\n`
+        );
+    }
 
     const displayTopic = topic || 'Implementation';
     const storyDisplay = storyNumber ? storyNumber.replace('story-', '') : `Phase ${effectivePhase}`;
@@ -275,10 +318,10 @@ function updateWorkRefs(projectDir, dateFolderName, finalName, storyNumber, topi
     // lower-value finding.
     const freshContent = safeReadFileSync(todoFile);
     if (freshContent === null || freshContent.includes(finalName)) return;
-    const insertPoint = findWorkRefsInsertPoint(freshContent);
-    if (insertPoint === null) return;
+    const fresh = findWorkRefsInsertPoint(freshContent);
+    if (fresh === null) return;
 
-    const updatedContent = freshContent.slice(0, insertPoint) + newRow + freshContent.slice(insertPoint);
+    const updatedContent = freshContent.slice(0, fresh.index) + newRow + freshContent.slice(fresh.index);
     fs.writeFileSync(todoFile, updatedContent);
 }
 

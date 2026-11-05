@@ -161,6 +161,9 @@ function validateTargetScope(target, scope) {
         if (!stat) return;
         if (stat.isSymbolicLink()) throw new Error('Symbolic link in target scope');
         if (stat.isDirectory()) {
+            // A real dependency tree is never toolkit content (the update ships no file under it),
+            // and package managers fill it with links such as node_modules/.bin/*.
+            if (path.basename(abs) === 'node_modules') return;
             for (const name of fs.readdirSync(abs)) visit(path.join(abs, name));
         }
     };

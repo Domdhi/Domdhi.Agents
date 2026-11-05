@@ -512,10 +512,50 @@ function lineIndexAt(context, offset) {
 //
 // One decision for both the scanner (per line) and the redactor (whole text), so the two
 // can never disagree about a match: `lineIndex` and `offsetInLine` locate THIS occurrence.
+// A diagnostic predicate is not a credential-valued string. Inspect the entire
+// bounded JS/TS assignment, including wrapped branches, before classifying it:
+// only a dotted error reference, the literal field name, and an optional
+// same-reference/undefined ternary are accepted. Never widen the ordinary
+// literal-name rules (hash("password") must remain a finding).
+function isDiagnosticPasswordPredicate(context, filePath, matched, lineIndex, offsetInLine) {
+    if (!SCRIPT_SOURCE_PATH.test(normalizePath(filePath))) return false;
+    const line = context.lines[lineIndex];
+    if (insideStringOrComment(line.slice(0, offsetInLine))) return false;
+    const sep = matched.search(/[=:]/);
+    if (sep === -1 || !/\s/.test(matched[sep + 1] || '')) return false;
+    const tail = context.lines.slice(lineIndex, lineIndex + 8).join('\n').slice(offsetInLine + sep + 1);
+    if (tail.length > 4000) return false;
+    const expression = assignedExpression(tail);
+    // Require a real assignment boundary: a truncated lookahead cannot prove
+    // there is no credential-bearing continuation on the following line.
+    if (!expression || !expression.boundary || hasOpaqueRun(expression.text)) return false;
+    return /^\s*([A-Za-z_$][A-Za-z_$]*(?:\.[A-Za-z_$][A-Za-z_$]*)*\.error)\.toLowerCase\(\)\.includes\((['"])password\2\)(?:\s*\?\s*\1\s*:\s*undefined)?\s*$/.test(expression.text);
+}
+
+// Recognize only the complete, bounded form read used by a TS password form.
+// Parentheses and the camel-case field name are not literal credential values.
+// Do not generalize literal-name handling: nonempty fallbacks, extra arguments,
+// branches, comments, incomplete/wrapped continuations and other grammars fail closed.
+function isFormDataPasswordRead(context, filePath, matched, lineIndex, offsetInLine) {
+    if (!TS_SOURCE_PATH.test(normalizePath(filePath))) return false;
+    const line = context.lines[lineIndex];
+    if (insideStringOrComment(line.slice(0, offsetInLine))) return false;
+    const sep = matched.search(/[=:]/);
+    if (sep === -1 || matched[sep] !== '=' ||
+        !/\s/.test(matched[sep - 1] || '') || !/\s/.test(matched[sep + 1] || '')) return false;
+    const tail = context.lines.slice(lineIndex, lineIndex + 8).join('\n').slice(offsetInLine + sep + 1);
+    if (tail.length > 4000) return false;
+    const expression = assignedExpression(tail);
+    if (!expression || expression.boundary !== ';') return false;
+    return /^\s*\(\s*formData\.get\((['"])currentPassword\1\)\s+as\s+string\s*\|\s*null\s*\)\s*\?\?\s*(['"])\2\s*$/.test(expression.text);
+}
+
 function isSourceExemption(context, filePath, matched, lineIndex, offsetInLine) {
     if (!context) return false;
     const line = context.lines[lineIndex];
-    return isCodeReferenceValue(matched, line, filePath, offsetInLine) ||
+    return isFormDataPasswordRead(context, filePath, matched, lineIndex, offsetInLine) ||
+        isDiagnosticPasswordPredicate(context, filePath, matched, lineIndex, offsetInLine) ||
+        isCodeReferenceValue(matched, line, filePath, offsetInLine) ||
         isTypeAnnotationLine(line, filePath, context.mask ? context.mask[lineIndex] : false);
 }
 

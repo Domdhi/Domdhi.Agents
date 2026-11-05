@@ -181,7 +181,7 @@ TaskCreate: "Wave 1: Story {ID-A} — {title}" (blockedBy: context)
 TaskCreate: "Wave 1: Story {ID-B} — {title}" (blockedBy: context)
 TaskCreate: "Wave 1: Build + focused tests" (blockedBy: all stories in wave)
 TaskCreate: "Wave 1: AC verification" (blockedBy: gate)
-TaskCreate: "Wave 1: Code review" (blockedBy: AC, skip if all XS/S)
+TaskCreate: "Wave 1: Code review" (blockedBy: AC, skip if all XS/S — UNLESS the wave creates a registry/resolver/shared-constant/schema, or is the first to use 2+ reviewed contracts together; see Step 7)
 TaskCreate: "Wave 1: Update TODO + commit" (blockedBy: review or AC)
 
 --- Wave 2 ---
@@ -745,6 +745,29 @@ The token, not agent judgment, decides the wave is finished and may commit.
 ---
 
 #### Step 7: Code review (M/L stories only)
+
+> ⚠ **Two size-independent triggers — review is MANDATORY even for an all-XS/S wave** (measured in a
+> retro where the two waves whose review was skipped held **4 of the 7 MAJOR findings**):
+>
+> 1. **The wave creates a registry, resolver, shared constant, or schema/migration** that later waves
+>    consume. "Small diff" ≠ "small blast radius": an all-S, mechanical wave shipped a preset registry
+>    whose resolver returned a garbage pseudo-preset for `toString` / `constructor` / `__proto__`
+>    instead of throwing, silently defeating the guards at four downstream hops.
+> 2. **The wave is the first to USE two or more previously-reviewed contracts together.** Per-wave
+>    review cannot see a seam that does not exist until the consumer is written. In that retro the
+>    wave doing exactly this shipped a mask/source divergence that silently edited the wrong image.
+>
+> **A skip is a recorded decision, never a silent one.** "Mechanical", "mirrors an existing file", and
+> "reuses already-reviewed contracts" are *anti-signals that trigger review*, not rationales that excuse
+> it — in that retro the first was itself the defect (an array→`Record` port lost the template's
+> immunity) and the second was false. If you skip, write the rationale into the wave's Execution Log
+> entry so `/retro` Step 1b can find it and close the gap.
+>
+> **Skipping a review this step MANDATES (an M/L story, or either trigger above) is not permitted** —
+> one M story's review was skipped anyway. If a wave deviates from the wave
+> plan's assigned agent strategy (e.g. planned `general-purpose` dispatch, executed Main-Agent-direct),
+> record THAT in the Execution Log too: such a wave got neither an implementing subagent nor a
+> reviewing one.
 
 `TaskUpdate: "Wave {N}: Code review" → in_progress`
 

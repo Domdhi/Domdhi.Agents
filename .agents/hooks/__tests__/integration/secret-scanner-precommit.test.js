@@ -64,6 +64,18 @@ describe('secret-scanner --git-precommit integration', () => {
         tmp.cleanup();
     });
 
+    it.skipIf(!gitAvailable())('formDataRead_allowsCommit_butLiteralFallbackBlocks', () => {
+        const repo = createGitRepo({ root: tmp.root });
+        const target = path.join(repo.repoPath, 'account.tsx');
+        const read = 'const currentPassword = (formData.get("currentPassword") as string | null) ?? "";';
+        fs.writeFileSync(target, read);
+        execFileSync('git', ['add', 'account.tsx'], { cwd: repo.repoPath, stdio: 'pipe' });
+        expect(runScanner(repo.repoPath).exitCode).toBe(0);
+        fs.writeFileSync(target, read.replace('?? ""', '?? "Winter2024Pass"'));
+        execFileSync('git', ['add', 'account.tsx'], { cwd: repo.repoPath, stdio: 'pipe' });
+        expect(runScanner(repo.repoPath).exitCode).not.toBe(0);
+    });
+
     // ── AC 1: staged file with fake AWS key → exit != 0, stderr contains pattern name ──
 
     it.skipIf(!gitAvailable())(

@@ -157,6 +157,54 @@ describe('post-read-scrubber', () => {
 
         // The redactor is given the file path, so a code reference in a source file that
         // sits beside a real secret is not redacted along with it.
+        // The read path mirrors the scanner's write path: a test/spec file is NOT skipped, it is
+        // scanned for named providers only. The union skip used here before let a real provider key
+        // in a `.test.ts` be write-BLOCKED yet read back into context completely unredacted.
+        it('processEvent_readTestFileWithRealProviderKey_isRedacted', () => {
+            const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+            try {
+                processEvent({
+                    tool_name: 'Read',
+                    tool_input: { file_path: '/repo/src/auth.test.ts' },
+                    tool_response: { content: `const key = "${fakeAwsKey()}";` },
+                });
+                const out = stdoutSpy.mock.calls.map(c => c[0]).join('');
+                expect(out).toMatch(/<REDACTED:AWS Access Key>/);
+                expect(out).not.toContain(fakeAwsKey());
+            } finally {
+                stdoutSpy.mockRestore();
+            }
+        });
+
+        it('processEvent_readTestFileWithGenericPasswordFixture_isLeftAlone', () => {
+            // Named providers only: a generic Password Assignment fixture in a test is not a leak.
+            const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+            try {
+                processEvent({
+                    tool_name: 'Read',
+                    tool_input: { file_path: '/repo/src/auth.test.ts' },
+                    tool_response: { content: 'const fixture = { password: "correct-horse-battery" };' },
+                });
+                expect(stdoutSpy.mock.calls.map(c => c[0]).join('')).toBe('');
+            } finally {
+                stdoutSpy.mockRestore();
+            }
+        });
+
+        it('processEvent_readHardSkippedPath_isNotScanned', () => {
+            const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+            try {
+                processEvent({
+                    tool_name: 'Read',
+                    tool_input: { file_path: '/repo/package-lock.json' },
+                    tool_response: { content: `"integrity": "${fakeAwsKey()}"` },
+                });
+                expect(stdoutSpy.mock.calls.map(c => c[0]).join('')).toBe('');
+            } finally {
+                stdoutSpy.mockRestore();
+            }
+        });
+
         it('processEvent_readSourceFile_redactsSecretButKeepsCodeReference', () => {
             const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
             try {

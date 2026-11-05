@@ -53,6 +53,20 @@ const TEXT_ONLY    = process.argv.includes('--text-only');
 
 // ── Find TODO files ──────────────────────────────────────────────
 
+// `_archive` (underscore) is the documented toolkit convention for retired
+// checklists — see docs/CLAUDE.md's taxonomy. Archived copies include stale
+// duplicates of the master index itself, which parse as a SECOND `type:'master'`
+// file and get summed into the grand total by computeGrandTotals. The
+// dot-prefixed `.archive` alias is kept for older layouts.
+// ONE constant, TWO consumers: the globSync `ignore` list and the fallback
+// directory scanner. They drifted once — the skip list lived inside the fallback
+// `else` branch only, so any adopter where `glob` resolves silently re-counted
+// archived masters while this repo (no `glob` installed) looked correct.
+const SKIP_DIRS = ['_archive', '.archive', '.output', 'node_modules', '.git'];
+const SKIP_DIR_SET = new Set(SKIP_DIRS);
+// Both forms per dir: `**/x/**` (nested) and `x/**` (at the glob cwd root).
+const SKIP_GLOBS = SKIP_DIRS.flatMap(d => [`**/${d}/**`, `${d}/**`]);
+
 function findTodoFiles() {
   const patterns = [
     'docs/TODO_*.md',
@@ -63,17 +77,15 @@ function findTodoFiles() {
   const found = new Set();
   if (globSync) {
     for (const pattern of patterns) {
-      for (const f of globSync(pattern, { cwd: PROJECT_ROOT })) {
+      for (const f of globSync(pattern, { cwd: PROJECT_ROOT, ignore: SKIP_GLOBS })) {
         found.add(path.join(PROJECT_ROOT, f));
       }
     }
   } else {
-    const SKIP_DIRS = new Set(['.archive', '.output', 'node_modules', '.git']);
     const scanDir = (dir) => {
       if (!fs.existsSync(dir)) return;
       for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-        if (entry.name.startsWith('.') && SKIP_DIRS.has(entry.name)) continue;
-        if (SKIP_DIRS.has(entry.name)) continue;
+        if (SKIP_DIR_SET.has(entry.name)) continue;
         const full = path.join(dir, entry.name);
         if (entry.isFile() && /^TODO.*\.md$/i.test(entry.name)) found.add(full);
         else if (entry.isDirectory()) scanDir(full);
@@ -104,13 +116,53 @@ function parseTodoFile(filePath) {
   return result;
 }
 
+// Normalize a table cell for identity comparison: strip markdown emphasis
+// (`**bold**`, `__bold__`, `*italic*`, `` `code` ``) and surrounding whitespace,
+// lowercased. Used for header/Total-row RECOGNITION only, never for value parsing.
+function normCellText(cell) {
+  return String(cell || '')
+    .replace(/[*_`]/g, '')
+    .trim()
+    .toLowerCase();
+}
+
+// A table's grand-total row. Recognized by NORMALIZED first-cell text, so a plain
+// `| Total |` works exactly like the canonical bold `| **Total** |` — the old
+// `/^\|\s*\*\*Total\*\*/i` test was bold-only, and on a plain-Total tracker it
+// silently fell through to summing the per-phase rows (which overshoots whenever
+// one checklist spans several phases).
+function isTotalCell(cell) {
+  return normCellText(cell) === 'total';
+}
+
 function parseMasterIndex(lines, result) {
   let section = null;
+  // The Phase Map's explicit `**Total**` row, when present. Preferred over summing
+  // the per-phase rows: summing assumes phases partition the work, which is false
+  // whenever ONE checklist spans several phases (a multi-phase subsystem tracked
+  // in a single doc). Such a file is counted once per phase it appears in, so the
+  // row sum overshoots — the Total row is already deduped by regenerateMasterIndex.
+  let explicitTotal = null;
   for (const line of lines) {
     if (/## Phase Map/i.test(line)) { section = 'phases'; continue; }
     if (/## Epic Index/i.test(line)) { section = 'epics'; continue; }
     if (/^## /.test(line) && section) { section = null; continue; }
-    if (section === 'phases' && line.startsWith('|') && !line.includes('---') && !line.includes('Phase')) {
+    if (section === 'phases' && line.startsWith('|') && isTotalCell(splitRow(line)[0])) {
+      // Positional split (empty cells preserved) so columns line up with the
+      // phase header; filter(Boolean) would collapse this row's blank Name/Goal
+      // cells and misalign it.
+      const raw = splitRow(line);
+      const n = (c) => parseInt(String(c || '').replace(/\D/g, ''), 10);
+      if (raw.length >= 6 && Number.isFinite(n(raw[4])) && Number.isFinite(n(raw[5]))) {
+        explicitTotal = { total: n(raw[4]) || 0, done: n(raw[5]) || 0 };
+      }
+      continue;
+    }
+    // Header detection by EXACT first-cell text, never `line.includes('Phase')`:
+    // a substring test silently DROPS any data row whose text contains the word
+    // (a phase named "Phase Zero Prep", an epic titled "Epic Rewrite Engine").
+    if (section === 'phases' && line.startsWith('|') && !line.includes('---')
+        && !/^phase$/i.test(normCellText(splitRow(line)[0]))) {
       const cols = line.split('|').map(c => c.trim()).filter(Boolean);
       if (cols.length >= 7) {
         const stories = parseInt(cols[4]) || 0;
@@ -120,7 +172,8 @@ function parseMasterIndex(lines, result) {
         result.stories.done += done;
       }
     }
-    if (section === 'epics' && line.startsWith('|') && !line.includes('---') && !line.includes('Epic')) {
+    if (section === 'epics' && line.startsWith('|') && !line.includes('---')
+        && !/^epic$/i.test(normCellText(splitRow(line)[0]))) {
       const cols = line.split('|').map(c => c.trim()).filter(Boolean);
       if (cols.length >= 7) {
         const statusRaw = cols[5].trim();
@@ -131,6 +184,10 @@ function parseMasterIndex(lines, result) {
         result.epics.push({ id: cols[0], title: cols[1], phase: cols[2], stories: parseInt(cols[3]) || 0, estHours: parseFloat(cols[4]) || 0, status });
       }
     }
+  }
+  if (explicitTotal && explicitTotal.total > 0) {
+    result.stories.total = explicitTotal.total;
+    result.stories.done = explicitTotal.done;
   }
   if (result.stories.total === 0 && result.epics.length > 0) {
     result.stories.total = result.epics.reduce((s, e) => s + e.stories, 0);
@@ -156,13 +213,31 @@ function parseChecklist(lines, result) {
     parseStoryHeaderChecklist(lines, result, storyHeader);
     return;
   }
+  // A file tracks stories EITHER as bold checkbox lines (`- [x] **1.2** Title`)
+  // OR as a status table (`| 1.2 | Title | [x] |`) — these are two renderings of
+  // the same story set, not two disjoint sets. Counting both double-counts every
+  // story in any file that carries a body checklist AND a "Story Index" summary
+  // table, which is a common and deliberate authoring style. Bold checkboxes win
+  // when present; pure-table checklists (no bold checkbox anywhere) still count
+  // via the table path exactly as before.
+  // A story bullet is ALWAYS top-level. Both tests below match the RAW line (no
+  // `.trim()`) so an INDENTED bold checkbox — an AC bullet nested under a story —
+  // can never be counted as a story. Trimming here caused two distinct defects:
+  //   1. A file with 9 indented bold AC bullets and 0 top-level ones counted 9
+  //      "stories" for a 16-story epic.
+  //   2. Worse, and silent: a file with 32 indented AC bullets flipped
+  //      `hasBoldCheckboxStories` to true, which SUPPRESSED the table path that
+  //      would have read its Story Index correctly — 32 instead of 34.
+  // Checklists that legitimately use bold-checkbox stories put them at column 0
+  // and are unaffected.
+  const hasBoldCheckboxStories = lines.some(l => /^- \[.\] \*\*/.test(l));
   for (const line of lines) {
     const checkboxMatch = line.match(/- \[([ x>!~])\]/);
-    const tableStatusMatch = line.match(/\|\s*\[([ x>!~])\]\s*\|/);
+    const tableStatusMatch = hasBoldCheckboxStories ? null : line.match(/\|\s*\[([ x>!~])\]\s*\|/);
     const marker = checkboxMatch ? checkboxMatch[1] : tableStatusMatch ? tableStatusMatch[1] : null;
     if (marker === null) continue;
     if (checkboxMatch) {
-      if (!/^- \[.\] \*\*/.test(line.trim())) continue;
+      if (!/^- \[.\] \*\*/.test(line)) continue;
     }
     result.stories.total++;
     switch (marker) {
@@ -517,6 +592,68 @@ function regenerateMasterIndex(projectRoot, opts = {}) {
   //   resolved   → checklist exists; done/total come from it.
   //   !resolved  → no checklist; total falls back to planned, done is 0.
   const epicStats = new Map();
+
+  // Several Epic Index rows may legitimately resolve to the SAME execution doc —
+  // e.g. a multi-epic subsystem tracked in one checklist, which the master index
+  // usually flags with a footnote. `parseTodoFile` then returns an identical
+  // snapshot per referencing row, so summing over epic ids counts that file's
+  // stories once PER ROW. Dedupe by resolved absolute path: a shared checklist
+  // contributes exactly once. Unresolved epics carry no path and each keep their
+  // own planned count, so this is a no-op for a 1:1 epic↔checklist project.
+  // M1: Done must not regress while an epic is unresolved, because an unresolved
+  // epic's progress cannot be recomputed and the prior value may be the only
+  // record of it. But a prior figure is only trustworthy as a carry for THAT
+  // un-recomputable part. Bounding it by `doneSum + unresolvedTotal` means a
+  // stale prior — including one recorded against a since-corrected, inflated
+  // denominator — can never inflate the result or push it past the total.
+  // (A plain `max(doneSum, priorDone)` let a 627 survive a total correction to
+  // 148; a plain `min(totalSum, …)` then just pinned it to 148/148 = 100%.)
+  const clampCarriedDone = ({ doneSum, unresolvedTotal, priorDone, anyUnresolved }) => {
+    if (!anyUnresolved) return doneSum;
+    return Math.min(doneSum + unresolvedTotal, Math.max(doneSum, priorDone));
+  };
+
+  // A checklist referenced by MORE THAN ONE epic row is counted exactly once
+  // in every total (that is what dedupeByChecklist above guarantees), but each referencing row still
+  // renders that file's FULL Stories/Done figures. Summing the visible rows therefore overshoots the
+  // headline total, which reads like an arithmetic bug rather than the deliberate dedupe it is —
+  // and keeping those rows' Done cells maintained makes it louder, because they land on the same
+  // number instead of drifting apart. Annotating the row is the honest fix; changing the parser
+  // would break the dedupe that keeps the totals correct.
+  // LAZY, not an IIFE: `epicStats` is declared empty here and populated further down, so computing
+  // this eagerly yields an empty set and the annotation silently never fires. (It did exactly that
+  // on the first run of this change — the marker count came back 0.) Memoized so the scan runs once
+  // per regen rather than once per rendered row.
+  let _sharedChecklists = null;
+  const isSharedChecklist = (checklist) => {
+    if (!checklist) return false;
+    if (_sharedChecklists === null) {
+      const counts = new Map();
+      for (const s of epicStats.values()) {
+        if (!s || !s.checklist) continue;
+        counts.set(s.checklist, (counts.get(s.checklist) || 0) + 1);
+      }
+      _sharedChecklists = new Set([...counts.entries()].filter(([, n]) => n > 1).map(([k]) => k));
+    }
+    return _sharedChecklists.has(checklist);
+  };
+  // Idempotent by construction: regen runs repeatedly over its own output, so the marker is only
+  // appended when absent. Kept free-text and confined to the Checklist column — never the numeric
+  // cells, which parseMasterIndex reads back.
+  const SHARED_MARKER = '— shared checklist, counted once in totals';
+
+  const dedupeByChecklist = (stats) => {
+    const seen = new Set();
+    const out = [];
+    for (const s of stats) {
+      if (s && s.checklist) {
+        if (seen.has(s.checklist)) continue;
+        seen.add(s.checklist);
+      }
+      out.push(s);
+    }
+    return out;
+  };
   let section = null;
   let epicHeader = null; // Epic Index header cells (for header-based columns)
   for (const line of lines) {
@@ -525,7 +662,7 @@ function regenerateMasterIndex(projectRoot, opts = {}) {
     if (/^##\s/.test(line)) { section = null; continue; }
     if (section !== 'epics' || !line.trim().startsWith('|') || line.includes('---')) continue;
     const cells = splitRow(line);
-    if (/^epic$/i.test((cells[0] || '').trim())) { epicHeader = cells; continue; } // header row
+    if (/^epic$/i.test(normCellText(cells[0]))) { epicHeader = cells; continue; } // header row
     if (!epicHeader || cells.length < 2 || !/\d/.test(cells[0])) continue; // skip spacer/non-data
     const epicId = cells[0];
     const idKey = (epicId.match(/\d+/) || [epicId])[0];
@@ -539,9 +676,11 @@ function regenerateMasterIndex(projectRoot, opts = {}) {
         done: parsed.stories.done, total: parsed.stories.total,
         blocked: parsed.stories.blocked, deferred: parsed.stories.deferred,
         resolved: true, planned,
+        // Retained so sums can dedupe: several epic rows may share ONE checklist.
+        checklist: path.resolve(checklistPath),
       });
     } else {
-      epicStats.set(idKey, { done: 0, total: planned, blocked: 0, deferred: 0, resolved: false, planned });
+      epicStats.set(idKey, { done: 0, total: planned, blocked: 0, deferred: 0, resolved: false, planned, checklist: null });
     }
   }
 
@@ -559,8 +698,28 @@ function regenerateMasterIndex(projectRoot, opts = {}) {
   // An epic's denominator: actual checklist total when resolved, else the plan.
   const totalOf = (s) => (s.resolved ? s.total : s.planned);
 
+  // Grand total across EVERY epic (resolved contributes actual, unresolved
+  // contributes planned total + 0 done), deduped by shared checklist. One
+  // computation, two consumers: the Phase Map Total row and the Epic Index Total
+  // row — they must never disagree.
+  const grandTotals = () => {
+    let doneSum = 0; let totalSum = 0; let anyUnresolved = false; let unresolvedTotal = 0;
+    for (const s of dedupeByChecklist(epicStats.values())) {
+      totalSum += totalOf(s);
+      if (s.resolved) doneSum += s.done; else { anyUnresolved = true; unresolvedTotal += totalOf(s); }
+    }
+    return { doneSum, totalSum, anyUnresolved, unresolvedTotal };
+  };
+
   const phaseEpicMap = buildPhaseEpicMap(root);
   let epicsRefreshed = 0;
+  // Silent-no-op counters. Every one of these paths previously left a row
+  // frozen and still reported "master tracker refreshed", so a tracker could go
+  // stale indefinitely with no signal. They are DIAGNOSTICS, not failures — regen
+  // stays best-effort by contract.
+  const backlogMapMissing = phaseEpicMap === null;
+  let phasesSkipped = 0;
+  const epicsUnresolved = [...epicStats.entries()].filter(([, s]) => !s.resolved).map(([id]) => id);
 
   // Pass 2 — rewrite Epic Index Stories+Status cells, Phase Map Stories+Done+
   // Status (per-phase and Total), and the Last-updated date. Columns are resolved
@@ -581,41 +740,61 @@ function regenerateMasterIndex(projectRoot, opts = {}) {
 
     if (section === 'epics') {
       const cells = splitRow(line);
-      if (/^epic$/i.test((cells[0] || '').trim())) { epicHeader = cells; return line; } // header
-      if (!epicHeader || !/\d/.test(cells[0] || '')) return line;
+      if (/^epic$/i.test(normCellText(cells[0]))) { epicHeader = cells; return line; } // header
+      if (!epicHeader) return line;
+      const storiesIdx = colIndex(epicHeader, 'Stories');
+      const doneIdx = colIndex(epicHeader, 'Done');
+      const statusIdx = colIndex(epicHeader, 'Status');
+
+      // The Epic Index's own grand-total row, when the tracker carries one. It was
+      // unreachable before — the `/\d/.test(cells[0])` data-row guard rejects
+      // `**Total**` — so an Epic Index Total went stale forever alongside a
+      // correctly-refreshed Phase Map Total.
+      if (isTotalCell(cells[0])) {
+        const g = grandTotals();
+        const priorDone = parseInt(String(cells[doneIdx >= 0 ? doneIdx : -1] || '').replace(/\D/g, ''), 10) || 0;
+        const newDone = clampCarriedDone({ ...g, priorDone });
+        if (storiesIdx >= 0) cells[storiesIdx] = `**${g.totalSum}**`;
+        if (doneIdx >= 0) cells[doneIdx] = `**${newDone}**`;
+        return joinRow(cells);
+      }
+
+      if (!/\d/.test(cells[0] || '')) return line;
       const idKey = (cells[0].match(/\d+/) || [cells[0]])[0];
       const stat = epicStats.get(idKey);
       if (!stat || !stat.resolved) return line; // missing checklist → unchanged
-      const storiesIdx = colIndex(epicHeader, 'Stories');
-      const statusIdx = colIndex(epicHeader, 'Status');
       if (storiesIdx >= 0) cells[storiesIdx] = String(stat.total);
+      // Done was never refreshed here, only Stories+Status — so a shrinking
+      // denominator left rows like "Stories 18 / Done 52" in the live tracker.
+      if (doneIdx >= 0) cells[doneIdx] = String(stat.done);
       if (statusIdx >= 0) cells[statusIdx] = markerFor(stat.done, stat.total, stat.blocked, stat.deferred);
+      const checklistIdx = colIndex(epicHeader, 'Checklist');
+      if (checklistIdx >= 0 && isSharedChecklist(stat.checklist)) {
+        const cur = String(cells[checklistIdx] || '');
+        if (!cur.includes(SHARED_MARKER)) cells[checklistIdx] = `${cur.trim()} ${SHARED_MARKER}`.trim();
+      }
       epicsRefreshed++;
       return joinRow(cells);
     }
 
     if (section === 'phases') {
       const cells = splitRow(line);
-      if (/^phase$/i.test((cells[0] || '').trim())) { phaseHeader = cells; return line; } // header
+      if (/^phase$/i.test(normCellText(cells[0]))) { phaseHeader = cells; return line; } // header
       if (!phaseHeader) return line;
       const storiesIdx = colIndex(phaseHeader, 'Stories');
       const doneIdx = colIndex(phaseHeader, 'Done');
       const statusIdx = colIndex(phaseHeader, 'Status');
       if (doneIdx < 0 || storiesIdx < 0) return line; // unrecognizable Phase Map
 
-      const isTotal = /\*\*Total\*\*/i.test(cells[0]);
-      if (isTotal) {
-        // Grand total: Stories AND Done both summed across EVERY epic (resolved
-        // contributes actual, unresolved contributes planned total + 0 done), so
+      // Recognized by normalized text, so a plain `| Total |` behaves exactly like
+      // the canonical bold `| **Total** |`.
+      if (isTotalCell(cells[0])) {
+        // Grand total: Stories AND Done both summed across EVERY epic, so
         // numerator and denominator share one source. Done never lowers while any
         // epic is unresolved (M1 — it may carry un-recomputable prior progress).
-        let doneSum = 0; let totalSum = 0; let anyUnresolved = false;
-        for (const s of epicStats.values()) {
-          totalSum += totalOf(s);
-          if (s.resolved) doneSum += s.done; else anyUnresolved = true;
-        }
+        const { doneSum, totalSum, anyUnresolved, unresolvedTotal } = grandTotals();
         const priorDone = parseInt(String(cells[doneIdx]).replace(/\D/g, ''), 10) || 0;
-        const newDone = anyUnresolved ? Math.max(doneSum, priorDone) : doneSum;
+        const newDone = clampCarriedDone({ doneSum, unresolvedTotal, priorDone, anyUnresolved });
         const pct = totalSum > 0 ? Math.round((newDone / totalSum) * 100) : 0;
         cells[storiesIdx] = `**${totalSum}**`;
         cells[doneIdx] = `**${newDone}**`;
@@ -626,15 +805,15 @@ function regenerateMasterIndex(projectRoot, opts = {}) {
       // Per-phase row: recompute Stories + Done from this phase's epics (needs the
       // backlog phase→epic map). Without it, leave the row unchanged.
       const phaseId = (cells[0].match(/\d+/) || [])[0];
-      if (!phaseEpicMap || phaseId == null || !phaseEpicMap.has(phaseId)) return line;
+      if (!phaseEpicMap || phaseId == null || !phaseEpicMap.has(phaseId)) { phasesSkipped++; return line; }
       const epicsInPhase = phaseEpicMap.get(phaseId);
       let doneSum = 0; let totalSum = 0; let allResolvedDone = true;
-      let anyResolved = false; let anyUnresolved = false;
-      for (const eid of epicsInPhase) {
-        const s = epicStats.get(eid);
+      let anyResolved = false; let anyUnresolved = false; let unresolvedTotal = 0;
+      // Dedupe WITHIN the phase too — two epics in one phase can share a checklist.
+      for (const s of dedupeByChecklist([...epicsInPhase].map(eid => epicStats.get(eid)))) {
         if (!s) { allResolvedDone = false; anyUnresolved = true; continue; }
         totalSum += totalOf(s);
-        if (!s.resolved) { allResolvedDone = false; anyUnresolved = true; continue; }
+        if (!s.resolved) { allResolvedDone = false; anyUnresolved = true; unresolvedTotal += totalOf(s); continue; }
         anyResolved = true;
         doneSum += s.done;
         if (!(s.total > 0 && s.done >= s.total)) allResolvedDone = false;
@@ -643,7 +822,7 @@ function regenerateMasterIndex(projectRoot, opts = {}) {
       // not). Done: refreshed from resolved epics, but NEVER LOWERED while the
       // phase has an unresolved epic (M1 — only moves forward).
       const priorDone = parseInt(String(cells[doneIdx]).replace(/\D/g, ''), 10) || 0;
-      const newDone = anyUnresolved ? Math.max(doneSum, priorDone) : doneSum;
+      const newDone = clampCarriedDone({ doneSum, unresolvedTotal, priorDone, anyUnresolved });
       cells[storiesIdx] = String(totalSum);
       cells[doneIdx] = String(newDone);
       // COMPLETE only when every epic in the phase is resolved AND done; a partial
@@ -670,6 +849,9 @@ function regenerateMasterIndex(projectRoot, opts = {}) {
     path: path.relative(root, masterPath).replace(/\\/g, '/'),
     epicsRefreshed,
     changed: newContent !== content,
+    backlogMapMissing,
+    phasesSkipped,
+    epicsUnresolved,
   };
 }
 
@@ -681,8 +863,18 @@ async function main() {
   // call this unconditionally). Default `node status.js` behavior is unchanged.
   if (process.argv.includes('--regen-master')) {
     const res = regenerateMasterIndex(PROJECT_ROOT);
-    if (res.skipped) console.log(`  [status] master tracker: skipped (${res.reason})`);
-    else console.log(`  [status] master tracker refreshed: ${res.path} (${res.epicsRefreshed} epics)`);
+    if (res.skipped) { console.log(`  [status] master tracker: skipped (${res.reason})`); return; }
+    console.log(`  [status] master tracker refreshed: ${res.path} (${res.epicsRefreshed} epics)`);
+    // Surface the partial-refresh paths — silently frozen rows used to read as a
+    // clean success.
+    if (res.backlogMapMissing) {
+      console.log(`  [status] warning: no '## Phase N' / '### Epic N' grouping found in the backlog — every per-phase row left unchanged`);
+    } else if (res.phasesSkipped > 0) {
+      console.log(`  [status] warning: ${res.phasesSkipped} phase row(s) left unchanged (no numeric phase id, or phase absent from the backlog map)`);
+    }
+    if (res.epicsUnresolved.length > 0) {
+      console.log(`  [status] warning: ${res.epicsUnresolved.length} epic(s) left unchanged — no checklist resolved: ${res.epicsUnresolved.join(', ')}`);
+    }
     return;
   }
 

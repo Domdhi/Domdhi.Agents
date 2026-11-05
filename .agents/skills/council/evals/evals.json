@@ -1,0 +1,26 @@
+{
+  "skill_name": "council",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Apply council to this supplied decision trace without dispatching agents or changing project files. Four stakeholders were selected for a reversible internal approach: A keeps the current layout, B rewrites it. In Round 1 two vote B based on a checked fact, one votes B based solely on a claim the chair checked and struck as false, and one call still fails after one retry. Round 2 has the same two valid B votes, the false-claim voter still has no verified support, and the fourth seat is still missing. State the denominator, threshold, valid tally, final disposition and how the record labels it. Do not invent replies or ask the owner to break the tie.",
+      "expected_output": "The selected panel remains four, majority requires three; two valid votes cannot become consensus. After the second round the chair records a concrete decision after a split, preserving missing/invalid seats and dissent.",
+      "files": [],
+      "assertions": ["Retains a denominator of four and threshold of three", "Does not label two valid B votes as majority or consensus", "Records a chair decision after Round 2 with missing/invalid votes"]
+    },
+    {
+      "id": 2,
+      "prompt": "Apply the council Round 2 prompt rules to a supplied five-person panel trace; do not dispatch agents or write project files. The chair has checked all decisive facts: A has three valid votes and B has two valid votes. The B positions make a value judgment about maintainability, and the chair can explain that tradeoff. A separate claim C in the shared positions has no available evidence either way. State whether A can win, how to answer the B dissent, and precisely how the Round 2 panelist must classify claim C. Include any required final record fields for requested versus observed model identity.",
+      "expected_output": "Three of five is a majority; maintainability dissent is addressed as a tradeoff. Claim C is unverified, never refuted simply for lacking evidence. Requested and observed identity are recorded separately.",
+      "files": [],
+      "assertions": ["Recognizes three of five as a majority", "Classifies missing-evidence claim C as unverified rather than false/refuted", "Separates requested model from observed identity or unverified identity"]
+    },
+    {
+      "id": 3,
+      "prompt": "Apply council scheduling and authorization rules to these two independent invocations without actually dispatching agents or changing files. First: a reversible data-schema choice, default four panelists, and the runtime permits only three child agents concurrently. Explain the exact scheduling adaptation, the role to cover schema, and whether role defaults require a Claude model identifier in Codex. Second: an empty-argument sweep finds only a settled owner ruling and an already-authorized future release action; there are no new council-able choices. State the number of panel calls and what to record, and whether council itself executes that release or requests the same authorization again.",
+      "expected_output": "Batch isolated calls within three slots while retaining all four seats and an architect for schema; use Codex native role defaults. The sweep makes zero calls, does not reopen the ruling, does not repeat authorization and does not execute the release.",
+      "files": [],
+      "assertions": ["Schedules isolated batches rather than exceeding concurrency or dropping a seat", "Uses an available architect for schema and Codex native model settings", "Makes zero calls for the sweep and preserves existing authorization without executing release"]
+    }
+  ]
+}

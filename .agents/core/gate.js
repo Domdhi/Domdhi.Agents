@@ -798,7 +798,20 @@ function parseBuildOutput(output, exitCode) {
 }
 
 function parseTestOutput(output, exitCode) {
-    const tests = { passed: 0, failed: 0, skipped: 0, total: 0, failures: [] };
+    // `deadProjects` / `errorCount` exist because a MONOREPO run emits one summary block PER
+    // package, and two independent defects used to hide a dead project inside a green verdict:
+    //   1. the summary branches below ASSIGNED (`=`) instead of accumulating, so the LAST package's
+    //      summary silently overwrote every earlier one (last-line-wins). EVERY runner branch now
+    //      accumulates — the first fix reached only vitest+dotnet, leaving rust (one `test result:`
+    //      per crate) and both pytest branches (one summary per package) still last-line-wins;
+    //   2. a project that crashes before collecting anything prints `Tests  no tests` — which has
+    //      no parenthesised total, so the envelope regex never matched it and it contributed
+    //      nothing at all. The aggregate `isZeroCollected` guard could not see it either, because
+    //      the OTHER packages' counts kept the total non-zero.
+    // Measured impact: a monorepo package whose test worker crashed at boot stayed hidden for
+    // 8 days while this function reported PASSED, because vitest exits 0 after the crash and
+    // another package's summary landed last.
+    const tests = { passed: 0, failed: 0, skipped: 0, total: 0, failures: [], deadProjects: 0, errorCount: 0 };
     const lines = output.split('\n');
 
     for (const rawLine of lines) {
@@ -808,10 +821,33 @@ function parseTestOutput(output, exitCode) {
         // Vitest/Jest v1 style: Tests: 5 passed, 1 failed, 2 skipped, 8 total
         const vitestV1Match = line.match(/Tests:\s*(?:(\d+)\s*passed)?[,\s]*(?:(\d+)\s*failed)?[,\s]*(?:(\d+)\s*skipped)?[,\s]*(\d+)\s*total/i);
         if (vitestV1Match) {
-            tests.passed = parseInt(vitestV1Match[1] || 0);
-            tests.failed = parseInt(vitestV1Match[2] || 0);
-            tests.skipped = parseInt(vitestV1Match[3] || 0);
-            tests.total = parseInt(vitestV1Match[4] || 0);
+            // ACCUMULATE, never assign — one summary block per monorepo package (see the header
+            // note). For a single-project run `+=` from zero is identical to the old `=`.
+            tests.passed += parseInt(vitestV1Match[1] || 0);
+            tests.failed += parseInt(vitestV1Match[2] || 0);
+            tests.skipped += parseInt(vitestV1Match[3] || 0);
+            tests.total += parseInt(vitestV1Match[4] || 0);
+            continue;
+        }
+
+        // Vitest: a project that collected NOTHING prints "Tests  no tests" — note there is no
+        // parenthesised total, so the v2 envelope regex below cannot match it and it would
+        // otherwise contribute silently nothing. This is the shape a crashed/segfaulted project
+        // leaves behind, and it must FAIL the gate rather than vanish.
+        if (/Tests\s{2,}no tests\b/i.test(line)) {
+            tests.deadProjects += 1;
+            continue;
+        }
+
+        // Vitest: "Errors  1 error" — unhandled errors reported OUTSIDE the pass/fail counts
+        // (pool crashes, worker exits, unhandled rejections). A run carrying these is not green
+        // no matter what the per-test tallies say.
+        // NOT anchored with ^ — `pnpm -r` prefixes every line with "<pkg> test: ", so an anchored
+        // pattern silently never matches in the exact monorepo case this exists to catch. The
+        // two-or-more-space gap before the count is what keeps it from matching prose.
+        const vitestErrors = line.match(/(?:^|\s)Errors\s{2,}(\d+)\s+errors?\b/i);
+        if (vitestErrors) {
+            tests.errorCount += parseInt(vitestErrors[1]);
             continue;
         }
 
@@ -826,10 +862,12 @@ function parseTestOutput(output, exitCode) {
             const pM = body.match(/(\d+)\s*passed/i);
             const fM = body.match(/(\d+)\s*failed/i);
             const sM = body.match(/(\d+)\s*skipped/i);
-            tests.passed = pM ? parseInt(pM[1]) : 0;
-            tests.failed = fM ? parseInt(fM[1]) : 0;
-            tests.skipped = sM ? parseInt(sM[1]) : 0;
-            tests.total = parseInt(totalStr);
+            // ACCUMULATE — see the header note. This line was the actual last-line-wins bug: with
+            // `=`, `pnpm -r test` reported only whichever package printed its summary last.
+            tests.passed += pM ? parseInt(pM[1]) : 0;
+            tests.failed += fM ? parseInt(fM[1]) : 0;
+            tests.skipped += sM ? parseInt(sM[1]) : 0;
+            tests.total += parseInt(totalStr);
             continue;
         }
 
@@ -851,12 +889,19 @@ function parseTestOutput(output, exitCode) {
         }
 
         // Rust: test result: ok. N passed; N failed; N ignored
+        // ACCUMULATE — `cargo test --workspace` prints one `test result:` line PER CRATE
+        // (plus one per doc-test run), so assigning made the LAST crate's numbers the whole
+        // verdict. A trailing crate with no tests drove `total` to 0 → false RED via
+        // isZeroCollected; a trailing green crate hid an earlier crate's failures.
         const rustMatch = line.match(/test result:\s*\w+\.\s*(\d+)\s*passed;\s*(\d+)\s*failed;\s*(\d+)\s*ignored/);
         if (rustMatch) {
-            tests.passed = parseInt(rustMatch[1]);
-            tests.failed = parseInt(rustMatch[2]);
-            tests.skipped = parseInt(rustMatch[3]);
-            tests.total = tests.passed + tests.failed + tests.skipped;
+            const p = parseInt(rustMatch[1]);
+            const f = parseInt(rustMatch[2]);
+            const s = parseInt(rustMatch[3]);
+            tests.passed += p;
+            tests.failed += f;
+            tests.skipped += s;
+            tests.total += p + f + s;
             continue;
         }
 
@@ -870,10 +915,17 @@ function parseTestOutput(output, exitCode) {
             const fM = body.match(/(\d+)\s+failed/);
             const sM = body.match(/(\d+)\s+skipped/);
             const eM = body.match(/(\d+)\s+errors?/);
-            tests.passed = pM ? parseInt(pM[1]) : 0;
-            tests.failed = (fM ? parseInt(fM[1]) : 0) + (eM ? parseInt(eM[1]) : 0);
-            tests.skipped = sM ? parseInt(sM[1]) : 0;
-            tests.total = tests.passed + tests.failed + tests.skipped;
+            // ACCUMULATE — a multi-package pytest run (tox, a monorepo `pytest a/ b/`,
+            // `pnpm -r`-style fan-out) prints one summary per package; assigning kept only
+            // the last, so an earlier package's failures vanished and a trailing
+            // zero-test package zeroed `total` into a false RED.
+            const p = pM ? parseInt(pM[1]) : 0;
+            const f = (fM ? parseInt(fM[1]) : 0) + (eM ? parseInt(eM[1]) : 0);
+            const s = sM ? parseInt(sM[1]) : 0;
+            tests.passed += p;
+            tests.failed += f;
+            tests.skipped += s;
+            tests.total += p + f + s;
             continue;
         }
 
@@ -891,10 +943,14 @@ function parseTestOutput(output, exitCode) {
             const fM = body.match(/(\d+)\s+failed/);
             const sM = body.match(/(\d+)\s+skipped/);
             const eM = body.match(/(\d+)\s+errors?/);
-            tests.passed = pM ? parseInt(pM[1]) : 0;
-            tests.failed = (fM ? parseInt(fM[1]) : 0) + (eM ? parseInt(eM[1]) : 0);
-            tests.skipped = sM ? parseInt(sM[1]) : 0;
-            tests.total = tests.passed + tests.failed + tests.skipped;
+            // ACCUMULATE — same multi-package reason as the verbose branch above.
+            const p = pM ? parseInt(pM[1]) : 0;
+            const f = (fM ? parseInt(fM[1]) : 0) + (eM ? parseInt(eM[1]) : 0);
+            const s = sM ? parseInt(sM[1]) : 0;
+            tests.passed += p;
+            tests.failed += f;
+            tests.skipped += s;
+            tests.total += p + f + s;
             continue;
         }
 
@@ -914,7 +970,11 @@ function parseTestOutput(output, exitCode) {
             if (kind === 'passed' || kind === 'flaky') tests.passed += n;
             else if (kind === 'failed' || kind === 'interrupted') tests.failed += n;
             else tests.skipped += n; // skipped / did not run
-            tests.total = tests.passed + tests.failed + tests.skipped;
+            // `+= n`, not a re-derivation from the running component totals: re-deriving
+            // would CLOBBER a total already accumulated from another runner's summary
+            // (dotnet/vitest report an explicit total that need not equal p+f+s — vitest
+            // counts `todo` tests in its parenthesised figure, for instance).
+            tests.total += n;
             continue;
         }
 
@@ -932,7 +992,10 @@ function parseTestOutput(output, exitCode) {
         }
     }
 
-    tests.succeeded = exitCode === 0 && tests.failed === 0;
+    // A dead project or a reported error is a FAILURE even when the runner exits 0 and every
+    // collected test passed — that combination is precisely the false-green this guards.
+    tests.succeeded =
+        exitCode === 0 && tests.failed === 0 && tests.deadProjects === 0 && tests.errorCount === 0;
     return tests;
 }
 
@@ -1139,7 +1202,29 @@ async function main() {
                 fullLog += `\n${warn}\n`;
             }
 
-            const testStatus = test.succeeded ? 'PASSED' : (test.zeroCollected ? 'FAILED (0 tests collected)' : 'FAILED');
+            if (test.deadProjects > 0 || test.errorCount > 0) {
+                const bits = [];
+                if (test.deadProjects > 0) {
+                    bits.push(`${test.deadProjects} project(s) collected NO tests ("Tests  no tests")`);
+                }
+                if (test.errorCount > 0) {
+                    bits.push(`${test.errorCount} unhandled error(s) reported outside the pass/fail counts`);
+                }
+                const warn = `[GATE] Tests: FAILED — ${bits.join('; ')}. ` +
+                    'The runner may still have exited 0 (vitest does this after a pool/worker crash) ' +
+                    'and the other packages\' tallies can look healthy — that combination is the ' +
+                    'false-green this check exists for. Find the crashed project in the log above.';
+                console.log(warn);
+                fullLog += `\n${warn}\n`;
+            }
+
+            const testStatus = test.succeeded
+                ? 'PASSED'
+                : (test.zeroCollected
+                    ? 'FAILED (0 tests collected)'
+                    : (test.deadProjects > 0 || test.errorCount > 0
+                        ? 'FAILED (a project collected no tests / reported errors)'
+                        : 'FAILED'));
             console.log(`[GATE] Tests: ${testStatus} (${test.passed} passed, ${test.failed} failed, ${test.skipped} skipped)`);
             if (testResult.timedOut) {
                 const killed = `[GATE] Tests: TIMED OUT — the run was killed at ${limit.timeoutMs} ms (${limit.source}). ` +

@@ -226,17 +226,27 @@ function parseTodoFileStories(filePath) {
       if (stories.pending < 0) stories.pending = 0;
     }
   } else {
-    // Checklist: count story-level checkboxes
+    // Checklist: count story-level checkboxes.
+    // Kept deliberately in lockstep with status.js's parseChecklist() — this is a
+    // SECOND, independent implementation of the same count, and it carried the same
+    // two defects:
+    //   1. Matching against `line.trim()` counted INDENTED bold AC bullets as stories.
+    //   2. No bold-vs-table mutual exclusion, so a file carrying BOTH a body checklist
+    //      and a Story Index table had every story counted twice (an 80-story file
+    //      reported 141: 80 bold + 61 table).
+    // Both tests below now match the RAW line, and the table path is suppressed when
+    // top-level bold stories exist — same rule, same result, as status.js.
+    const hasBoldCheckboxStories = lines.some(l => /^- \[.\] \*\*/.test(l));
     for (const line of lines) {
       const checkboxMatch = line.match(/- \[([ x>!~])\]/);
-      const tableStatusMatch = line.match(/\|\s*\[([ x>!~])\]\s*\|/);
+      const tableStatusMatch = hasBoldCheckboxStories ? null : line.match(/\|\s*\[([ x>!~])\]\s*\|/);
       const marker = checkboxMatch ? checkboxMatch[1] : tableStatusMatch ? tableStatusMatch[1] : null;
 
       if (marker === null) continue;
 
-      // Only count story-level checkboxes (bold): - [ ] **4.1 ...
+      // Only count story-level checkboxes (bold, at column 0): - [ ] **4.1 ...
       if (checkboxMatch) {
-        const isBoldStory = /^- \[.\] \*\*/.test(line.trim());
+        const isBoldStory = /^- \[.\] \*\*/.test(line);
         if (!isBoldStory) continue;
       }
 

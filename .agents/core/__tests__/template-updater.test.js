@@ -1594,6 +1594,28 @@ describe('direct update front door', () => {
     }
   });
 
+  it.each(UPDATE_ENTRIES)('publicEntry_%s_ignoresSymlinksInsideNodeModulesButRefusesOtherLinksAtTheSameDepth', entry => {
+    const target = seedLegacyAdopter(root);
+    // A package manager's dependency tree inside the scope: .bin entries are links.
+    const bin = path.join(target, '.agents/mcp-server/node_modules/.bin');
+    fs.mkdirSync(bin, { recursive: true });
+    fs.mkdirSync(path.join(target, '.agents/mcp-server/node_modules/tool/bin'), { recursive: true });
+    fs.writeFileSync(path.join(target, '.agents/mcp-server/node_modules/tool/bin/tool'), '#!/bin/sh\n');
+    fs.symlinkSync('../tool/bin/tool', path.join(bin, 'tool'));
+
+    const accepted = runEntry(entry, ['update', target, '--merge', '--dry-run']);
+    expect(accepted.code, accepted.output).toBe(0);
+
+    // The same link outside node_modules is still a write-through hazard and is refused.
+    const linked = path.join(target, '.agents/mcp-server/vendored');
+    fs.symlinkSync(path.join(target, '.agents/mcp-server/node_modules/tool'), linked, 'dir');
+    const before = snapshotTree(target);
+    const refused = runEntry(entry, ['update', target, '--merge']);
+    expect(refused.code, refused.output).toBe(1);
+    expect(refused.output).toMatch(/PATH/);
+    expect(snapshotTree(target)).toEqual(before);
+  });
+
   it.each(UPDATE_ENTRIES)('updateCli_%s_acceptsNeutralNonGitProjectsWithoutPolicyFlags', entry => {
     const target = path.join(root, 'neutral project with spaces');
     fs.mkdirSync(path.join(target, '.claude'), { recursive: true });

@@ -87,6 +87,15 @@ IFS='|' read -r J_MODEL_DISPLAY J_MODEL_RAW J_CTX_PCT J_CTX_SIZE J_COST J_DURATI
         (.effort.level // "")
     ] | join("|")' 2>/dev/null | tr -d '\r')
 
+# Live rate limits straight from Claude Code (no API call, never stale). Preferred over the API cache below.
+IFS='|' read -r L_SESS_PCT L_SESS_RESETS L_WEEK_PCT L_WEEK_RESETS \
+    < <(echo "$JSON" | jq -r '[
+        (.rate_limits.five_hour.used_percentage // ""),
+        (.rate_limits.five_hour.resets_at // ""),
+        (.rate_limits.seven_day.used_percentage // ""),
+        (.rate_limits.seven_day.resets_at // "")
+    ] | join("|")' 2>/dev/null | tr -d '\r')
+
 # ── Model ─────────────────────────────────────────────────────────────────────
 MODEL="$J_MODEL_DISPLAY"
 MODEL=$(echo "$MODEL" | sed 's/Default (\(.*\))/\1/' | sed 's/Claude //' | sed 's/ (.*//')
@@ -127,6 +136,8 @@ if [ -f "$CREDENTIALS_FILE" ]; then
     SUBSCRIPTION=$(jq -r '.claudeAiOauth.subscriptionType // empty' "$CREDENTIALS_FILE" 2>/dev/null \
         | tr '[:lower:]' '[:upper:]')
 fi
+# Ultra has no 5-hour window (credentials still call it "max"): relabel it and hide the session block.
+case "$SUBSCRIPTION" in MAX|ULTRA) SUBSCRIPTION="ULT"; HIDE_SESSION=1 ;; *) HIDE_SESSION=0 ;; esac
 
 # ── Context window ────────────────────────────────────────────────────────────
 # Window sizing
@@ -189,16 +200,16 @@ refresh_usage_api() {
         -H "Authorization: Bearer $token" \
         -H "anthropic-beta: oauth-2025-04-20" \
         -H "Content-Type: application/json" 2>/dev/null)
-    echo "$resp" | jq -e '.five_hour.utilization' >/dev/null 2>&1 || return 1
+    echo "$resp" | jq -e '(.five_hour.utilization // .seven_day.utilization) != null' >/dev/null 2>&1 || return 1
     echo "$resp" | jq '{
         timestamp: (now | todate),
         source: "api",
         metrics: {
-            session: {
+            session: (if .five_hour then {
                 percent_used: .five_hour.utilization,
                 percent_remaining: (100 - .five_hour.utilization),
                 resets_at: .five_hour.resets_at
-            },
+            } else null end),
             week_all: {
                 percent_used: .seven_day.utilization,
                 percent_remaining: (100 - .seven_day.utilization),
@@ -237,6 +248,14 @@ if [ -f "$USAGE_FILE" ]; then
             (.metrics.week_all.resets_at       // .metrics.week_all.resets // ""),
             (.metrics.week_sonnet.percent_used // "")
         ] | join("|")' "$USAGE_FILE" 2>/dev/null | tr -d '\r')
+
+    # Live stdin values win over the cache; epoch resets are converted to ISO so the "api" path parses them.
+    LIVE=0
+    if [ -n "$L_SESS_PCT" ] || [ -n "$L_WEEK_PCT" ]; then
+        LIVE=1; CACHE_SOURCE="api"
+        [ -n "$L_SESS_PCT" ] && { U_SESS_PCT="$L_SESS_PCT"; [ -n "$L_SESS_RESETS" ] && U_SESS_RESETS=$(date -u -d "@${L_SESS_RESETS%.*}" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null); }
+        [ -n "$L_WEEK_PCT" ] && { U_WEEK_PCT="$L_WEEK_PCT"; [ -n "$L_WEEK_RESETS" ] && U_WEEK_RESETS=$(date -u -d "@${L_WEEK_RESETS%.*}" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null); }
+    fi
 
     if [ -n "$CACHE_SOURCE" ]; then
         # Session block
@@ -283,15 +302,22 @@ if [ -f "$USAGE_FILE" ]; then
                     DATE_PART=$(echo "$U_WEEK_RESETS" | sed 's/ *([^)]*)//' | sed 's/,//')
                     WEEK_EPOCH=$(tz_date "${WEEK_TZ}" -d "$DATE_PART" +%s 2>/dev/null)
                 fi
+                # Week has reset since the cached reading - the cached percentage is stale, not current
+                if [ -n "$WEEK_EPOCH" ] && [ "$WEEK_EPOCH" -le "$NOW" ]; then
+                    WEEK_INT="?"; WEEK_EPOCH=""
+                fi
                 [ -n "$WEEK_EPOCH" ] && \
                     WEEK_RESET_LABEL=$(tz_date "${TIMEZONE}" -d "@$WEEK_EPOCH" +"%a %Hh" 2>/dev/null \
                         | tr '[:upper:]' '[:lower:]')
             fi
-            make_bar "$WEEK_INT"; WEEK_COLOR="$BAR_COLOR"
+            [ "$WEEK_INT" = "?" ] || make_bar "$WEEK_INT"; WEEK_COLOR="$BAR_COLOR"
+            [ "$WEEK_INT" = "?" ] && WEEK_COLOR="⚠"
         fi
         if [ "$SHOW_WEEKLY" = "1" ] && [ -n "$U_SONNET_PCT" ] && [ "$U_SONNET_PCT" != "null" ]; then
             SONNET_INT="${U_SONNET_PCT%.*}"
-            make_bar "$SONNET_INT"; SONNET_COLOR="$BAR_COLOR"
+            [ -n "$WEEK_EPOCH" ] || [ -z "$U_WEEK_RESETS" ] || SONNET_INT="?"
+            [ "$SONNET_INT" = "?" ] || make_bar "$SONNET_INT"; SONNET_COLOR="$BAR_COLOR"
+            [ "$SONNET_INT" = "?" ] && SONNET_COLOR="⚠"
         fi
         if [ -n "$WEEK_INT" ] && [ -n "$SONNET_INT" ]; then
             WEEK_SONNET_DISPLAY="📅${WEEK_COLOR} ${WEEK_INT}%/S${SONNET_COLOR} ${SONNET_INT}%"
@@ -307,7 +333,7 @@ fi
 
 # ── Stale indicator — replace color dot with ⚠ when cache is stale ──────────
 IS_STALE=0
-if [ -f "$USAGE_FILE" ] && [ "$REFRESH_INTERVAL" -gt 0 ] 2>/dev/null; then
+if [ "${LIVE:-0}" != 1 ] && [ -f "$USAGE_FILE" ] && [ "$REFRESH_INTERVAL" -gt 0 ] 2>/dev/null; then
     [ "$(cache_age_sec)" -gt $(( REFRESH_INTERVAL * 3 )) ] && IS_STALE=1
 fi
 [ "$IS_STALE" = 1 ] && [ -n "$BLOCK_DISPLAY" ] && \
@@ -322,7 +348,7 @@ if [ -n "$MODEL" ]; then
     PARTS+=("$MODEL_LABEL")
 fi
 [ -n "$CTX_PERCENT" ]         && PARTS+=("$CTX_COLOR $CTX_LABEL ${CTX_PERCENT}%")
-[ -n "$BLOCK_DISPLAY" ]       && PARTS+=("$BLOCK_DISPLAY")
+[ -n "$BLOCK_DISPLAY" ] && [ "$HIDE_SESSION" != 1 ] && PARTS+=("$BLOCK_DISPLAY")
 # Cost + duration (only if non-zero)
 if [ -n "$COST_STR" ] && [ -n "$DURATION_STR" ]; then
     PARTS+=("$COST_STR ⏱ $DURATION_STR")

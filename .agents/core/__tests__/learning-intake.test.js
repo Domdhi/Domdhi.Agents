@@ -20,7 +20,7 @@ const NOW = '2026-10-14T14:00:00.000Z';
 const COMMIT = 'a'.repeat(40);
 const PRIVATE_ERROR = 'dummy private fixture token and remote exception body';
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-const POLICY_FILE = '.agents/learning-intake/policy.json';
+const POLICY_FILE = '.agents/intake/policy.json';
 let tmp;
 let state;
 let other;
@@ -268,7 +268,7 @@ describe('learning-intake AC4.3 offline capture and strict selected input', () =
   });
 
   it('init_uninitializedFacade_createsDisabledDefaultsWithoutInferredAuthority', async () => {
-    fs.unlinkSync(path.join(tmp.root, '.agents/learning-intake/identity.json')); fs.unlinkSync(path.join(tmp.root, POLICY_FILE));
+    fs.unlinkSync(path.join(tmp.root, '.agents/intake/identity.json')); fs.unlinkSync(path.join(tmp.root, POLICY_FILE));
     const remote = transport();
 
     expect(await core().init({ projectName: 'NewFixture' }, options({ transport: remote }))).toMatchObject({ ok: true, code: 'ok', status: 'initialized' });
@@ -281,12 +281,12 @@ describe('learning-intake AC4.3 offline capture and strict selected input', () =
   });
 
   it('capture_notInitialized_refusesWithoutInventingProjectOwnership', async () => {
-    fs.unlinkSync(path.join(tmp.root, '.agents/learning-intake/identity.json')); fs.unlinkSync(path.join(tmp.root, POLICY_FILE));
+    fs.unlinkSync(path.join(tmp.root, '.agents/intake/identity.json')); fs.unlinkSync(path.join(tmp.root, POLICY_FILE));
     const remote = transport();
 
     refused(await core().capture(lesson(), options({ transport: remote })), 'not-initialized');
 
-    expect(fs.existsSync(path.join(tmp.root, '.agents/learning-intake/identity.json'))).toBe(false);
+    expect(fs.existsSync(path.join(tmp.root, '.agents/intake/identity.json'))).toBe(false);
     noCalls(remote);
   });
 
@@ -988,7 +988,7 @@ describe('learning-intake AC4.3 finite retries, throttle delays and lifecycle ba
   });
 
   it('lifecycle_disabledDefaults_initializeLocallyAndPerformNoTransport', async () => {
-    fs.unlinkSync(path.join(tmp.root, '.agents/learning-intake/identity.json')); fs.unlinkSync(path.join(tmp.root, POLICY_FILE));
+    fs.unlinkSync(path.join(tmp.root, '.agents/intake/identity.json')); fs.unlinkSync(path.join(tmp.root, POLICY_FILE));
     const remote = transport();
 
     expect(await core().lifecycle(options({ trigger: 'end', transport: remote }))).toMatchObject({ ok: true, code: 'disabled' });

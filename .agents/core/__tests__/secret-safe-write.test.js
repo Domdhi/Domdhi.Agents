@@ -29,6 +29,34 @@ describe('redactSecretsForWrite', () => {
         }
     });
 
+    it.each(['config/server.key', 'certs/site.pem', '.env.local'])(
+        'a clean write to the high-risk destination %s is not reported as a redaction',
+        dest => {
+            // The HIGH_RISK_FILE finding comes from the filename alone; it says nothing about
+            // the bytes being written, and redaction (which is content-only) would change nothing.
+            const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+            try {
+                expect(redactSecretsForWrite('plain notes, no credentials\n', dest)).toBe('plain notes, no credentials\n');
+                expect(stderr).not.toHaveBeenCalled();
+            } finally {
+                stderr.mockRestore();
+            }
+        },
+    );
+
+    it('still redacts and warns for a real secret written to a high-risk destination', () => {
+        const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+        try {
+            const out = redactSecretsForWrite(`token = "${awsKey()}"`, '.env.local');
+            expect(out).toContain('<REDACTED:AWS Access Key>');
+            const warning = stderr.mock.calls.map(c => c[0]).join('');
+            expect(warning).toContain('redacted 1 secret finding(s)');
+            expect(warning).not.toContain('HIGH_RISK_FILE');
+        } finally {
+            stderr.mockRestore();
+        }
+    });
+
     it('applies the same source-file exemptions to the scan and the redaction', () => {
         // A code reference next to a real secret in a source file: only the secret is redacted.
         const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);

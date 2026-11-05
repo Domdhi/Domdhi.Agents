@@ -9,8 +9,8 @@ const { TextDecoder } = require('util');
 const { LEARNING_INTAKE_LIMITS: LIMITS } = require('../constants');
 const { compartmentDir } = require('./output-paths');
 
-const IDENTITY_FILE = '.agents/learning-intake/identity.json';
-const POLICY_FILE = '.agents/learning-intake/policy.json';
+const CONFIG_FILES = { identity: '.agents/intake/identity.json', policy: '.agents/intake/policy.json' };
+const LEGACY_CONFIG_FILES = { identity: '.agents/learning-intake/identity.json', policy: '.agents/learning-intake/policy.json' };
 const REQUEST_PREFIX = 'AGENTS_LEARNING_REQUEST_V1:';
 const RESOLUTION_PREFIX = 'AGENTS_LEARNING_RESOLUTION_V1:';
 const MARKER_PREFIX = 'agents-learning-';
@@ -350,34 +350,45 @@ function recordFiles(root, kind) {
     } catch (error) { if (CODES.has(error.code)) throw error; fail('persistence-failed'); }
     return result;
 }
+// Keep legacy projects on their existing authority until an explicit directory
+// rename. Never merge two locations or silently pick one policy over another.
+function configurationFiles(root) {
+    const current = Object.values(CONFIG_FILES).some(file => exists(root, file));
+    const legacy = Object.values(LEGACY_CONFIG_FILES).some(file => exists(root, file));
+    check(!(current && legacy), 'identity-mismatch');
+    return legacy ? LEGACY_CONFIG_FILES : CONFIG_FILES;
+}
 function loadIdentity(options) {
     const root = projectRoot(options);
-    check(exists(root, IDENTITY_FILE), 'not-initialized');
-    return validateIdentity(readJson(root, IDENTITY_FILE));
+    const files = configurationFiles(root);
+    check(exists(root, files.identity), 'not-initialized');
+    return validateIdentity(readJson(root, files.identity));
 }
 function loadPolicy(options) {
     const root = projectRoot(options);
     const identity = loadIdentity(options);
-    check(exists(root, POLICY_FILE), 'not-initialized');
-    return validatePolicy(readJson(root, POLICY_FILE), { identity });
+    const files = configurationFiles(root);
+    check(exists(root, files.policy), 'not-initialized');
+    return validatePolicy(readJson(root, files.policy), { identity });
 }
 function initializeProject(options) {
     const root = projectRoot(options);
+    const files = configurationFiles(root);
     const projectName = options.projectName === undefined ? 'ToolkitProject' : options.projectName;
     alias(projectName);
-    const identityExists = exists(root, IDENTITY_FILE);
-    check(identityExists || !exists(root, POLICY_FILE), 'identity-mismatch');
+    const identityExists = exists(root, files.identity);
+    check(identityExists || !exists(root, files.policy), 'identity-mismatch');
     let initialized = false;
     if (!identityExists) {
         const identity = validateIdentity({ schemaVersion: 1, projectId: newId(options), projectName, createdAt: now(options) });
-        try { publish(root, IDENTITY_FILE, identity); initialized = true; }
+        try { publish(root, files.identity, identity); initialized = true; }
         catch (error) { if (error.code !== 'corrupt-history') throw error; }
     }
     const identity = loadIdentity(options);
-    if (!exists(root, POLICY_FILE)) {
+    if (!exists(root, files.policy)) {
         const policy = { schemaVersion: 1, projectId: identity.projectId, projectName: identity.projectName, enabled: false,
             exportProfile: 'toolkit-summary-v1', operations: [], triggers: [], limits: { ...LIMITS } };
-        try { publish(root, POLICY_FILE, policy); } catch (error) { if (error.code !== 'corrupt-history') throw error; }
+        try { publish(root, files.policy, policy); } catch (error) { if (error.code !== 'corrupt-history') throw error; }
     }
     return { initialized, identity, policy: loadPolicy(options) };
 }

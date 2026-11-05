@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { createRequire } from 'node:module';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 const require = createRequire(import.meta.url);
 
@@ -107,5 +110,41 @@ describe('skill-conformance', () => {
             lineCount: 877,
         });
         expect(finding.message).toBe('tailwind-css-patterns: 877 lines (budget 500)');
+    });
+
+    it('evaluateSkill skips the advisory body budget for a vendored skill but keeps the hard checks', () => {
+        const { evaluateSkill } = require('../../../.agents/core/skill-conformance');
+        const findings = evaluateSkill({
+            dir: 'shared-skill',
+            name: 'other-name',
+            description: 'x'.repeat(1100),
+            lineCount: 900,
+            vendored: true,
+        });
+        // The body budget is unactionable here (trimming would mutate a shared upstream),
+        // but name/description decide whether the skill triggers in THIS project.
+        expect(findings.map((f) => f.code).sort()).toEqual(['DESC_TOO_LONG', 'NAME_MISMATCH']);
+    });
+
+    it('scanAll treats a symlinked skill dir as vendored and a real one as owned', () => {
+        const { scanAll } = require('../../../.agents/core/skill-conformance');
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'skill-conformance-'));
+        try {
+            const body = (name) => `---\nname: ${name}\ndescription: Use WHEN testing.\n---\n${'line\n'.repeat(600)}`;
+            const store = path.join(root, 'store');
+            const skills = path.join(root, 'skills');
+            fs.mkdirSync(path.join(store, 'linked-skill'), { recursive: true });
+            fs.mkdirSync(path.join(skills, 'owned-skill'), { recursive: true });
+            fs.writeFileSync(path.join(store, 'linked-skill', 'SKILL.md'), body('linked-skill'));
+            fs.writeFileSync(path.join(skills, 'owned-skill', 'SKILL.md'), body('owned-skill'));
+            fs.symlinkSync(path.join(store, 'linked-skill'), path.join(skills, 'linked-skill'), 'dir');
+
+            const findings = scanAll(skills);
+
+            // Both are 600 lines; only the one this project owns is reported over budget.
+            expect(findings.map((f) => `${f.skill}:${f.code}`)).toEqual(['owned-skill:OVER_BUDGET']);
+        } finally {
+            fs.rmSync(root, { recursive: true, force: true });
+        }
     });
 });

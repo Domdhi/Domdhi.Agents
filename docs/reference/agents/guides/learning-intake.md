@@ -15,7 +15,11 @@ printf '{}\n' > "$workDir/identity.json"
 node .codex/core/learning-intake.js init --input "$workDir/identity.json"
 ~~~
 
-Initialization derives project identity and creates .agents/learning-intake/identity.json and disabled .agents/learning-intake/policy.json, preserving existing authority. Input may supply only optional projectName, such as {"projectName":"My Project"}. Names permit letters, digits, spaces, dots, underscores and hyphens.
+Initialization derives project identity and creates .agents/intake/identity.json and disabled .agents/intake/policy.json, preserving existing authority. Input may supply only optional projectName, such as {"projectName":"My Project"}. Names permit letters, digits, spaces, dots, underscores and hyphens.
+
+Existing `.agents/learning-intake/` configuration continues to work without reinitializing ownership. When ready, rename the whole directory to `.agents/intake/` with the destination absent; preserve both files exactly. For tracked configuration use `git mv .agents/learning-intake .agents/intake`; for untracked configuration use an ordinary directory rename, then explicitly stage the two files. Do not keep two configuration locations: the helper refuses mixed authority with `identity-mismatch`. The rename changes neither policy scope nor request/event history.
+
+Run the selected lifecycle before its caller's final commit, then review and commit the exact identity/policy files and durable request/event records it produced. Disabled configuration belongs in the reporting project's Git history too. The helper does not stage or commit; `/end` and other authorized callers own retention. Ignore only transient locks and scratch. A local commit is separate from delivery to GitHub.
 
 Generate a bounded offline example with actual installed toolkit provenance:
 
@@ -82,7 +86,7 @@ fs.writeFileSync(process.argv[2], JSON.stringify(policy, null, 2) + '\n', { flag
 NODE
 ~~~
 
-This writes only an ignored candidate. Inspect its complete scope before copying the approved candidate to .agents/learning-intake/policy.json. Owner authorization covers receiver, trust IDs, evidence export and standing operations; calculating a hash is not authorization. Do not edit approval merely to make a refusal pass.
+This writes only an ignored candidate. Inspect its complete scope before copying the approved candidate to .agents/intake/policy.json. Owner authorization covers receiver, trust IDs, evidence export and standing operations; calculating a hash is not authorization. Do not edit approval merely to make a refusal pass.
 
 Policy scope binds project identity/name, full destination, export profile, operations, triggers and every limit. LEARNING_INTAKE_LIMITS in .agents/core/constants.js supplies ceilings: policy can narrow each positive integer, never exceed it. Changed scope requires fresh reviewed approval. Setting enabled:false immediately disables delivery while preserving unchanged bindings. Full revocation can also remove destination/approval and empty operations/triggers.
 
@@ -148,7 +152,7 @@ Retry-create requires non-null intent/head, current recovery authority for the o
 
 ## Storage and evidence boundaries
 
-Project-owned configuration lives in .agents/learning-intake/identity.json and policy.json; it is preserved by install/update and excluded from toolkit distribution. Immutable request/event JSON is project-owned output. Durable records live under the active reporting checkout's docs/.output/evolution/learning-requests/ and learning-events/, bucketed by month. Owned transient locks live under the shared-state root's ignored docs/.output/.state/learning-intake/. Status reports safe source references. Intake does not stage/commit/push, promote memory, provision a receiver, publish or install; caller-authorized Git retention follows the existing workflow.
+Project-owned configuration lives in .agents/intake/identity.json and policy.json; it is preserved by install/update and excluded from toolkit distribution. Immutable request/event JSON is project-owned output. Durable records live under the active reporting checkout's docs/.output/evolution/learning-requests/ and learning-events/, bucketed by month. Owned transient locks live under the shared-state root's ignored docs/.output/.state/learning-intake/. Status reports safe source references. Intake does not stage/commit/push, promote memory, provision a receiver, publish or install; caller-authorized Git retention follows the existing workflow.
 
 Actual install/update/repeat/restore fixtures preserve authority/history, root guidance, role personalization, marked skills, settings and application-only gates. Contaminated source identity/policy/queue records are excluded from fresh installs and published selection. Native helpers include canonical dependencies; workshop runner/tests are not installed into adopters.
 

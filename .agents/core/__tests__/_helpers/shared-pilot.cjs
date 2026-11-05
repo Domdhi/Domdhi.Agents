@@ -15,7 +15,7 @@ function copyToolkit(toolkitRoot, dest) {
     for (const dir of ['.claude', '.agents']) {
         for (const file of walkDir(path.join(toolkitRoot, dir), ['__tests__', '_helpers', 'node_modules', '.git'])) {
             const relative = path.relative(toolkitRoot, file).replace(/\\/g, '/');
-            if (relative === '.agents/render-state.json' || relative.startsWith('.agents/learning-intake/')) continue;
+            if (relative === '.agents/render-state.json' || relative.startsWith('.agents/intake/') || relative.startsWith('.agents/learning-intake/')) continue;
             copy(file, path.join(dest, path.relative(toolkitRoot, file)));
         }
     }

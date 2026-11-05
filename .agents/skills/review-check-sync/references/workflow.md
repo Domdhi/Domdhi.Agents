@@ -71,6 +71,21 @@ Task prompt:
    - Architecture references a directory or path that doesn't exist
    - A package file has significant dependencies not mentioned in architecture
    - Architecture describes patterns/structure that doesn't match reality
+4b. **Re-derive every STATUS or COUNT claim from its primary source before rating it SYNCED.**
+   For any line of the form *"genuinely open: X"*, *"N of M shipped"*, *"the last remaining …"*,
+   *"X is unbuilt / not wired / never run"*, or *"N FRs / N stories / N tables"* — open the source it
+   should be checked against (the module `brief.md`, the epic TODO's Story Index, the migration
+   ledger, the schema file) and **recount or re-read directly**. Never rate SYNCED on the strength of:
+   the doc's own internal consistency; a keyword grep against it; a commit message (which states the
+   world *at that commit* — run `git log --after=<that commit's date>` before repeating any status it
+   asserts); or a prior pass's verification of the same claim.
+   > This check exists because it has failed in practice, twice. A sweep miscounted a requirement
+   > total by treating a summary as corroboration. Later, a drift agent read a project instruction
+   > file, certified it accurate, and missed a "Genuinely open: Wave 6 … and nothing else" line that
+   > had outlived that wave by five days. It was caught only because the orchestrator independently
+   > re-checked.
+   > **Treat a clean certification as a claim needing verification, not as a result.** Report what you
+   > re-derived and from which file, so a reviewer can see which claims you actually recounted.
 5. Return structured report: item, what doc says, what reality shows, status (synced/drifted/missing), and for each drifted/missing item a delta marker:
    - ADDED — item exists in reality but is absent from the doc
    - MODIFIED — item exists in both but the doc's description no longer matches reality

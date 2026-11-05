@@ -194,8 +194,11 @@ function scanFile(filePath) {
 function isBinaryStagedFile(file, root) {
     try {
         const { execFileSync } = require('child_process');
+        // `-z` for the same reason the enumeration below uses it: without it git
+        // C-quotes non-ASCII paths under the default `core.quotepath`, and the
+        // `-- <pathspec>` we pass would then not match the real path.
         const output = execFileSync(
-            'git', ['diff', '--cached', '--numstat', '--', file],
+            'git', ['diff', '--cached', '--numstat', '-z', '--', file],
             { cwd: root, encoding: 'utf8', windowsHide: true }
         ).trim();
         return /^-\t-\t/.test(output);
@@ -316,12 +319,20 @@ async function runGitPrecommit() {
     // the old ACM-only filter silently excluded it: `--name-only` still prints
     // just the new path, so `git show :<newpath>` below reads the staged
     // (modified) content correctly once the file survives this filter.
+    //
+    // `-z` (NUL-separated, RAW paths) is load-bearing, not a tidy-up. Without it
+    // git honours `core.quotepath` and prints a non-ASCII path C-QUOTED — a staged
+    // `café.md` comes out as the literal 15-character string `"caf\303\251.md"`.
+    // `git show :"caf\303\251.md"` then fails, `isBinaryStagedFile`'s numstat
+    // pathspec matches nothing (→ "not binary"), and the fail-closed path blocked
+    // EVERY commit staging a non-ASCII filename while blaming binary-ness. `-z`
+    // also removes the (theoretical) newline-in-filename split hazard.
     let stagedFiles;
     try {
         stagedFiles = execFileSync(
-            'git', ['diff', '--cached', '--name-only', '--diff-filter=ACMRT'],
+            'git', ['diff', '--cached', '--name-only', '-z', '--diff-filter=ACMRT'],
             { cwd: getProjectRoot(), encoding: 'utf8', windowsHide: true }
-        ).trim().split('\n').filter(Boolean);
+        ).split('\0').filter(Boolean);
     } catch {
         console.error('Failed to get staged files');
         process.exit(1);
