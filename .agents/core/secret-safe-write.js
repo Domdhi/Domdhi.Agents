@@ -21,7 +21,7 @@
  * memory-stability.js.
  */
 
-const { scanContent, redactSecretsInText } = require('../hooks/secret-patterns.cjs');
+const { scanContentWithFallback, redactSecretsInText } = require('../hooks/secret-patterns.cjs');
 
 /**
  * Scan `content` for secrets; if any are found, return a redacted copy and emit
@@ -38,7 +38,8 @@ function redactSecretsForWrite(content, filePath, logTag = 'secret-safe-write') 
     // says nothing about the bytes being written — acting on it made every write to
     // such a path print "redacted N secret finding(s)" over provably clean content,
     // and `redactSecretsInText` (which is content-only) then changed nothing anyway.
-    const findings = (scanContent(content, filePath) || []).filter(f => f.type === 'SECRET_PATTERN');
+    // Engine first; if it cannot run, the named-provider list (this guard must never throw).
+    const findings = (scanContentWithFallback(content, filePath, { honorMarkers: false }) || []).filter(f => f.type === 'SECRET_PATTERN');
     if (findings.length === 0) return content;
     if (logTag) {
         const names = findings.map(f => f.name || f.type).join(', ');
@@ -47,7 +48,7 @@ function redactSecretsForWrite(content, filePath, logTag = 'secret-safe-write') 
             `LLM output before writing ${filePath}: ${names}\n`
         );
     }
-    // Same path as the scan above, so scan and redact apply the same source-file exemptions.
+    // Same engine run as the scan above (its result is reused), so scan and redact agree.
     return redactSecretsInText(content, filePath);
 }
 

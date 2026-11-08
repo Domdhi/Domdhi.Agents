@@ -40,6 +40,8 @@ node .claude/core/feedback-digest.js          # markdown section (for the report
 node .claude/core/feedback-digest.js --json   # raw object (for the collectible sidecar + frontmatter)
 ```
 
+When the request is about one run, feature or period, pass the same window to both: `--since YYYY-MM-DD` and optionally `--until YYYY-MM-DD` (inclusive local days, or ISO timestamps). Take the dates from the run's plan or the user's words. The windowed digest names its window in the header and labels system files, the memory store and the last gate summary as current snapshots; say in the report which numbers are windowed.
+
 The digest parses captured telemetry (command-usage, hook-events, skill-usage, memory-injection), the gate summary, the memory store, and `.claude/` system-file counts. Missing inputs degrade to zeros — never block on them.
 
 ### 2. Write the collectible sidecar
@@ -50,15 +52,15 @@ Write the raw JSON to `docs/.output/findings/reviews/feedback-{YYMMDD-HHMM}.json
 
 There is no intake quota: zero selected lessons is valid. Keep project-specific knowledge, curated memory, memory inbox entries, daily logs and private conversations local. Preserve the existing main-owner memory promotion process; intake does not curate or bulk-export it. `--quiet` MUST NOT manufacture qualitative lessons or select them from the digest.
 
-For an explicitly selected transferable lesson, FIRST read `.agents/skills/learning-intake/references/workflow.md` and follow its bounded local initialization/capture contract through the active native helper. Prepare only that lesson's schema-valid checkout-relative JSON input with observed provenance and permitted evidence; never fabricate IDs, reproduction or verification. Initialize missing identity/policy with disabled defaults before capture and preserve existing policy. Set `exportApproved` only within current owner-authorized evidence scope. Successful local capture means retained pending state, not delivery, and remains usable while disabled.
+For an explicitly selected transferable lesson, FIRST read `.agents/skills/intake/references/workflow.md` and follow its bounded local initialization/capture contract through the active native helper. Prepare only that lesson's schema-valid checkout-relative JSON input with observed provenance and permitted evidence; never fabricate IDs, reproduction or verification. Initialize missing identity/policy with disabled defaults before capture and preserve existing policy. Set `exportApproved` only within current owner-authorized evidence scope. Successful local capture means retained pending state, not delivery, and remains usable while disabled.
 
 Then run ONE finite eligible batch with the fixed `review-feedback` trigger. In Codex, change the helper prefix to `.codex/core/`; Claude uses `.claude/core/`:
 
 ```bash
-node .claude/core/learning-intake.js lifecycle --trigger review-feedback
+node .claude/core/intake.js lifecycle --trigger review-feedback
 ```
 
-The helper initializes missing policy disabled and enforces current standing authority for the exact project, destination, operation, trigger, export profile and limits. Valid standing approval avoids redundant per-occurrence confirmation. Missing, invalid, revoked or changed scope blocks external work; NEVER edit policy to enable delivery or invent a receiver. Respect `LEARNING_INTAKE_LIMITS`, retained budgets and next-attempt state. No retry loop, automatic recovery or recreate is allowed; uncertain writes remain uncertain and can only be reconciled within current authority.
+The helper initializes missing policy disabled and enforces current standing authority for the exact project, destination, operation, trigger, export profile and limits. Valid standing approval avoids redundant per-occurrence confirmation. Missing, invalid, revoked or changed scope blocks external work; NEVER edit policy to enable delivery or invent a receiver. Respect `INTAKE_LIMITS`, retained budgets and next-attempt state. No retry loop, automatic recovery or recreate is allowed; uncertain writes remain uncertain and can only be reconciled within current authority.
 
 Inspect the actual exit/result. Surface invalid, denied, uncertain, dependency or persistence nonzero results without blocking report persistence or its existing commit; never convert a failed batch into success. Add only a bounded result to the Markdown report body: actual captured occurrence IDs when available, pending/project-specific/blocked/uncertain/acknowledged state and attempted/succeeded/failed counts when returned. Initialization, capture, status and disabled local-only success never prove delivery; acknowledgement requires a durably validated GitHub issue receipt. Preserve last known valid resolution, label failed refresh stale/unknown, and separate disposition, implementation, actual verification, maintainer-reported publication and local installation. Accepted or closed does not prove a released fix.
 
@@ -99,7 +101,7 @@ memories: {n}
 - **Detection / inference quality** — anything inferred that you were unsure about (esp. on /onboard runs).
 - **One change to the template** that would most improve the next run.
 
-## Learning Intake
+## Intake
 
 {Bounded inspected intake result from step 2a; include in quiet runs without adding qualitative self-review.}
 ```

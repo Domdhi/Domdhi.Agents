@@ -60,6 +60,13 @@ Read in parallel:
 - `docs/architecture/overview.md` — architecture boundaries, schemas, ADRs
 - Module docs: `docs/modules/{module}/brief.md` (if module-scoped)
 
+### 3. Sourcing and licensing gate
+
+If the work will incorporate, port, vendor or closely reimplement third-party code or data (a library's source, an open-source engine, a dataset, a vendor SDK copied in), find the recorded decision before planning any story that depends on it: build vs vendor or port, and the license and its obligations (notices, copyleft reach, attribution). It must already be in an ADR (`docs/architecture/`) or the brief.
+- **Recorded:** cite it in Key Findings and plan only the chosen approach.
+- **Missing:** STOP planning those stories. Add the decision to `## Owner Decisions` with the options and a recommendation, and plan only the stories it does not block, marking the blocked ones `Blocked by: {decision}`. Never plan both ways.
+- Stories that only call a dependency through its published package and API need no decision.
+
 **Runtime and verification.** In Codex, run each `.claude/core/` command in this workflow as `.codex/core/` with the same arguments, per `.agents/adapters/codex/execution.md`. This workflow runs no build gate; its evidence is the written TODO passing the Phase 3b self-review and mechanical checks, accepted review findings applied in Phase 5, the Phase 7 handoff and the Phase 8 commit hash. Every story's verification names the application's own build and test commands in an adopter, never the Domdhi.Agents toolkit suite, also after agent-file edits; in Domdhi.Agents itself it names the toolkit's Node build and Vitest suite (`node .claude/core/gate.js test`). Discovery alone (an installed skill, a listed command or a loaded file) never proves this workflow ran; report completion only from that evidence.
 
 ---
@@ -235,6 +242,8 @@ Main Agent writes the TODO directly. Do NOT delegate assembly to a subagent — 
     * [ ] {Another specific criterion}
   * **Estimate:** {XS|S|M|L}
   * **Complexity:** {1–10}
+  * **Release:** {core | later}
+  * **Risk tier:** {deep | standard} — {the trigger that set it, e.g. "auth path" or "wiring only"}
   * **Dependencies:** {None | Story X.X}
   * **Files:**
     * `{exact/path/to/file}` — {what changes}
@@ -246,13 +255,34 @@ Main Agent writes the TODO directly. Do NOT delegate assembly to a subagent — 
 
 ## Story Index
 
-| Story | Title | Size | Complexity | Wave | Status | Dependencies |
-|-------|-------|------|-----------|------|--------|--------------|
-| {PREFIX}-N.N | {title} | {XS/S/M/L} | {1–10} | {wave #} | [ ] | {deps} |
+| Story | Title | Size | Complexity | Release | Tier | Wave | Status | Dependencies |
+|-------|-------|------|-----------|---------|------|------|--------|--------------|
+| {PREFIX}-N.N | {title} | {XS/S/M/L} | {1–10} | {core/later} | {deep/standard} | {wave #} | [ ] | {deps} |
 
-**Total: N stories. Estimated: ~N hours.**
+**Total: N stories (core {N}, later {N}). Estimated: ~N hours (core ~N).**
 
 **`⚠ PROD-VERIFY-REQUIRED` marker:** if a story ships a behavior change whose safety depends on a fact only provable in staging/prod (a data-coverage query, a human sign-off, a volume check) — tag its Status cell `⚠ PROD-VERIFY-REQUIRED` in addition to `[ ]`/`[x]`, regardless of which wave it's in. Don't rely on "gated on prod verification" language attached only to a LATER wave (e.g. a deferred final-wave retirement step) to imply earlier waves carry no such gate — an earlier-wave story can independently need the same checkpoint (e.g. a Wave 2 story ships a financial- or data-integrity-affecting behavior change while the TODO's gating language only calls out a later wave as "gated on prod verification" — the earlier wave's own risk goes unflagged). `/run-todo` should not mark a `⚠ PROD-VERIFY-REQUIRED` story's wave "complete" without surfacing that the checkpoint is still outstanding.
+
+---
+
+## Owner Decisions
+
+Every decision the owner must make that this plan can predict, so `/run-todo` asks them in one round before Wave 1 instead of stopping one wave at a time. Write "none" when there are none.
+
+| # | Decision | Options | Recommendation | Blocks |
+|---|----------|---------|----------------|--------|
+| 1 | {e.g. API scope names and who may grant them} | {A; B} | {A — why} | {story IDs} |
+
+Check each category and list what applies: scopes and permissions; data exposure (what is shown, shared or exported, and to whom); release order and flag defaults; sourcing, licensing and notices; migration and deploy order (who applies migrations, and when); the evidence standard for performance or acceptance claims (real data or stand-in numbers); retention and deletion.
+
+---
+
+## Release Slices
+
+- **Core slice:** {story IDs} — {the smallest release a user or operator can use on its own}
+- **Ships on its own because:** {flags, routes, migrations, runbook and rollback that make the core slice releasable without any later story}
+- **Later slice:** {story IDs, or "none — single slice: {one-sentence reason}"}
+- **Resume trigger for later:** {the evidence or owner decision that justifies building it, e.g. "core in use for two weeks" or "owner asks for saved plans"}
 
 ---
 
@@ -313,6 +343,9 @@ Main Agent writes the TODO directly. Do NOT delegate assembly to a subagent — 
 14. **Every story names production, test and review ownership** — read the repository's actual test-authorship rule before assigning it; do not import another repository's rule. In this toolkit, `/run-todo` Step 2b has the Main Agent write AC tests before dev dispatch (with its documented one-round and cross-story test-ownership exceptions); dev agents own production edits; a fresh independent reviewer owns review. A deviation from the actual rule is stated in the story, not hidden.
 15. **Accepted evidence is portable** — accepted facts, citations, scope decisions and review evidence that execution relies on go into the TODO itself (Research notes, Key Findings) or another tracked doc. Research files under `docs/.output/.state/` are ignored scratch: useful for reuse, never the sole execution authority a cold clone would lack.
 16. **Project constraints land in the affected stories** — when Phase 1 verified project references, name the applicable reference paths and the verified project constraints in each affected story's Research notes; omit them for toolkit or unrelated stories.
+17. **Every story has a Release tag** — `core` or `later` (see Release Slices and Risk Tiers below). The core slice ships on its own; no core story depends on a later story; every core wave runs before the first later wave.
+18. **Every story has a Risk tier** — `deep` or `standard`, with the trigger that set it. `/run-todo` and `/do` size tests and review from it.
+19. **Owner Decisions are listed up front** — every predictable owner decision, with options, a recommendation and the stories it blocks. A story that depends on an open decision says `Blocked by: {decision}`.
 
 ---
 
@@ -330,6 +363,28 @@ Score from the same signals `/do` uses to size a task — files touched, new LOC
 | 8–10 | Complex | multi-component, cross-cutting, multiple valid approaches |
 
 Complexity is **distinct from Estimate**: Estimate is wall-clock effort, Complexity is routing/ambiguity. A 2-hour but purely mechanical refactor is high-Estimate, low-Complexity (≤5 → stays Main Agent direct). This is the single source of truth for the score; `/create:project-epics-todo` references this rubric rather than restating it.
+
+---
+
+### Release Slices and Risk Tiers (Main Agent — decide before the Wave Plan)
+
+**Release slice.** Tag each story `core` or `later`. The core slice is the smallest set a user or operator can use once it ships: the engine and the screens or commands that expose it, the flags, routes, migrations and runbook it needs, and nothing that waits on demand. Owner storage, saved state, measurement, admin tooling and polish are `later` unless the core cannot be used without them. Rules:
+- The core slice ships on its own. No core story depends on a later story.
+- Every core wave runs before the first later wave; no wave mixes the two.
+- A release, runbook or acceptance story that covers several slices is split: its core part is `core`, and each later part travels with its slice.
+- A TODO small enough to ship in one piece may be all core. Say so in Release Slices ("none — single slice: {reason}") instead of tagging by habit.
+- `/run-todo` stops at a ship gate when the core slice is done and builds `later` stories only after the owner's explicit go.
+
+**Risk tier.** Assign each story a tier from its file paths and AC keywords. The tier sets test and review depth in `/run-todo` and `/do`; it does not change the AC.
+
+| Tier | Assign when the story touches | Assurance in `/run-todo` and `/do` |
+|------|-------------------------------|-------------------------------------|
+| `deep` | authentication or authorization; row-level security or permissions; database migrations, and schemas that guard storage or auth; code that computes money or calculation results (engines, rounding, classifiers); untrusted or external input that reaches storage, auth or an external call; credentials or secrets; security controls (guards, scanners, allowlists); deletion of user data; the shared request pipeline (edge or worker entry, middleware, cache headers, layout or route guards); release flags and feature gates; deploy, rollback and runbook procedure; any change imported by most routes or commands of the app (wide blast radius) | Tests first from AC plus edge and failure paths; independent review with closure passes; `security-auditor` review for auth, permissions, credentials, untrusted input, security controls, the request pipeline and release gating; mutation or oracle checks where the logic is arithmetic or a classifier |
+| `standard` | registration and wiring of a single feature; docs and doc sync; evidence or acceptance-packet compilation; UI copy and layout; model descriptors and interface docs; configuration that is not a release gate; validated input into pure computation; displaying or formatting an engine's output; request-body schemas that guard neither storage nor auth; glue code over already-reviewed contracts; test-only stories for low-risk code | AC tests for changed behavior (a live check for docs and wiring); one review pass when review is due; every finding still fixed in one batch, with a closure re-review only when a MAJOR or CRITICAL was found; no mutation runs |
+
+The risky stories are often the ones that look like wiring: a guard added to every layout, a flag check before credentials load, a cache stamp in the worker entry and the rollback target in a runbook are all `deep`. When the project has a risk map (`code-review` skill, `references/playbook.md`), a HIGH-risk path is `deep`. When in doubt, choose `deep` and name the trigger.
+
+**Review layers.** Each wave gets at most one review pass when review is due (`/run-todo` Step 7), and each epic gets one closing epic pass. There is no mid-epic review layer, no separate retro pass and no re-review of fixes ("One review pass, then done" in the `code-review` skill). An executing agent may raise a story's tier when it finds a trigger and records why; it lowers a tier only with the owner's agreement.
 
 ---
 
@@ -354,6 +409,8 @@ Evaluate in this order and pick the first that fits:
   This replaces the old "file-overlap is the only partitioning rule" default. `/run-todo`'s per-wave TDD rhythm (Step 2b) still applies *within* each role-wave, but redundancy is minimized because Wave 1 is explicitly and solely about tests.
 
 **Shape C — File-overlap partitioned (fallback).** Use when neither A nor B fits — deeply interdependent stories spanning many files where role-splitting creates artificial couplings, or where story-level AC is so heterogeneous that bundling under roles would lose reviewability. Historical default; remains available.
+
+**Release order applies to every shape.** Order waves so every core wave finishes before the first later wave. Shape A bundles and Shape B role-waves are formed within a slice, never across it.
 
 **Always declare the chosen shape in the Wave Plan heading** so `/run-todo` and human reviewers can see the intent:
 - `## Wave Plan` + `**Shape:** single-hotspot collapsed — ...`
@@ -387,6 +444,12 @@ Before handing off to external review, Main Agent scans its own output for plan 
 - [ ] Any story is missing its **Agent budget** line
 - [ ] Wave Plan is missing the **Critical Path & Parallel Workstreams** block
 - [ ] Any story is missing its **Ownership** line, or its test owner contradicts the repository's actual test-authorship rule without a stated deviation
+- [ ] Any story is missing its **Release** tag or **Risk tier**, or a tier names no trigger
+- [ ] A story whose files or AC match a `deep` trigger (Release Slices and Risk Tiers table: auth, permissions, migrations, money/calculation, untrusted input reaching storage/auth/external calls, credentials, security controls, data deletion, the shared request pipeline, release flags, deploy/rollback/runbook, wide blast radius) is tagged `standard`
+- [ ] The **Release Slices** section is missing, or the core slice has no "ships on its own" evidence
+- [ ] The **Owner Decisions** section is missing, a predictable decision from its category list is not in it, or a decision has no recommendation or no blocked stories
+- [ ] A story incorporates, ports or vendors third-party code or data without a recorded build-vs-vendor and license decision (ADR or brief), and is not marked `Blocked by` the open decision
+- [ ] A story keeps a superseded artifact (an abandoned approach's docs, manifests or code) instead of deleting it
 
 **This is a 30-second scan that catches 3-5 issues every time.** Do not skip it.
 
@@ -398,6 +461,7 @@ Before handing off to external review, Main Agent scans its own output for plan 
 - [ ] Path collisions — no shared-checkout file has two active writers; shared files have handoffs/serialized edits or a separate-worktree integration plan
 - [ ] Forward outputs — a story that reads or edits a file another story creates sits in a later wave than its creator
 - [ ] Critical path — the stated chain is the longest dependency chain, its hours are summed story effort, and nothing reports them as elapsed time
+- [ ] Release slices — `node .claude/core/release-slice.js "{TODO_PATH}" --strict` exits 0: every Story Index row has a `core`/`later` Release and a `deep`/`standard` Tier, a core slice exists, no core story depends on a later story, and no later wave starts before the last core wave
 
 These checks prove the plan's structure only. They never prove that a story's AC is correct, satisfiable or met; that semantic proof is the spec-bug checks below and execution-time evidence.
 
@@ -416,7 +480,7 @@ These run inline as part of the same scan — no subagent round-trip. Source: co
 
 Skip for Small (1-4). Use judgment for Medium (5-7).
 
-Dispatch a **fresh, independent** reviewer: give it the persisted scope (the written TODO path, the research files, the source paths the stories name and verified project constraints and architecture reference paths), not this conversation's context, so it judges the plan as written. Keep its `agentId`: after Phase 5 applies accepted findings, resume the **same reviewer** to confirm each finding is closed, rather than spawning a new one.
+Dispatch a **fresh, independent** reviewer: give it the persisted scope (the written TODO path, the research files, the source paths the stories name and verified project constraints and architecture reference paths), not this conversation's context, so it judges the plan as written. It runs once; there is no closure pass.
 
 ```
 Agent(
@@ -436,6 +500,14 @@ Agent(
   5. Dependencies are correct — no story depends on something in a later wave
   6. ACs don't contradict each other across stories
 
+  ## Owner decisions and sourcing
+  9. List any owner decision a story will hit that is missing from Owner Decisions
+  10. Flag any story that brings in third-party code or data without a recorded build-vs-vendor and license decision
+
+  ## Release and risk
+  7. The core slice can ship and be used on its own; flag later-tagged work the core needs, and core-tagged work it does not
+  8. Every story that matches a `deep` trigger in the TODO's tier rubric is tier `deep`, including wiring-shaped stories on the shared request pipeline, release flags or rollback procedure; docs, evidence compilation and UI copy are `standard`
+
   Write findings to: docs/.output/.state/work/{YYYY-MM-DD}/{slug}/{HHMM}-review.md
   DO NOT edit the TODO file.
   """,
@@ -447,7 +519,7 @@ Agent(
 
 ## Phase 5: Synthesis (Main Agent)
 
-Read the review findings. Decide what to accept. Apply accepted findings to the TODO file directly, then resume the same Phase 4 reviewer to confirm closure of each accepted finding. Record the accepted findings, their resolution and any rejected finding with its reason in the TODO's Key Findings, because the review file under `docs/.output/.state/` is ignored scratch.
+Read the review findings. Decide what to accept. Apply accepted findings to the TODO file directly and rerun the Phase 3b checks; do not send them back to a reviewer. Record the accepted findings, their resolution and any rejected finding with its reason in the TODO's Key Findings, because the review file under `docs/.output/.state/` is ignored scratch.
 
 Main Agent is the single author of the TODO — review agents advise, Main Agent decides.
 
@@ -459,13 +531,16 @@ Main Agent is the single author of the TODO — review agents advise, Main Agent
 ## /todo Complete
 
 **TODO:** {path} ({N} stories, ~{N} estimated hours)
+**Release slices:** core {N} stories (~{N} h) → ship gate → later {N} stories (~{N} h)
+**Risk tiers:** deep {N}, standard {N}
+**Owner decisions:** {N} open, asked in one round by `/run-todo` before Wave 1
 **Research:** `docs/.output/.state/work/{YYYY-MM-DD}/{slug}/` ({N} files)
 
 ### Story Breakdown
-| Wave | Stories | Sizes | Est. Hours |
-|------|---------|-------|------------|
-| 1 | {IDs} | {sizes} | {hours} |
-| 2 | {IDs} | {sizes} | {hours} |
+| Wave | Slice | Stories | Sizes | Est. Hours |
+|------|-------|---------|-------|------------|
+| 1 | core | {IDs} | {sizes} | {hours} |
+| 2 | later | {IDs} | {sizes} | {hours} |
 
 ### Ready for execution:
   /run-todo {path}
@@ -522,7 +597,9 @@ Stage exactly these tracked files. The research and review files under `docs/.ou
 9. **Per-agent file budgets guide initial story slicing** — plan for ≤5 files modified / ≤2 files created per dev agent. File discovery during execution can expand the assignment under `.agents/startup.md`; update the budget and coordination plan, and split when the actual work warrants it.
 10. **Reuse warm session agents when they already hold the context** — resume via SendMessage over cold-spawn; still persist findings to the research file.
 11. **Ownership is explicit and grounded** — every story names production, test and review ownership per the repository's actual test-authorship rule (Template Rule 14).
-12. **Review is fresh, closure is warm** — a fresh independent reviewer reads the persisted scope; the same reviewer confirms finding closure (Phase 4/5).
+12. **One fresh review, no closure pass** — a fresh independent reviewer reads the persisted scope once; Main Agent applies the accepted findings and re-runs the Phase 3b checks (Phase 4/5).
 13. **Accepted evidence lives in tracked docs** — ignored scratch is never the sole execution authority (Template Rule 15).
 14. **Mechanical checks are structural** — they never stand in for semantic AC proof, and effort hours are never reported as elapsed time (Phase 3b).
 15. **Commits are exact and local** — stage exact tracked files, commit through the native commit helper, and take no outward action without authorization (Phase 8).
+16. **Slice by release, size assurance by risk** — every story carries a `core`/`later` Release and a `deep`/`standard` Risk tier; the core slice ships on its own and runs first (Release Slices and Risk Tiers).
+17. **Decide sourcing first, ask the owner once** — no story vendors or ports third-party code or data before its build-vs-vendor and license decision is recorded; every predictable owner decision is listed in Owner Decisions for one up-front round (Phase 1 Step 3).

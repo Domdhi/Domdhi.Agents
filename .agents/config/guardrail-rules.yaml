@@ -254,6 +254,18 @@ nudge_patterns:
   # this nudge is reached; this rule covers the general case.
   - /find\s+.+-delete\b/
 
+  # --- Processes: pattern-based kill ---
+  # `pkill -f` / `pkill --full` match the WHOLE command line of every process, so
+  # a pattern like `vitest` or `node` also kills the agent's own shell, sibling
+  # agents and a running gate (field case: a wave agent's `pkill -f` killed its
+  # own shell and orphaned a gate). `killall` kills every process with that name.
+  # Stop a process by PID or port instead (`kill <pid>`,
+  # `kill $(lsof -t -i:<port>)`). Plain `pkill <name>` (exact process name) is
+  # left alone. Anchored to command position (start, after ; & | ( ` { or $( )
+  # with optional wrappers (sudo, env, nohup, timeout N, xargs, VAR=val ...) and
+  # an optional path prefix, so quoted text in a commit message or a grep for
+  # the word does not fire. Escalate with `# guardrail:confirm`. (2026-11-07)
+  - /(?:^|[;&|(`{]|\$\()\s*(?:(?:sudo|doas|env|nohup|command|exec|time|nice|xargs|setsid|busybox)(?:\s+-\S+)*\s+|timeout\s+(?:-\S+\s+)*\S+\s+|[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*(?:\S*\/)?(?:pkill\b[^;&|\n]*\s(?:-[a-z0-9]*f[a-z0-9]*|--full)(?=\s|$)|killall\b)/
 
 # ============================================================
 # CONFIRM PATTERNS (user prompted yes/no before proceeding)
@@ -281,6 +293,14 @@ confirm_patterns:
   # pass — no confirm at all — since `git\s+push\s+` required the two tokens
   # contiguous). (M — global-option evasion, sibling of the force-push fix)
   - /git\b(?:\s+\S+)*?\s+push\b[^;&|\n]*--force-with-lease/ # safer force push, but still rewrites remote (reachable now the block rule excludes it — hooks-m1)
+
+  # --- Secret-scan bypass: the audited bypass is the USER's decision, never the agent's ---
+  # CLAUDE_COMMIT_NO_SCAN=1 (and commit.js --no-scan, which sets it) makes the managed git hooks and commit.js
+  # skip the secret scan. It is recorded as a guardrail event, but nobody approved it: ask the user first.
+  # Matched on the NAME, not on `=1`: the value can be written $'1', $(echo 1), `echo 1`, "1" or built by
+  # printf -v / export / declare / env, and a mention that only reads it costs the user one yes/no.
+  - /CLAUDE_COMMIT_NO/
+  - /commit\.js\b[^;&|\n]*\s["']*--["']*no["']*-["']*scan/
 
   # --- Package management: publish (irreversible — public registry) ---
   - npm publish                        # publishing to npm registry (irreversible)
@@ -321,10 +341,9 @@ zeroAccessPaths:
   - .env.production                    # production secrets
   - .git                               # deleting .git destroys all VCS history — catastrophic + irreversible
   - .git/                              # ...and its internals; non-escalatable so `rm -rf .git # guardrail:confirm` can't downgrade to a user-confirm (sweep C-followup: .git was demonstrated as a chained bypass but was never a protected tier). Segment-anchored matching keeps .gitignore/.github/.gitattributes clear.
-# .githooks/ removed 2026-05-09 — secret-scanner runs as a Claude Code
-# PreToolUse hook now (see .claude/hooks/secret-scanner.cjs); no git hook
-# is scaffolded by adopters, so a tier-1 rule here would be defending an
-# empty boundary.
+# .githooks/ removed 2026-05-09 — no tracked git hook directory is scaffolded
+# by adopters, so a tier-1 rule here would be defending an empty boundary. The
+# secret scan's git hooks (git-hooks.js) are untracked files in the git dir.
 
 # Tier 2 — read-only: reads allowed, writes/deletes blocked.
 # Pre-populated (A6 from ECC — `everything-claude-code` §config-protection)
@@ -347,6 +366,8 @@ readOnlyPaths:
   - .prettierrc*                       # Prettier config (A6 — ECC)
   - .editorconfig                      # EditorConfig (A6 — ECC)
   - .claude/guardrail-rules.project.yaml  # project-owned override: a person edits it (an agent that could write it could lift its own guardrails)
+  - .betterleaksignore                 # secret-scan suppressions: the USER decides which findings are reviewed false positives, never the agent
+  - .gitleaksignore                    # same list under its older name
 # Removed 2026-04-25:
 #   .claude/settings.json         — /update-config skill must be able to edit this
 #   docs/architecture/overview.md — /create:project-architecture + /review:update-docs write here

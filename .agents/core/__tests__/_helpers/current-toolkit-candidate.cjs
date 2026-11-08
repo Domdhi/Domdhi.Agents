@@ -29,7 +29,7 @@ function withFixtureGitEnvironment(hooks, action) {
 }
 
 const INPUTS = ['.agents', '.claude', '.codex', '.gitattributes', 'tools',
-  'docs/reference/agents/learning-intake.md', 'package.json', 'package-lock.json'];
+  'docs/reference/agents/intake.md', 'package.json', 'package-lock.json'];
 const FIXTURE_FILES = new Set([
   '.agents/core/__tests__/_helpers/shared-pilot.cjs',
   // prepareReleasePair places this exact source-only canary in its fixture.

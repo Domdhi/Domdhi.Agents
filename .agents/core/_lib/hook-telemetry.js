@@ -81,6 +81,13 @@ function emitHookEvent(token, outcome) {
     } catch { /* swallow — observability is not load-bearing */ }
 }
 
+/** Rule names for a telemetry event: strings only, at most 20, each cut to 64 characters; null when none. */
+function boundedPatternNames(patterns) {
+    if (!Array.isArray(patterns)) return null;
+    const names = patterns.filter(p => typeof p === 'string' && p).slice(0, 20).map(p => p.slice(0, 64));
+    return names.length ? names : null;
+}
+
 /**
  * Record a guardrail HIT (a block / nudge / confirm — never an allow). This is
  * the counter the guardrail never had: it captures WHICH rule fired and WHAT it
@@ -106,7 +113,12 @@ function emitHookEvent(token, outcome) {
  * above (never the command) while letting guardrail-stats answer "is this rule
  * just noise on disposable paths?". null for non-delete rules.
  *
- * @param {{ decision: string, rule?: string|null, tier?: string|null, source?: string|null, pathClass?: string|null }} hit
+ * The optional `patterns` (rule NAMES, never matched values) and `count` fields let the
+ * secret-scanner say which detection rules fired and how many findings a block held, so the
+ * feedback digest can show the noisy rules. Both are bounded here: at most 20 names of at
+ * most 64 characters, and a non-negative integer count. Anything else is dropped.
+ *
+ * @param {{ decision: string, rule?: string|null, tier?: string|null, source?: string|null, pathClass?: string|null, patterns?: string[]|null, count?: number|null }} hit
  * @returns {object|null} The event written, or null on any failure.
  */
 function emitGuardrailHit(hit) {
@@ -121,11 +133,18 @@ function emitGuardrailHit(hit) {
             pathClass: hit.pathClass != null ? hit.pathClass : null,  // C1: bounded delete-path class; null = non-delete
             timestamp: new Date().toISOString(),
         };
+        const patterns = boundedPatternNames(hit.patterns);
+        if (patterns) entry.patterns = patterns;
+        if (Number.isInteger(hit.count) && hit.count >= 0) entry.count = hit.count;
+        let writeFailed = false;
         appendJsonl(getJsonlPath(getProjectRoot(), 'guardrail-events.jsonl'), entry, {
             maxLines: GUARDRAIL_EVENTS_MAX_LINES,
             tailKeep: GUARDRAIL_EVENTS_TAIL_KEEP,
+            onError: () => { writeFailed = true; },
         });
-        return entry;
+        // appendJsonl swallows I/O errors by design; the caller learns of one from the null, so a message
+        // that says "recorded" (the secret-scan bypass) is only ever printed after the write happened.
+        return writeFailed ? null : entry;
     } catch {
         return null;
     }

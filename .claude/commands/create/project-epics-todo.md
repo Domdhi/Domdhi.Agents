@@ -224,6 +224,8 @@ and conflict review. Respect actual dependency order across waves.
 **Domain:** {Backend|Frontend|DevOps|...}
 **Estimate:** {S|M|L|XL}
 **Complexity:** {1–10}  <!-- persisted routing signal `/do` reads; score per the canonical rubric in `/todo` (≤5 → Opus-direct, ≥6 → Sonnet-delegate). Distinct from Estimate (wall-clock effort). -->
+**Release:** {core | later}
+**Risk tier:** {deep | standard} — {the trigger that set it}
 **Ownership:** production {agent type}; tests {owner per the repository's test-authorship rule | owning story ID}; review {fresh independent reviewer}
 
 **As a** {persona}, **I want** {capability}, **So that** {benefit}.
@@ -314,3 +316,6 @@ Follow the **Post-Command Commit Convention** in `.agents/startup-reference.md`.
 8. **Every story MUST include Dependencies, Unblocks, Track, Domain, Estimate, and Complexity metadata** (Complexity = the 1–10 routing score `/do` reads — score it per the canonical rubric in `/todo`, never restate that rubric here)
 9. Acceptance criteria MUST match `backlog.md` exactly — do not paraphrase or invent new ones
 10. **Every story MUST include an Ownership line** naming production, test and review ownership per the repository's actual test-authorship rule (see `/todo` Template Rules)
+11. **Every story MUST include a Release tag and a Risk tier** — `core`/`later` and `deep`/`standard`, decided with the rubric in `/todo` (Release Slices and Risk Tiers), never restated here. Across all epics, the core slice must ship on its own: no core story depends on a later story in any epic. Check each checklist with `node .claude/core/release-slice.js {checklist} --strict --deps-from {every other epic checklist of the feature}`; an all-later epic is valid when a sibling holds the core.
+12. **No second status tracker.** If the epics need a cross-file execution guide, it holds only the static dependency graph, the release slices and the gate list. It has no status, commit or receipt columns: story status lives in the checklists and wave results live in the `/run-todo` plan's Wave Execution Log. Do not ask for per-story receipt files; a receipt is written only when an AC's evidence cannot fit a log line (a SQL proof transcript, a browser run).
+13. **Owner decisions and sourcing come from `/todo`'s rules** — each checklist lists its predictable owner decisions in an `## Owner Decisions` section, and no story incorporates third-party code or data before its build-vs-vendor and license decision is recorded (see `/todo` Phase 1 Step 3 and Template Rule 19; never restate them here).

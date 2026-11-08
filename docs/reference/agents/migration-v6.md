@@ -47,7 +47,7 @@ Claude commands remain compatible. Codex uses discovered `$` skills: `/review:qa
 - Native hook trust requires repository and exact-definition review. New/changed hooks may be skipped pending review. Parity, installed discovery, executed handlers, named-role execution and fresh-session model-visible behavior are distinct evidence.
 - Current local v6 work does not establish fresh live Windows or trusted native-model execution. Historical Windows/reference probes are separately attributed in the [Codex README](../../../.agents/adapters/codex/README.md). Earlier SA-6 Claude execution/resume checks remain blocked in their own TODO; current fixtures do not close them.
 
-[Hooks](concepts/hooks.md) documents the runtime boundaries. Plain terminal commands and some specialized/hosted tools bypass hooks. Staged secret scanning runs through native `commit.js`; the retired `.githooks/pre-commit` path does not protect a plain terminal `git commit`.
+[Hooks](concepts/hooks.md) documents the runtime boundaries. Plain terminal commands and some specialized/hosted tools bypass hooks. Secret scanning runs through the toolkit-managed, untracked git hooks (commit, merge, am and push; installed into the git directory by `install.js` and `template-updater.js update`; see [Hooks](concepts/hooks.md)), so a plain terminal `git commit` is scanned too when they are active, and a push scans every commit it would publish. The retired tracked `.githooks/pre-commit` template stays retired.
 
 ## Source checkout and ignored shared state
 

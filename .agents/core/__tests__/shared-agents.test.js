@@ -1234,3 +1234,34 @@ describe('NA5.1 Acme-like messy adopter install and update', () => {
   // (17.7 s alone): it carries its own limit like the neutral pilot above. The global limit stays.
   }, 240_000);
 });
+
+describe('canonical-only config files are not projected to .claude/', () => {
+  function seedConfig(root) {
+    seed(root);
+    for (const [rel, text] of [
+      ['.agents/config/guardrail-rules.yaml', 'block_patterns: []\n'],
+      ['.agents/config/secret-engine.toml', 'title = "x"\n'],
+      ['.agents/config/secret-engine.json', '{"version":"1.0.0"}\n'],
+    ]) {
+      const file = path.join(root, rel);
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, text);
+    }
+  }
+
+  it('mirrors guardrail-rules.yaml, which the runtime reads from .claude/, and not the secret-engine files, which are read from .agents/config/ only', () => {
+    seedConfig(tmp.root);
+    renderSharedAgents(tmp.root);
+    expect(fs.existsSync(path.join(tmp.root, '.claude/guardrail-rules.yaml'))).toBe(true);
+    expect(fs.existsSync(path.join(tmp.root, '.claude/secret-engine.toml'))).toBe(false);
+    expect(fs.existsSync(path.join(tmp.root, '.claude/secret-engine.json'))).toBe(false);
+  });
+
+  it('the engine wrapper reads its rules and pins from .agents/config/ (so a .claude/ copy would be dead weight)', () => {
+    const wrapper = fs.readFileSync(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../hooks/secret-engine.cjs'), 'utf8');
+    const bin = fs.readFileSync(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../_lib/secret-engine-bin.js'), 'utf8');
+    expect(wrapper).toMatch(/__dirname, '\.\.', 'config', 'secret-engine\.toml'/);
+    expect(bin).toMatch(/__dirname, '\.\.', '\.\.', 'config', 'secret-engine\.json'/);
+    expect(`${wrapper}${bin}`).not.toMatch(/\.claude[/\\'"]+,?\s*'?secret-engine/);
+  });
+});

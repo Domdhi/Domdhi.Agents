@@ -44,7 +44,7 @@ const { safeCopy, assertNoSymlinkedAncestor } = require('./_lib/fs-safe');
 const { applyManagedBlock }       = require('./scaffold');
 const { ignoredFilter }           = require('./_lib/git-ignored');
 const { hiddenManagedFiles, describeHidden } = require('./_lib/ignored-managed');
-const { syncSharedAgents, syncStartupInstructions, projectionPaths, renderSharedAgents, isExcludedSkillPath, workflowMap } = require('./_lib/shared-agents');
+const { describeRetiredConflict, syncSharedAgents, syncStartupInstructions, projectionPaths, renderSharedAgents, isExcludedSkillPath, workflowMap } = require('./_lib/shared-agents');
 
 const { classifyClaudeFile }  = zoneClassifier;
 const { mergeAgentFile }      = agentMerger;
@@ -94,6 +94,13 @@ function tryAction(label, fn, stats) {
     }
 }
 
+// Skills the toolkit renamed: a project that excluded the old name keeps excluding the skill under its new name.
+const RENAMED_SKILLS = Object.freeze({ 'learning-intake': 'intake' });
+function withRenamedSkills(names) {
+    for (const [from, to] of Object.entries(RENAMED_SKILLS)) if (names.has(from)) names.add(to);
+    return names;
+}
+
 /**
  * Load the set of skill names the target project has opted out of, from its
  * .claude/update-config.json (`{ "skillExclude": ["tailwind-css-patterns", ...] }`).
@@ -107,7 +114,7 @@ function loadExcludedSkills(targetClaudeDir) {
     if (!fs.existsSync(cfgPath)) return new Set();
     try {
         const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
-        return Array.isArray(cfg.skillExclude) ? new Set(cfg.skillExclude) : new Set();
+        return Array.isArray(cfg.skillExclude) ? withRenamedSkills(new Set(cfg.skillExclude)) : new Set();
     } catch (err) {
         console.error(`  WARN     could not parse .claude/update-config.json — ignoring exclusions (${err.message})`);
         return new Set();
@@ -325,8 +332,11 @@ function runUpdate(targetPath, options) {
         stats.copied += r.copied; stats.merged += r.merged; stats.skipped += r.skipped;
         stats.conflicts.push(...r.conflicts);
         for (const rel of r.changed) console.log(`  ${options.dryRun ? 'PLAN' : 'UPDATE'}   ${rel}`);
+        for (const rel of r.retired || []) console.log(`  ${options.dryRun ? 'PLAN' : 'RETIRE'}   ${rel} — removed by the toolkit; unedited since it was shipped`);
         for (const rel of r.conflicts) {
-            const warning = `${rel} — generated output edited; review canonical source before rendering`;
+            const warning = describeRetiredConflict(projectRoot, rel, r.retiredReasons)
+                || (rel.endsWith('/') ? `${rel} — a directory of yours has the name of a new toolkit skill; rename or remove it, or list the skill in update-config.json skillExclude, then update again` : null)
+                || `${rel} — generated output edited; review canonical source before rendering`;
             console.log(`  CONFLICT ${warning}`); warnings.push(warning); stats.warned++; stats.mergeWarned++;
         }
         for (const warning of r.warnings) { console.log(`  WARN     ${warning}`); warnings.push(warning); stats.warned++; stats.mergeWarned++; }
@@ -715,6 +725,17 @@ function main() {
             return;
         }
         if (result.conflicts.length) process.exitCode = 1;
+        // The scanner engine lives in a per-user cache, not in the target. Report it, and on a
+        // terminal offer to download the pinned build (checksum verified). Never fails the update.
+        console.log('');
+        try { require('./secret-engine-install').offerEngine({ dryRun: options.dryRun }); } catch (err) {
+            console.log(`Secret engine: status check failed (${err.message})`);
+        }
+        // Install or refresh the managed git hooks (pre-commit + commit-msg) after the toolkit files are in
+        // place. They live in the git directory, never in the tracked tree. No prompt; never fails the update.
+        try { require('./git-hooks').ensureHooks(verified.target, { dryRun: options.dryRun }); } catch (err) {
+            console.log(`Git hooks: status check failed (${err.message})`);
+        }
     } else {
         console.error(`Unknown command: ${command}`);
         console.error('Run with --help to see available commands.');

@@ -465,3 +465,50 @@ block_patterns:
         }
     });
 });
+
+describe('shipped rules — pattern-based process kills nudge', () => {
+    const { loadRules: load, evaluate: run } = require('../guardrail-rules');
+    const rules = load(path.resolve('.agents/config/guardrail-rules.yaml'));
+
+    it.each([
+        'pkill -f node',
+        'pkill -9f vitest',
+        'pkill -f9 node',
+        'pkill --full "npm test"',
+        'pkill -u dom -f node',
+        'sudo pkill -f node',
+        '/usr/bin/pkill -f node',
+        'busybox pkill -f node',
+        'env FOO=1 pkill -f node',
+        'FOO=1 pkill -f node',
+        'timeout 5 pkill -f node',
+        'nohup pkill -f node',
+        'xargs pkill -f',
+        'cd src && pkill -f node',
+        'echo hi; pkill -f node',
+        'true || pkill -f node',
+        '$(pkill -f node)',
+        '`pkill -f node`',
+        '(pkill -f node)',
+        '{ pkill -f node; }',
+        'killall node',
+        'sudo killall -9 node',
+    ])('nudges %s and escalates only with the marker', command => {
+        expect(run(command, rules).decision).toBe('nudge');
+        expect(run(`${command}  # guardrail:confirm`, rules)).toMatchObject({ decision: 'confirm', escalated: true });
+    });
+
+    it.each([
+        'pkill node',
+        'kill 1234',
+        'kill -9 $(lsof -t -i:5173)',
+        'pgrep -f node',
+        'echo "pkill -f node"',
+        'grep -n pkill notes.md',
+        'cat killall.txt',
+        'mykillall x',
+        'npx vitest run -f',
+    ])('passes %s', command => {
+        expect(run(command, rules).decision).toBe('pass');
+    });
+});

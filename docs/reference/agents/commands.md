@@ -41,8 +41,8 @@ Each authored-body link opens the procedure, including supported arguments, outp
 | `/evolve` | `$evolve` | Archive the completed cycle and replan from production evidence. | [Read](../../../.agents/skills/evolve/references/workflow.md) |
 | `/interview` | `$interview` | Gather preferences/decisions and persist the decision summary. | [Read](../../../.agents/skills/interview/references/workflow.md) |
 | `/investigate` | `$investigate` | Find root cause, resolve the confirmed defect and verify; no automatic commit. | [Read](../../../.agents/skills/investigate/references/workflow.md) |
-| `/learning-intake` | `$learning-intake` | Capture selected toolkit lessons locally; inspect or explicitly deliver retained requests to the configured GitHub receiver. | [Read](../../../.agents/skills/learning-intake/references/workflow.md) |
-| `/listen` | `$listen` | Gather production signals into a dated intake; triage separately. | [Read](../../../.agents/skills/listen/references/workflow.md) |
+| `/intake` | `$intake` | Capture selected toolkit lessons locally; inspect or explicitly deliver retained requests to the configured GitHub receiver. Unrelated to `/listen`'s signal intake. | [Read](../../../.agents/skills/intake/references/workflow.md) |
+| `/listen` | `$listen` | Gather production signals into a dated signal-intake file under `evolution/intake/` (not `/intake`); triage separately. | [Read](../../../.agents/skills/listen/references/workflow.md) |
 | `/onboard` | `$onboard` | Derive architecture/context from existing application code, then specialize. | [Read](../../../.agents/skills/onboard/references/workflow.md) |
 | `/prime` | `$prime` | Load task-relevant handoff/Git/context and observed memory; report readiness. | [Read](../../../.agents/skills/prime/references/workflow.md) |
 | `/remember` | `$remember` | Append a conversational insight to the daily log; no commit. | [Read](../../../.agents/skills/remember/references/workflow.md) |
@@ -121,7 +121,7 @@ Create/personalize/specialize edit `.agents/roles/`, canonical skills/workflows 
 
 The selected lifecycle workflow decides when to commit. Common examples: do and run-todo commit verified work; todo commits its planning artifacts; run-tests commits test evidence/handoff; end commits continuity. Prime, route and remember do not commit, and investigate fixes/verifies without an automatic commit. Memory-health has its explicit no-commit exception. Read each procedure for conditional dry-run/fix/accept behavior.
 
-Use explicit owned staging and native `commit.js`; do not stage all files in a shared tree. The helper scans staged content for secrets. Plain terminal `git commit` bypasses that scan. No workflow's local commit implies permission for push, deployment, publication or fleet rollout.
+Use explicit owned staging and native `commit.js`; do not stage all files in a shared tree. The helper scans staged content and the message for secrets, through the managed git hooks when they are active (a plain terminal `git commit` runs them too, and a push scans every commit it would publish) and itself otherwise. No workflow's local commit implies permission for push, deployment, publication or fleet rollout.
 
 ## Runtime and continuity
 

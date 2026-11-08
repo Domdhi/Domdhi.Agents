@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 const require = createRequire(import.meta.url);
-const store = require('../learning-intake-store');
+const store = require('../intake-store');
 const { createTmpDir } = require('../../__tests__/_helpers/tmp-dir');
 let tmp;
 const current = '.agents/intake/';
@@ -55,7 +55,7 @@ describe('project-owned intake configuration paths', () => {
       scopeHash: store.canonicalHash(store.policyScope(policy)) };
     store.validatePolicy(policy, { identity: value.identity });
     tmp.write(legacy + 'policy.json', JSON.stringify(policy));
-    const core = require('../../learning-intake');
+    const core = require('../../intake');
     const captured = await core.capture({ toolkitVersion: '1.0.0', component: 'core/intake', applicability: 'shared-toolkit',
       title: 'Retain reporting project authority', problem: 'A directory rename must preserve retained occurrences.',
       expected: 'Keep exact identity and history.', reproduction: 'Capture then rename the configuration directory.',

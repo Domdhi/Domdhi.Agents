@@ -27,14 +27,14 @@ Two browser tools are available. Use the RIGHT one for the job:
 
 | Tool | Agent Type | When to Use |
 |------|-----------|-------------|
-| `playwright-cli` | `playwright` agent | Headless automation, screenshots, form fills, navigation. Best for spec file generation and repeatable tests. No user session — cannot test logged-in routes. |
-| `mcp__claude-in-chrome__*` | `claude` agent | Live Chrome interaction in the user's real session (same auth, same cookies). Requires Chrome running. |
+| `playwright-cli` | `playwright` agent | **The default.** Headless automation, screenshots, form fills, navigation, spec file generation. Logged-in routes use the app's test login or a saved storage state (`playwright-cli` session management), never the owner's browser. |
+| `mcp__claude-in-chrome__*` | `claude` agent | **Opt-in only, owner present.** Live Chrome in the owner's real session (same auth, same cookies). It opens tabs in the owner's browser and takes focus, so use it only when the project's instructions allow it or a checkpoint needs the owner's real session, and only as a manual item the owner has agreed to sit in on. |
 
 **Chrome MCP agents MUST be `subagent_type: "claude"` — NEVER `general-purpose`.** The `general-purpose` type has only Read/Write/Edit/Bash/Grep/Glob: no `mcp__claude-in-chrome__*` tools AND no ToolSearch to load them, so every browser checkpoint blocks (field-verified 2026-07-16 on an adopter: an entire 4-agent browser wave failed on exactly this). Only the `claude` catch-all type carries the MCP tools.
 
-**Default to `claude` with chrome MCP** when Chrome is available (check with `mcp__claude-in-chrome__tabs_context_mcp`). Fall back to `playwright` agent when Chrome is not available or for headless-only environments. If a specific browser must be targeted (multiple Chromes connected), the MAIN agent calls `select_browser` once before dispatching — the selection carries to subagents; agents must NOT call `select_browser`/`list_connected_browsers` themselves.
+**Default to the `playwright` agent, headless.** Agents never open a headed browser or a preview tab that takes the owner's focus; a headless screenshot is the on-screen evidence. A checkpoint that truly needs a headed browser or the owner's real session becomes a `[manual]` item for the owner, or a chrome MCP pass the owner has agreed to attend. A project can opt back into chrome MCP by default through its own instructions. If a specific browser must be targeted for an agreed chrome MCP pass (multiple Chromes connected), the MAIN agent calls `select_browser` once before dispatching — the selection carries to subagents; agents must NOT call `select_browser`/`list_connected_browsers` themselves.
 
-When dispatching `claude` agents for browser testing, include this in the prompt:
+When dispatching `claude` agents for an agreed chrome MCP pass, include this in the prompt:
 ```
 BROWSER TOOLS: Use the mcp__claude-in-chrome__* tools for browser interaction.
 If they are not directly callable, load them via ToolSearch in ONE call:
@@ -46,7 +46,7 @@ Use navigate to go to pages, read_page to inspect content, computer for clicks,
 read_console_messages (onlyErrors: true, clear: true) after each page load.
 ```
 
-Parallel is safe: up to 4 concurrent `claude` agents sharing one Chrome, each in its own tab, verified with no interference.
+Parallel chrome MCP agents are safe when each works in its own tab; they still share the owner's browser, which is one more reason it is opt-in.
 
 ## Standing post-deploy gate
 
@@ -128,7 +128,7 @@ Severity tiers are the gstack monitors verbatim. "Breach" is always *relative to
 ### `--baseline` (capture, run once pre-deploy)
 
 1. Resolve the target page(s): the `TODO_FILE` target URL + its listed pages, or the URLs passed as args, or the app root. Pre-flight each with `curl` (HARD STOP if the app isn't running — same rule as Phase 0 Step 3).
-2. Dispatch a **standard** browser agent (chrome MCP preferred, playwright fallback — same selection rule as the checklist mode) to visit each page and record the four signals. Take one baseline screenshot per page into `docs/.output/evolution/canary/baseline/`.
+2. Dispatch a **standard** headless `playwright` browser agent (chrome MCP only when opted in — same selection rule as the checklist mode) to visit each page and record the four signals. Take one baseline screenshot per page into `docs/.output/evolution/canary/baseline/`.
 3. Write `docs/.output/evolution/canary/baseline-{slug}.json` (slug = project or feature name; **stable filename, not date-rotated**, so `--compare` can find it across days):
    ```json
    {
@@ -284,14 +284,14 @@ Mark these categories `[x]` in the TODO file immediately after verification.
 | Interaction Type | Who | Model | Rationale |
 |-----------------|-----|-------|-----------|
 | Code/file/schema verification | Main Agent (already done in Step 6) | — | No browser needed |
-| Page load + screenshot | `claude` agent (chrome MCP) | standard | Navigate, screenshot, read text — chrome MCP preferred |
-| Button click + form fill | `claude` agent (chrome MCP) | standard | Standard interaction via live Chrome |
-| Complex UI + code inspection | `claude` agent (chrome MCP) | standard | Combine browser MCP and grep/read |
-| Headless / CI environment | `playwright` agent | standard | Primary for headless/CI environments |
+| Page load + screenshot | `playwright` agent (headless) | standard | Navigate, headless screenshot, read text |
+| Button click + form fill | `playwright` agent (headless) | standard | Standard interaction through `playwright-cli` |
+| Complex UI + code inspection | `playwright` agent (headless) | standard | Combine `playwright-cli` snapshots with grep/read |
+| Needs the owner's real session or a headed browser | `[manual]` item, or `claude` agent (chrome MCP) with the owner present | standard | Opt-in only (see Browser Tool Selection) |
 
-**Prefer `claude` with chrome MCP over `playwright` agent.** The chrome MCP tools interact with the user's actual browser — same session, same auth state, same cookies. `playwright` is the fallback for headless environments. NEVER `general-purpose` for browser work — it has no MCP tools and no ToolSearch (see Browser Tool Selection).
+**Prefer the headless `playwright` agent.** It never takes the owner's focus and its runs are repeatable. chrome MCP drives the owner's real browser, so it is opt-in and owner-present only. NEVER `general-purpose` for browser work — it has no MCP tools and no ToolSearch (see Browser Tool Selection).
 
-**Dispatch up to 4 parallel agents per wave.**
+**Dispatch every independent category of the wave in parallel.** There is no fixed agent cap; the limits are real interference (categories that share data or a test account run in sequence) and any hard limit the runtime enforces.
 
 Each agent prompt MUST include:
 
@@ -312,7 +312,14 @@ PROJECT CONSTRAINTS (when verified project instructions or source bind this cate
 SCREENSHOT FOLDER: docs/.output/.state/screenshots/{YYYY-MM-DD}/{Task}/cat-{N}/
 Create this directory first with mkdir.
 
-BROWSER TOOLS (chrome MCP — preferred):
+BROWSER TOOLS (headless playwright-cli — default):
+Use playwright-cli in its default headless mode for all browser interaction. Never pass
+--headed and never open a browser window or preview tab that takes the owner's focus.
+Headless screenshots are the evidence. Log in with the test credentials or saved storage
+state given under AUTH. If a checkpoint truly needs a headed browser or the owner's real
+session, mark it [manual] with the reason and move on.
+
+BROWSER TOOLS (chrome MCP — only for an opt-in, owner-present pass):
 Use the mcp__claude-in-chrome__* tools for all browser interaction.
 If they are not directly callable, load them via ToolSearch in ONE call:
 "select:mcp__claude-in-chrome__tabs_context_mcp,mcp__claude-in-chrome__tabs_create_mcp,mcp__claude-in-chrome__navigate,mcp__claude-in-chrome__computer,mcp__claude-in-chrome__read_page,mcp__claude-in-chrome__read_console_messages,mcp__claude-in-chrome__find,mcp__claude-in-chrome__form_input"
@@ -327,7 +334,7 @@ The browser is already selected — do NOT call select_browser or list_connected
 - mcp__claude-in-chrome__find — search for elements
 - mcp__claude-in-chrome__form_input — fill form fields
 
-If chrome MCP is not available, fall back to playwright-cli commands.
+Include only the block that matches the agent's type.
 
 INSTRUCTIONS:
 0. FIRST: Run `curl -s -o /dev/null -w "%{http_code}" {TARGET}/api/health` — if it does NOT return 200, report STATUS: BLOCKED with "dev server not running" and STOP IMMEDIATELY. Do NOT fall back to code review. Do NOT create verification documents. Do NOT proceed.
@@ -360,11 +367,12 @@ OUTPUT:
 - Your STATUS
 ```
 
-**All agents for one wave go in a single message — `claude` type with chrome MCP:**
+**All agents for one wave go in a single message — `playwright` type, headless:**
 ```
-Agent(subagent_type: "claude", model: "sonnet", prompt: "{cat N prompt with chrome MCP tools}", description: "Test Cat {N}: {Name}")
-Agent(subagent_type: "claude", model: "sonnet", prompt: "{cat M prompt with chrome MCP tools}", description: "Test Cat {M}: {Name}")
+Agent(subagent_type: "playwright", model: "sonnet", prompt: "{cat N prompt with the headless playwright-cli block}", description: "Test Cat {N}: {Name}")
+Agent(subagent_type: "playwright", model: "sonnet", prompt: "{cat M prompt with the headless playwright-cli block}", description: "Test Cat {M}: {Name}")
 ```
+An opt-in, owner-present chrome MCP category uses `subagent_type: "claude"` with the chrome MCP block instead.
 
 #### Step 8: Triage results and update TODO
 
@@ -518,7 +526,7 @@ Skip the commit only if the user invoked `/run-tests` as a dry-run with no expec
 ## Rules
 
 1. **TaskList is your spine.** Create it in Phase 0. Update at every step. It survives context compression.
-2. **All browser agents use standard and the `claude` agent type. No exceptions.** Both playwright and claude (chrome MCP) agents must specify `model: "sonnet"`. Never Haiku — on the recorded evidence (2026-06-02, Haiku 4.5) it fabricated browser results instead of reading the DOM/a11y tree, and the rule stays in force until the bounded `fast`-tier eval passes. Never `general-purpose` for chrome MCP — it has no browser tools and no ToolSearch. Visual/design QA is a separate human pass.
+2. **All browser agents use standard; headless `playwright` is the default type.** Both playwright and claude (chrome MCP) agents must specify `model: "sonnet"`. chrome MCP (`claude` type) is opt-in and owner-present only, and no agent opens a headed browser or a preview tab that takes the owner's focus. Never Haiku — on the recorded evidence (2026-06-02, Haiku 4.5) it fabricated browser results instead of reading the DOM/a11y tree, and the rule stays in force until the bounded `fast`-tier eval passes. Never `general-purpose` for chrome MCP — it has no browser tools and no ToolSearch. Visual/design QA is a separate human pass.
 3. **Main Agent does non-browser checks directly.** Schema, seed data, code inspection, config — no delegation needed. Playwright agents handle browser interactions.
 4. **Status protocol is mandatory.** Every agent reports DONE / DONE_WITH_CONCERNS / BLOCKED / NEEDS_CONTEXT.
 5. **Don't trust agent reports — verify.** If an agent says DONE but the screenshot shows an error, it's not DONE.

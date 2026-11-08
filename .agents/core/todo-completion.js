@@ -184,30 +184,34 @@ function selfTest() {
     return { ok, positiveControl: ok ? 'unfinished criterion detected' : 'failed', checkedControl: checked.ok ? 'passed' : 'failed' };
 }
 
+/** Read a TODO as bounded UTF-8 from an ordinary, non-symlinked file; throws on anything else. */
+function readTodoFile(input) {
+    const file = path.resolve(input);
+    const stat = fs.lstatSync(file);
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.size > MAX_TODO_BYTES) throw new Error('Invalid TODO input.');
+    let fd;
+    try {
+        fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0) | (fs.constants.O_NONBLOCK || 0));
+        const opened = fs.fstatSync(fd);
+        if (!opened.isFile() || opened.size > MAX_TODO_BYTES) throw new Error('Invalid TODO input.');
+        const bytes = Buffer.alloc(MAX_TODO_BYTES + 1);
+        let size = 0;
+        while (size < bytes.length) {
+            const count = fs.readSync(fd, bytes, size, bytes.length - size, null);
+            if (!count) break;
+            size += count;
+        }
+        if (size > MAX_TODO_BYTES) throw new Error('Invalid TODO input.');
+        return new TextDecoder('utf-8', { fatal: true }).decode(bytes.subarray(0, size));
+    } finally { if (fd !== undefined) fs.closeSync(fd); }
+}
+
 function main(args = process.argv.slice(2)) {
     let result;
     if (args.length === 1 && args[0] === '--self-test') result = selfTest();
     else if (args.length === 3 && args[1] === '--stories' && typeof args[0] === 'string' && !args[0].startsWith('--')) {
         try {
-            const file = path.resolve(args[0]);
-            const stat = fs.lstatSync(file);
-            if (!stat.isFile() || stat.isSymbolicLink() || stat.size > MAX_TODO_BYTES) throw new Error('Invalid TODO input.');
-            let fd;
-            let text;
-            try {
-                fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0) | (fs.constants.O_NONBLOCK || 0));
-                const opened = fs.fstatSync(fd);
-                if (!opened.isFile() || opened.size > MAX_TODO_BYTES) throw new Error('Invalid TODO input.');
-                const bytes = Buffer.alloc(MAX_TODO_BYTES + 1);
-                let size = 0;
-                while (size < bytes.length) {
-                    const count = fs.readSync(fd, bytes, size, bytes.length - size, null);
-                    if (!count) break;
-                    size += count;
-                }
-                if (size > MAX_TODO_BYTES) throw new Error('Invalid TODO input.');
-                text = new TextDecoder('utf-8', { fatal: true }).decode(bytes.subarray(0, size));
-            } finally { if (fd !== undefined) fs.closeSync(fd); }
+            const text = readTodoFile(args[0]);
             result = verifyTodoCompletion(text, { storyIds: args[2].split(',') });
         } catch {
             result = { ok: false, stories: [], errors: [{ code: 'INVALID_TODO_FILE', storyId: null, line: null, message: 'TODO must be an existing ordinary bounded file.' }], unchecked: [] };
@@ -217,5 +221,5 @@ function main(args = process.argv.slice(2)) {
     return result.ok ? 0 : 1;
 }
 
-module.exports = { verifyTodoCompletion, selfTest, main };
+module.exports = { verifyTodoCompletion, readTodoFile, selfTest, main, MAX_TODO_BYTES };
 if (require.main === module) process.exitCode = main();

@@ -4,8 +4,8 @@
  */
 
 module.exports = {
-    // Learning intake safety ceilings. Project policy can narrow, never widen.
-    LEARNING_INTAKE_LIMITS: Object.freeze({
+    // Intake safety ceilings. Project policy can narrow, never widen.
+    INTAKE_LIMITS: Object.freeze({
         MAX_RECORD_BYTES: 65536,
         MAX_EXPORT_BYTES: 16384,
         MAX_FIELD_BYTES: 4096,

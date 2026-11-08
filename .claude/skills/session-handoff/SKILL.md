@@ -139,8 +139,8 @@ Different callers have different information to emphasize. Fill the template wit
 - The paired plan file at `docs/.output/plans/{date}-do-{slug}.md` should be mentioned in Key Files if the completion report has material worth re-reading
 
 ### `/run-todo` — after a wave commit OR final report
-- **Decisions & Context:** agent misalignments, wave-level decisions, stories blocked/deferred
-- **Next Actions:** next wave OR next epic OR `/retro` if all done
+- **Decisions & Context:** agent misalignments and other process decisions not already recorded, plus stories blocked/deferred. Link the TODO's Key Decisions for scope and approach decisions, and the plan's Resume Point and Wave Execution Log for current state, verification, AC counts, review results and commits; do not restate them (write-once bookkeeping, `/run-todo` Step 8)
+- **Next Actions:** next wave, OR the Ship gate decision when the core slice is done and later stories remain (name the owner's choice: ship core, continue to later, stop or re-plan), OR next epic, OR `/retro` if all done
 - **Last commit:** the most recent wave commit
 - If stories are blocked (`[!]`), call them out in Blockers
 - The paired plan file at `docs/.output/plans/{date}-run-todo-{slug}.md` is a Key File unless it exceeds the Key Files ceiling; then list a compact tracked companion (such as the module brief) and name the plan, read for its Resume Point on demand
@@ -331,15 +331,15 @@ Default to `/remember` for fleeting captures you want off your mental stack. Use
 
 Keep Step 6's main-owner memory promotion and inbox decisions local. There is no intake quota: zero selected lessons is valid. MUST NOT export curated memory, memory inbox entries, daily logs or private conversations. Project-specific knowledge stays local; a reusable project memory is not automatically a transferable toolkit proposal.
 
-For an explicitly selected transferable lesson, FIRST read `.agents/skills/learning-intake/references/workflow.md` and follow its bounded local initialization/capture contract through the active native helper. Prepare only that lesson's schema-valid checkout-relative JSON input, retaining observed provenance and permitted evidence without fabricated IDs, reproduction or verification. If identity or policy is missing, initialize disabled defaults before capture; preserve existing identity and policy. Set `exportApproved` only within current owner-authorized evidence scope. Successful local capture means retained pending state, not delivery, and remains usable while disabled.
+For an explicitly selected transferable lesson, FIRST read `.agents/skills/intake/references/workflow.md` and follow its bounded local initialization/capture contract through the active native helper. Prepare only that lesson's schema-valid checkout-relative JSON input, retaining observed provenance and permitted evidence without fabricated IDs, reproduction or verification. If identity or policy is missing, initialize disabled defaults before capture; preserve existing identity and policy. Set `exportApproved` only within current owner-authorized evidence scope. Successful local capture means retained pending state, not delivery, and remains usable while disabled.
 
 Then run ONE finite eligible batch for this handoff's existing caller. BEFORE execution, replace `{caller}` with the validated caller `end`, `do`, `run-todo`, `run-tests` or `todo`; never infer another trigger or pass raw narrative. In Codex, change the helper prefix to `.codex/core/`; Claude uses `.claude/core/`:
 
 ```bash
-node .claude/core/learning-intake.js lifecycle --trigger {caller}
+node .claude/core/intake.js lifecycle --trigger {caller}
 ```
 
-The helper initializes missing policy disabled and enforces current standing authority for the exact project, destination, operation, trigger, export profile and limits. Valid standing approval avoids redundant per-occurrence confirmation; missing, invalid, revoked or changed scope blocks external work. NEVER edit policy to enable delivery or invent a receiver. Respect `LEARNING_INTAKE_LIMITS`, retained budgets and next-attempt state; no retry loop, automatic recovery or recreate is allowed. Uncertain writes remain uncertain and can only be reconciled within current authority.
+The helper initializes missing policy disabled and enforces current standing authority for the exact project, destination, operation, trigger, export profile and limits. Valid standing approval avoids redundant per-occurrence confirmation; missing, invalid, revoked or changed scope blocks external work. NEVER edit policy to enable delivery or invent a receiver. Respect `INTAKE_LIMITS`, retained budgets and next-attempt state; no retry loop, automatic recovery or recreate is allowed. Uncertain writes remain uncertain and can only be reconciled within current authority.
 
 Inspect the command's actual exit/result and retain a bounded outcome in the handoff or caller report: actual captured occurrence IDs when available, pending/project-specific/blocked/uncertain/acknowledged state and attempted/succeeded/failed counts when returned. Surface invalid, denied, uncertain, dependency or persistence nonzero results without making them fatal to saving the handoff; never convert a failed batch into success. Disabled local-only success, initialization, capture or status never proves delivery; acknowledgement requires a durably validated GitHub issue receipt. Preserve last known valid resolution and label failed refresh stale/unknown. Separate disposition, implementation, actual verification, maintainer-reported publication and local installation; accepted or closed does not prove a released fix.
 

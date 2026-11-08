@@ -1,0 +1,135 @@
+{
+  "description": "Toolkit-owned paths the toolkit renamed or dropped. A render removes a listed file from a checkout only when its bytes match what the toolkit shipped (the render ledger entry for a native file, or a listed historical digest; a canonical source only on a listed digest) and reports every other listed file that still exists, so an edited file is never deleted and never left unreported. Only toolkit-owned template-zone paths may be listed (.agents/skills/<name>/, .agents/core/, .agents/hooks/, or their .claude/.codex projections); project-owned, local, state and mixed-zone paths, and any path a current output or canonical source still produces, are refused as errors. replacedBy names the successor shown in a conflict message. until is the last toolkit version that still processes the entry; after it the entry is ignored, so a project may later reuse the path. Add an entry whenever a canonical source or its native projection is renamed or removed.",
+  "retired": [
+    {
+      "path": ".agents/core/learning-intake.js",
+      "digests": [
+        "4946239149e6ec1bbb09eb60d94aa387f18ce854fce1bb499783b9d46172586f",
+        "6c98e1ce12ee90e375d17119f880275cec5b0dcb25547ea05b2a879cf35d0d8b",
+        "04df13df6d845d01a6f1f3ceddc5eae197ba2cad42427183e9397c3c8a0315a3",
+        "ae2d83c1058dd114927efbf750d3c08098f686812d8d858033abfd8b695661ea"
+      ],
+      "replacedBy": ".agents/core/intake.js",
+      "until": "7.0"
+    },
+    {
+      "path": ".agents/core/learning-intake-github.js",
+      "digests": [
+        "c7b55636890bdf40c4c1a56a3c1c29384d330ddbe951bf7f60e7a2469ea39ac7"
+      ],
+      "replacedBy": ".agents/core/intake-github.js",
+      "until": "7.0"
+    },
+    {
+      "path": ".agents/core/_lib/learning-intake-store.js",
+      "digests": [
+        "4ee10606c397ddb9c5fc096f6d708eb54b2053c835cd23f18172bc7f31dfca03",
+        "ea558539c7a3beeb08cc03e01b19837f9f206c9e373da1da4a55a58333dfbed6",
+        "55b28735cdca4c6d680e3b5fb5f455538c302fb15e04d4a0d5a63f07c004185f",
+        "b2d587fbdb838bccc0ab4407b18863c7017cd68b4f4ef7c3b1a7b11a6add5242"
+      ],
+      "replacedBy": ".agents/core/_lib/intake-store.js",
+      "until": "7.0"
+    },
+    {
+      "path": ".agents/skills/learning-intake/SKILL.md",
+      "digests": [
+        "f2bce9e3fdd213bda0acdfc5f062b4f6db23c19d2a68412c67280c524e6f9abb"
+      ],
+      "replacedBy": ".agents/skills/intake/SKILL.md",
+      "until": "7.0"
+    },
+    {
+      "path": ".agents/skills/learning-intake/references/workflow.md",
+      "digests": [
+        "1ea4e6864186c1ca6bb9238d219c85969a9b1ad502014e0325e9e0f712adcc2d",
+        "fde11ce29adf5c28ba6e7503c12c5eb03a4f75556f04a2564b2a4390ff0e53f8",
+        "cf641e316c195c986207c75820913bb449fbc5627fa73e0447aac0c2138c8060",
+        "d00cd0d83c0277a0bba61dddf41232f275df73ee66b89af75c9edc8595cc684e",
+        "e27fbddfbdda4f933d1fc55f5e5570a7effba88b08b5ee92b04efe13d792c908"
+      ],
+      "replacedBy": ".agents/skills/intake/references/workflow.md",
+      "until": "7.0"
+    },
+    {
+      "path": ".claude/core/learning-intake.js",
+      "digests": [
+        "2de905bfcfacae8907145575523718024e61b44def1d4092249478b0dab23197"
+      ],
+      "replacedBy": ".claude/core/intake.js",
+      "until": "7.0"
+    },
+    {
+      "path": ".codex/core/learning-intake.js",
+      "digests": [
+        "c2247d43c7630ffc237d1666ce879cf5d3e620586fcddd4a47fb6e3ff23d330d"
+      ],
+      "replacedBy": ".codex/core/intake.js",
+      "until": "7.0"
+    },
+    {
+      "path": ".claude/core/learning-intake-github.js",
+      "digests": [
+        "9a597e246e6ff0777a9b85338d1633c5aa041f90dd941cd2b9a4f4b9d92b188b"
+      ],
+      "replacedBy": ".claude/core/intake-github.js",
+      "until": "7.0"
+    },
+    {
+      "path": ".codex/core/learning-intake-github.js",
+      "digests": [
+        "f5e5eab2b19d6e9f9825d263cb9701fa5ddd35af43ad23e55bc4a7aac6980467"
+      ],
+      "replacedBy": ".codex/core/intake-github.js",
+      "until": "7.0"
+    },
+    {
+      "path": ".claude/core/_lib/learning-intake-store.js",
+      "digests": [
+        "5d05b828baebee4bd92c6f86f7bfacea4d258f902dc9a5723a87c855b7121573"
+      ],
+      "replacedBy": ".claude/core/_lib/intake-store.js",
+      "until": "7.0"
+    },
+    {
+      "path": ".codex/core/_lib/learning-intake-store.js",
+      "digests": [
+        "b75fc0dffb2b3f79ebd08a4e1faa700112107344a24060ba44daa712e3b4eb67"
+      ],
+      "replacedBy": ".codex/core/_lib/intake-store.js",
+      "until": "7.0"
+    },
+    {
+      "path": ".claude/commands/learning-intake.md",
+      "digests": [
+        "f73b94d5b9dc0a9cea2a6eb264153c216c535bc6112e139a7856c32164ebce4f",
+        "7821922fdbfa779a51ac07a65d8c2f6857b73648cb0e0cd59c6aeebf967eef75",
+        "53d2af7d6aabde87d931083589596f01da1ba6738f64dc9731d44dfff0552f4e",
+        "c3f834ca8b892c8b76ea8d001f19a4b755d05132d6e47a179182a6db19e83845",
+        "4fd64596b347c31718b636c3485f151216a2ddf5fd6e4f140c49193556ab6d96"
+      ],
+      "replacedBy": ".claude/commands/intake.md",
+      "until": "7.0"
+    },
+    {
+      "path": ".claude/skills/learning-intake/SKILL.md",
+      "digests": [
+        "ac68d0e55c7c30510a8ce0832c2b0cacbd9ee22dd24ced5fd80cdba5fe7dbaa5"
+      ],
+      "replacedBy": ".claude/skills/intake/SKILL.md",
+      "until": "7.0"
+    },
+    {
+      "path": ".claude/skills/learning-intake/references/workflow.md",
+      "digests": [
+        "1ea4e6864186c1ca6bb9238d219c85969a9b1ad502014e0325e9e0f712adcc2d",
+        "fde11ce29adf5c28ba6e7503c12c5eb03a4f75556f04a2564b2a4390ff0e53f8",
+        "cf641e316c195c986207c75820913bb449fbc5627fa73e0447aac0c2138c8060",
+        "d00cd0d83c0277a0bba61dddf41232f275df73ee66b89af75c9edc8595cc684e",
+        "e27fbddfbdda4f933d1fc55f5e5570a7effba88b08b5ee92b04efe13d792c908"
+      ],
+      "replacedBy": ".claude/skills/intake/references/workflow.md",
+      "until": "7.0"
+    }
+  ]
+}

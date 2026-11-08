@@ -256,11 +256,11 @@ describe('native render/update integration', () => {
 });
 
 describe('actual pilot and workflow inventory (AC3)', () => {
-  it('checks_the_real_pilot_and_all_six_routes', () => {
+  it('checks_the_real_pilot_and_all_five_routes', () => {
     const text = fs.readFileSync(path.join(ROOT, SOURCE), 'utf8');
     expect(routes().parseWorkflowRoutes(text)).toHaveLength(6);
     expect(() => routes().checkWorkflowRoutes(text)).not.toThrow();
-    expect(routes().extractDispatchRoles(text)).toEqual(['code-reviewer', 'doc-writer', 'general-purpose']);
+    expect(routes().extractDispatchRoles(text)).toEqual(['code-reviewer', 'doc-writer', 'general-purpose', 'security-auditor']);
   });
   it('routes_or_lists_as_pending_every_current_dispatching_workflow', () => {
     // A new dispatching workflow must either carry a routes block or be added to this list on purpose.

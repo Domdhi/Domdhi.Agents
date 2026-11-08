@@ -57,7 +57,7 @@ If you came here from a search engine or a link and just need to find a specific
 | Personalize Guide | [`guides/personalize.md`](./guides/personalize.md) | `/review:personalize` walkthrough |
 | Contributing Guide | [`guides/contributing.md`](./guides/contributing.md) | Add a new agent, command, or skill |
 | Gate Lock Recovery | [`gate-lock-recovery.md`](./gate-lock-recovery.md) | Evidence and supported recovery for stale build/test locks |
-| Learning Intake | [`guides/learning-intake.md`](./guides/learning-intake.md) | Project-owned intake identity, policy and authorized delivery |
+| Intake | [`guides/intake.md`](./guides/intake.md) | Project-owned intake identity, policy and authorized delivery |
 
 ## Not on this index
 

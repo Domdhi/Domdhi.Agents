@@ -10,7 +10,7 @@ const path = require('node:path');
 
 // CJS bridge — loads the scanner after module.exports is added
 const scanner = require('../../../.agents/hooks/secret-scanner.cjs');
-const { processEvent, scanFile, isBinaryStagedFile, classifyUnreadableStagedFile } = scanner;
+const { processEvent, scanFile } = scanner;
 
 const { createTmpDir } = require('../../core/__tests__/_helpers/tmp-dir');
 const { createGitRepo, gitAvailable } = require('../../core/__tests__/_helpers/git-fixture');
@@ -560,95 +560,26 @@ describe('precommit', () => {
         expect(result.stderr).toMatch(/AWS Access Key/);
     });
 
-    it.skipIf(!gitAvailable())('precommit_isBinaryStagedFile_nonAsciiPath_matchesTheRealPath', () => {
+    it.skipIf(!gitAvailable())('precommit_binaryFileInANonAsciiPath_isScannedNotSkipped', () => {
         const tmp = createTmpDir();
         const repo = createGitRepo({ root: tmp.root });
         repo.addCommit({ message: 'setup', files: [{ path: 'README.md', content: 'initial' }] });
         const name = 'café.bin';
-        fs.writeFileSync(path.join(repo.repoPath, name), Buffer.from([0x00, 0x01, 0x02, 0x89, 0x50, 0x4e, 0x47, 0x00]));
+        // NUL bytes trip git's own binary heuristic. A blob that merely LOOKS binary is scanned like any other:
+        // a key behind the NULs is found, a clean one passes (it used to be "binary — skipping").
+        const nul = Buffer.from([0x00, 0x01, 0x02, 0x89, 0x50, 0x4e, 0x47, 0x00]);
+        fs.writeFileSync(path.join(repo.repoPath, name), nul);
         execFileSync('git', ['add', name], { cwd: repo.repoPath, stdio: 'pipe' });
-
-        const result = isBinaryStagedFile(name, repo.repoPath);
+        const clean = runPrecommit(repo);
+        fs.writeFileSync(path.join(repo.repoPath, name), Buffer.concat([nul, Buffer.from(`\nkey = "${'AKIA' + 'FAKETESTKEY1234567'}"\n`)]));
+        execFileSync('git', ['add', name], { cwd: repo.repoPath, stdio: 'pipe' });
+        const dirty = runPrecommit(repo);
         tmp.cleanup();
 
-        // Without `-z` the numstat pathspec matched nothing, so a binary file read as "not binary".
-        expect(result).toBe(true);
-    });
-});
-
-// ─── isBinaryStagedFile / classifyUnreadableStagedFile ────────────────────────
-// The pre-commit `git show` read can fail for reasons other than "the file is
-// binary" (maxBuffer exceeded, a transient git error). classifyUnreadableStagedFile
-// is the pure decision that used to be inlined as a blanket warn-and-continue —
-// it must now fail closed unless the file is DETECTABLY binary.
-
-describe('isBinaryStagedFile', () => {
-    it.skipIf(!gitAvailable())('isBinaryStagedFile_textFile_returnsFalse', () => {
-        const tmp = createTmpDir();
-        const repo = createGitRepo({ root: tmp.root });
-        repo.addCommit({ message: 'setup', files: [{ path: 'README.md', content: 'initial' }] });
-
-        fs.writeFileSync(path.join(repo.repoPath, 'plain.txt'), 'hello world\n');
-        execFileSync('git', ['add', 'plain.txt'], { cwd: repo.repoPath, stdio: 'pipe' });
-
-        const result = isBinaryStagedFile('plain.txt', repo.repoPath);
-        tmp.cleanup();
-        expect(result).toBe(false);
-    });
-
-    it.skipIf(!gitAvailable())('isBinaryStagedFile_binaryFile_returnsTrue', () => {
-        const tmp = createTmpDir();
-        const repo = createGitRepo({ root: tmp.root });
-        repo.addCommit({ message: 'setup', files: [{ path: 'README.md', content: 'initial' }] });
-
-        // NUL bytes trip git's own binary heuristic (same one `git diff` uses).
-        fs.writeFileSync(
-            path.join(repo.repoPath, 'blob.bin'),
-            Buffer.from([0x00, 0x01, 0x02, 0x89, 0x50, 0x4e, 0x47, 0x00])
-        );
-        execFileSync('git', ['add', 'blob.bin'], { cwd: repo.repoPath, stdio: 'pipe' });
-
-        const result = isBinaryStagedFile('blob.bin', repo.repoPath);
-        tmp.cleanup();
-        expect(result).toBe(true);
-    });
-});
-
-describe('classifyUnreadableStagedFile', () => {
-    it.skipIf(!gitAvailable())('classifyUnreadableStagedFile_binaryFile_skipsNotFail', () => {
-        const tmp = createTmpDir();
-        const repo = createGitRepo({ root: tmp.root });
-        repo.addCommit({ message: 'setup', files: [{ path: 'README.md', content: 'initial' }] });
-        fs.writeFileSync(
-            path.join(repo.repoPath, 'blob.bin'),
-            Buffer.from([0x00, 0x01, 0x02, 0x89, 0x50, 0x4e, 0x47, 0x00])
-        );
-        execFileSync('git', ['add', 'blob.bin'], { cwd: repo.repoPath, stdio: 'pipe' });
-
-        const simulatedErr = new Error('simulated git show failure');
-        const decision = classifyUnreadableStagedFile('blob.bin', simulatedErr, repo.repoPath);
-        tmp.cleanup();
-
-        expect(decision.action).toBe('skip');
-    });
-
-    it.skipIf(!gitAvailable())('classifyUnreadableStagedFile_nonBinaryFile_failsClosed', () => {
-        // A NON-binary staged file that `git show` failed to read (simulated
-        // here — e.g. a maxBuffer overrun or transient git error in reality)
-        // must fail the commit closed rather than warn-and-continue.
-        const tmp = createTmpDir();
-        const repo = createGitRepo({ root: tmp.root });
-        repo.addCommit({ message: 'setup', files: [{ path: 'README.md', content: 'initial' }] });
-        fs.writeFileSync(path.join(repo.repoPath, 'plain.txt'), 'a secret might hide here\n');
-        execFileSync('git', ['add', 'plain.txt'], { cwd: repo.repoPath, stdio: 'pipe' });
-
-        const simulatedErr = new Error('simulated git show failure');
-        const decision = classifyUnreadableStagedFile('plain.txt', simulatedErr, repo.repoPath);
-        tmp.cleanup();
-
-        expect(decision.action).toBe('fail');
-        expect(decision.message).toMatch(/FAIL-CLOSED/);
-        expect(decision.message).toContain('plain.txt');
+        expect(clean.exitCode, clean.stderr).toBe(0);
+        expect(dirty.exitCode).not.toBe(0);
+        expect(dirty.stderr).toMatch(/AWS Access Key/);
+        expect(dirty.stderr).not.toMatch(/is binary/);
     });
 });
 
@@ -855,4 +786,20 @@ describe('runClaudeHook (spawned process)', () => {
             };
         }
     }
+});
+
+describe('processEvent: look-alike hard-skip paths are scanned', () => {
+    const key = () => 'AKIA' + 'QW3ERTY7UIOP' + 'AS2D';
+    it.each([
+        'src/leak.secret-scanner.cjs', 'src/notsecret-patterns.cjs', 'src/post-read-scrubber.cjs', 'src/app/my_node_modules/a.js',
+        'src/foo.git/a.js', 'config/myyarn.lock', 'docs/x-package-lock.json',
+    ])('blocks a key written to %s', file => {
+        const result = processEvent({ tool_name: 'Write', tool_input: { file_path: file, content: `const k = "${key()}";\n` } });
+        expect(result && result.block, file).toBe(true);
+        expect(result.exitCode).toBe(2);
+    });
+
+    it.each(['.claude/hooks/secret-scanner.cjs', 'node_modules/x/a.js', '.git/config', 'package-lock.json'])('still skips the real %s', file => {
+        expect(processEvent({ tool_name: 'Write', tool_input: { file_path: file, content: `const k = "${key()}";\n` } })).toBeNull();
+    });
 });

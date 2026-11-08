@@ -31,28 +31,28 @@ The guard recognizes concrete `Agent`/`Task` dispatch syntax, inline `subagent_t
     "step": "wave-implementation-standard",
     "role": "general-purpose",
     "tier": "standard",
-    "condition": "Delegate path; routine well-specified work in at most three files",
-    "output": "Story implementation passing owner-authored tests and report"
-  },
-  {
-    "step": "wave-implementation-deep",
-    "role": "general-purpose",
-    "tier": "deep",
-    "condition": "Delegate path; more than three files, cross-module, concurrency, integrity, migration or ambiguity",
+    "condition": "Delegate path; every developer story (subagents always run on the standard tier)",
     "output": "Story implementation passing owner-authored tests and report"
   },
   {
     "step": "wave-review",
     "role": "code-reviewer",
     "tier": "standard",
-    "condition": "M/L story or risk-triggered review; reuse reviewer for closure",
-    "output": "Findings and closure of the reviewed fixes"
+    "condition": "M/L story or risk-triggered review; exactly one pass, no re-review",
+    "output": "Findings for Main Agent to fix and prove with tests"
+  },
+  {
+    "step": "deep-tier-security-review",
+    "role": "security-auditor",
+    "tier": "audit",
+    "condition": "Deep-tier wave touching auth, permissions, credentials, untrusted input, security controls, request pipeline or release gating",
+    "output": "Security findings for the wave diff"
   },
   {
     "step": "wave-documentation",
     "role": "doc-writer",
     "tier": "standard",
-    "condition": "Step 8a after wave verification",
+    "condition": "Step 8a when a wave closes many stories; otherwise Main Agent edits directly",
     "output": "Updated TODO markers, execution log and decisions"
   },
   {
@@ -73,16 +73,16 @@ flowchart TD
     main -->|"No current research exists"| r0
     r0 -->|"Persisted paths, tests and ownership research"| main
     r1["wave-implementation-standard: general-purpose / standard"]
-    main -->|"Delegate path; routine well-specified work in at most three files"| r1
+    main -->|"Delegate path; every developer story (subagents always run on the standard tier)"| r1
     r1 -->|"Story implementation passing owner-authored tests and report"| main
-    r2["wave-implementation-deep: general-purpose / deep"]
-    main -->|"Delegate path; more than three files, cross-module, concurrency, integrity, migration or ambiguity"| r2
-    r2 -->|"Story implementation passing owner-authored tests and report"| main
-    r3["wave-review: code-reviewer / standard"]
-    main -->|"M/L story or risk-triggered review; reuse reviewer for closure"| r3
-    r3 -->|"Findings and closure of the reviewed fixes"| main
+    r2["wave-review: code-reviewer / standard"]
+    main -->|"M/L story or risk-triggered review; exactly one pass, no re-review"| r2
+    r2 -->|"Findings for Main Agent to fix and prove with tests"| main
+    r3["deep-tier-security-review: security-auditor / audit"]
+    main -->|"Deep-tier wave touching auth, permissions, credentials, untrusted input, security controls, request pipeline or release gating"| r3
+    r3 -->|"Security findings for the wave diff"| main
     r4["wave-documentation: doc-writer / standard"]
-    main -->|"Step 8a after wave verification"| r4
+    main -->|"Step 8a when a wave closes many stories; otherwise Main Agent edits directly"| r4
     r4 -->|"Updated TODO markers, execution log and decisions"| main
     r5["verification-only-review: code-reviewer / standard"]
     main -->|"Verification-only wave; one reviewer per story"| r5
@@ -118,6 +118,15 @@ Extract from the TODO file:
 - **Story Index table** — all stories with status, wave, dependencies
 - **Wave Plan** — pre-computed wave groupings from `/todo`
 - **Shared Hotspot Files** — files that appear in multiple stories
+- **Release Slices** and each story's **Release** (`core`/`later`) and **Risk tier** (`deep`/`standard`)
+
+Check the release slices mechanically before planning:
+
+```bash
+node .claude/core/release-slice.js "{TODO_PATH}" --deps-from "{each sibling TODO of the feature}"
+```
+
+Pass one `--deps-from` for EVERY other TODO file of the same feature (for per-epic checklists, all sibling epic checklists, not only the ones a Dependencies line names). The release slice is feature-wide: `phase` stays `core` while any core story in any of those files is open (listed in `coreOpenElsewhere`, with `next` empty when this file has none), and an all-later file is valid when a sibling holds the core. The helper also resolves cross-file dependencies and lists any story whose external dependency is not done in `blocked`; a blocked story waits even when its wave is next. Errors stop the run: fix the TODO (tags, dependencies, wave order) and re-run the check. `phase` says which slice this run executes: `core` runs the open core stories in `next`; `ship-gate` means the core slice is done and the run goes straight to the Ship gate (Phase 2 Step 9a); `later` appears only when the plan records the owner's go and the check runs with `--later-approved`; `complete` means nothing is left. A TODO without a Release column runs as one core slice (a `MISSING_RELEASE_COLUMN` warning); a TODO without tiers gets them in Phase 1: Main Agent MUST assign each story a tier from the `/todo` rubric (Release Slices and Risk Tiers), with its trigger, in the plan's Wave Breakdown before Wave 1. Only a story still without a tier or an assignment is treated as `deep`. Per-epic checklists without a Story Index are read from their story headers' **Release:** and **Risk tier:** lines.
 
 Identify:
 - Stories already `[x]` → skip
@@ -137,7 +146,16 @@ IF no plan → create one in Phase 1
 
 On resume, the plan's Resume Point, the latest handoff and current files/Git outrank remembered context. When the TODO or plan is too large for the handoff's Key Files, the handoff links a compact companion brief instead; read the full TODO and plan on demand and never substitute a summary for the exact AC.
 
-### 4. Pre-flight checks
+### 4. Owner decisions, in one round
+
+Read the TODO's `## Owner Decisions` section (and any open decision already recorded in an existing plan). Ask every unresolved decision in ONE round before Wave 1, never one wave at a time:
+- Ask with AskUserQuestion, batched (up to four questions per call, several calls in a row), each with the TODO's recommended option first and labeled "(Recommended)". With more than 8 open decisions, give the owner the written list instead (decision, options, recommendation, stories it blocks) and read the answers back from the plan.
+- Record each answer in the plan's `## Owner Decisions` block with the date and the owner's words.
+- A decision still unanswered blocks only the stories that name it: list them as blocked in the Resume Point and run everything else. A story is never built on a guessed answer.
+- A sourcing or license decision (build vs vendor or port, and the license) that is still open blocks every story that would incorporate the third-party code or data. Do not start those stories, and do not build both ways.
+- A decision that only appears during execution and could not have been predicted is asked when it appears; add it to the plan's block the same way.
+
+### 5. Pre-flight checks
 
 ```bash
 git status --short
@@ -192,6 +210,9 @@ TaskCreate: "Wave 2: Story {ID-C} — {title}" (blockedBy: context)
 --- Mid-epic checkpoint (3+ wave epics only — see Step 9b) ---
 TaskCreate: "Mid-epic cross-wave checkpoint + full suite" (blockedBy: wave ceil(totalWaves / 2) commit; blocks next wave's context task)
 
+--- Ship gate (TODOs with a later slice) ---
+TaskCreate: "Ship gate: core slice complete" (blockedBy: last core wave commit; blocks the first later wave's context task)
+
 --- Post ---
 TaskCreate: "Final convergence + full suite" (blockedBy: last wave commit)
 TaskCreate: "Verify all stories complete" (blockedBy: final gate)
@@ -219,13 +240,20 @@ Use the Write tool directly. Template:
 
 **Status:** planning
 **TODO:** {TODO_PATH}
-**Total stories:** {N}
-**Waves:** {count}
+**Total stories:** {N} (core {N}, later {N})
+**Waves:** {count} (core waves {list}; later waves {list})
+**Release scope:** core slice, then stop at the Ship gate
+**Later slice go:** {not given | YYYY-MM-DD — the owner's words}
+
+## Owner Decisions
+| Decision | Answer (date — owner's words) | Blocks |
+|----------|-------------------------------|--------|
+| {decision from the TODO} | {answer, or "open"} | {story IDs} |
 
 ## Wave Breakdown
-| Wave | Stories | Sizes | Agent Strategy | Files Owned |
-|------|---------|-------|----------------|-------------|
-| 1 | {IDs} | {sizes} | {direct/parallel} | {files} |
+| Wave | Slice | Tier | Stories | Sizes | Agent Strategy | Files Owned |
+|------|-------|------|---------|-------|----------------|-------------|
+| 1 | core | {deep/standard — highest story tier} | {IDs} | {sizes} | {direct/parallel} | {files} |
 | 2 | ... |
 
 ## File Ownership Matrix
@@ -258,8 +286,12 @@ Starting assignments and active writers; update when necessary file expansion is
 | Final | {after final source/test fix} | {full ordinary suite} | {counts, exit} | {record} | {reuse justification, if applicable} |
 
 ## Resume Point
-**Current wave:** 1 (first execution)
-{Updated as each wave completes: "Resume from Wave N — Waves 1..N-1 committed at {hashes}"}
+<!-- Overwritten each wave with current state only (about 10 lines). Never append, never keep earlier text: history lives in the Wave Execution Log. -->
+- **Next:** Wave {N} — {story IDs ready to run}
+- **Blocked:** {story — why, or none}
+- **Open owner decisions:** {decision — who, or none}
+- **Release state:** {core slice | ship gate pending | later slice approved {date}}; deploy/hosted: {state}
+- **Next action:** {one line}
 
 ---
 
@@ -343,6 +375,10 @@ For each story in the wave with testable AC:
 
 Record the ownership split in the plan's Agent Assignments before dispatch: who authors the tests (Main Agent, per this step), who writes production code, and who reviews. Read the repository's own test-authorship rule first; another project's convention (for example, supervisor-authored tests) is not imported. A deviation, such as a helper drafting tests that the owner reviews before production starts, is written into the plan as a deviation rather than presented as compliance.
 
+**Size tests by the story's risk tier.**
+- `deep` — every AC bullet plus its edge and failure paths (empty, boundary, unauthorized, malformed input). For arithmetic and classifiers, add an independent oracle or property check, and a mutation run where a surviving mutant would mean wrong money, access or data.
+- `standard` — one test per AC behavior, using existing patterns. No oracle, property or mutation work. Docs, registration and wiring stories are verified by a live check (the command, route or build that proves the wiring) instead of new test files when the existing suite already covers the behavior.
+
 **Skip when:**
 - No test framework detected and no existing tests
 - All AC bullets are `[manual]` (UI/visual only)
@@ -380,7 +416,7 @@ Trade-off:
 - **Costs**: Less spec-vs-test review depth — Main Agent doesn't read tests before implementation lands
 - **Safety net**: Code review on M+ stories still catches the gap (caught a softened-AC + missing-seeding-assertion in TDD-6.1 even when tests were dev-authored)
 
-Preserve repository test ownership: if the caller/Main Agent must author tests, keep Step 2b and delegate implementation only. The fast path does not change the sole-builder rule, concurrency cap, active-writer coordination or independent review requirements.
+Preserve repository test ownership: if the caller/Main Agent must author tests, keep Step 2b and delegate implementation only. The fast path does not change the sole-builder rule, active-writer coordination or independent review requirements.
 
 Enable explicitly per wave: declare in the plan file (`Strategy: one-round dispatch — S-size only`) and call it out in dispatch prompts. Field-tested in Wave 5 (6 hooks, 6 agents DONE first try). Do not enable by default — the plan must say so. The fast-path dispatch uses the same Path B prompt template (including the PRIOR LEARNINGS block when memory matches exist), so per-story memory grounding is preserved even in one-round mode.
 
@@ -536,6 +572,12 @@ those are the evidence of record. Obey the project's locked runner and sole-buil
 rule even for slice tests; use its approved runner and avoid competing with
 the Main Agent's builder. This line is non-optional.
 
+WAIT IN THE FOREGROUND — run every test or build you start in the foreground and
+wait for it to finish; never end your turn while a command you started is still
+running. Stop a process only by PID or port (`kill <pid>`, `kill $(lsof -t
+-i:<port>)`), never with `pkill -f` or `killall`: they match the shells and
+gates of other agents in this wave and of the orchestrator.
+
 STATUS — Report your completion status as ONE of:
 - DONE — completed as specified, all AC met
 - DONE_WITH_CONCERNS — completed but something feels off (explain what and why)
@@ -545,22 +587,26 @@ STATUS — Report your completion status as ONE of:
 OUTPUT: List every file created/modified, what changed, and your STATUS.
 ```
 
-**Per-story model selection (risk-routed).** For each story in the wave, determine the model before dispatch:
-- Pass `model: "opus"` when the story touches **> 3 files or crosses module boundaries**, involves **concurrency/data-integrity/migration logic**, or is **ambiguous and needs design judgment**.
-- Omit `model:` (`standard` default) for stories that are small and well-specified: ≤ 3 files, mechanical, scripted.
+**Model selection.** The orchestrator (Main Agent, or a delegated wave agent acting as Main Agent for its wave) runs on the `deep` tier. Every subagent it dispatches (developer, reviewer, documentation, research) runs on the `standard` tier: omit `model:` and never pass `model: "opus"` to a subagent. Risk, size and ambiguity are handled by the orchestrator's judgment and by review, not by upgrading the subagent. The one exception is a role whose own model-routing policy pins a higher floor (for example `security-auditor` on the `audit` tier); never undercut that floor.
 
 **Echo the dispatch plan before fan-out (transparency).** Right before sending the agents, print a one-line-per-story summary of what's about to be dispatched so the user can see — and interrupt — the parallel plan *before* it runs, not after:
 
 ```
 Wave {N} dispatch (parallel):
-  {ID-A} {title} → general-purpose/{standard|deep} → owns: {files}
-  {ID-B} {title} → general-purpose/{standard|deep} → owns: {files}
+  {ID-A} {title} → general-purpose/standard → owns: {files}
+  {ID-B} {title} → general-purpose/standard → owns: {files}
   {ID-C} {title} → general-purpose/standard → owns: {files}
 ```
 
 This makes the agent-type + model + file-ownership explicit up front (the parallel path's behavior is otherwise invisible until commits land). It also means the user doesn't have to ask "which model?" mid-run.
 
-**Dispatch within the active runtime's concurrency cap, counting Main Agent, reviewers and documentation helpers.** With a four-agent cap, at most three children run beside Main Agent; send remaining stories in later batches. All developer agents still defer heavy gates to Main Agent.
+**No artificial concurrency or wave-size cap.** A wave takes every ready story, and Main Agent dispatches as many agents in parallel as the work allows. Do not limit a wave to N stories or N agents. The only limits are real interference and a hard limit the runtime itself enforces: one active writer per file in a shared checkout, shared integration files (registries, manifests, counts) serialized through Main Agent, separate worktrees when writers' files or git operations would collide, and git-serial waves run sequentially. If the runtime rejects a dispatch for exceeding its own thread limit, send the rest as soon as slots free, without waiting for the wave to end. All developer agents still defer heavy gates to Main Agent.
+
+**Supervised runs (wave agents).** When a supervisor delegates whole waves to wave agents, each wave agent is the orchestrator for its wave and runs on the `deep` tier; every subagent it dispatches runs on the `standard` tier, as above. Assign a wave agent every ready story whose files and git operations do not collide.
+- **Wait for gates in the foreground.** A wave agent runs build and test gates in the foreground and waits for them to finish. It never ends its turn, or hands back, while a gate it started is still running.
+- **Terminal report.** A wave agent's final message carries its terminal report: the Step 6 ship token and the Step 8g commit hash for a completed wave, or a STATUS block (`DONE_WITH_CONCERNS`, `BLOCKED` or `NEEDS_CONTEXT` with its reason).
+- **Auto-resume once.** When a wave agent returns without a terminal report, the supervisor resumes that same agent once with "finish the wave and report: ship token and commit hash, or a STATUS block". If the resumed agent again returns without one, the supervisor stops that wave and brings it to the owner with what the agent last reported. It never starts a fresh wave agent over the same files while the first may still be running a gate.
+- **Stopping processes.** Stop a process by PID or port (`kill <pid>`, `kill $(lsof -t -i:<port>)`), never by command-line pattern: `pkill -f` and `killall` also match the agent's own shell, sibling agents and a running gate. The guardrail nudges them.
 
 ```
 // All stories in wave — dev agents only (tests already written by Main Agent in Step 2b)
@@ -675,6 +721,8 @@ It applies the same zero-collected false-green teeth as the unit leg and writes 
 - **`--e2e` flag passed** → run it on **every** wave, unconditionally. This is the explicit, no-judgment switch — use it for any run you know will move contracts.
 - **No flag (default)** → run it on any wave whose diff touched a **contract/interface surface** (the list above). This heuristic is the safety net so a contract-moving wave is never gated on unit tests alone; when in doubt, run it (a no-contract project just SKIPs to PASS).
 
+**Browser checks are headless.** Verify UI behavior with headless Playwright (the project's E2E runner or `playwright-cli`) or with `curl` against routes; a headless screenshot is the on-screen evidence. Never open a headed browser or a preview tab that takes the owner's focus. A check that truly needs a headed browser or the owner's real session becomes a `[manual]` AC item for the owner. A project may allow headed checks through its own instructions.
+
 If the project's E2E suite is slow/flaky or environment-bound (e.g. headed Chromium under WSL) and you cannot run it in this session, do **not** silently skip — flag it in the wave handoff as **E2E-unverified** with the specific contract that changed, so the gap is visible rather than green-by-omission.
 
 - **Pass** (required builds, mapped focused checks or justified full fallback, all touched/contract suites and every checkpoint currently due pass, with nonzero collection for each real runner) → proceed to Step 6
@@ -753,6 +801,18 @@ The token, not agent judgment, decides the wave is finished and may commit.
 ---
 
 #### Step 7: Code review (M/L stories only)
+
+**Review depth follows the wave's risk tier** (the highest tier among its stories; a wave agent may raise it when it finds a trigger and records why in the plan):
+
+| | `deep` wave | `standard` wave |
+|---|---|---|
+| Review | Fresh `code-reviewer` (Deep depth in the `code-review` playbook) | Fresh `code-reviewer`, one pass |
+| Security | `security-auditor` as well, when the diff touches auth, permissions, credentials, untrusted input, security controls, the shared request pipeline or release gating | None unless a deep trigger appears; then raise the tier |
+| Findings | Main Agent fixes every finding, CRITICAL to NIT, in one batch | Main Agent fixes every finding, CRITICAL to NIT, in one batch |
+| After the fixes | No re-review: each fix is proven by a test and the gate | No re-review: each fix is proven by a test and the gate |
+| Extra proof | Mutation or oracle runs where useful (Step 2b) | No mutation runs |
+
+The skip rules at the end of this step still apply to either tier. A `deep`-tier story is never skipped.
 
 > ⚠ **Two size-independent triggers — review is MANDATORY even for an all-XS/S wave** (measured in a
 > retro where the two waves whose review was skipped held **4 of the 7 MAJOR findings**):
@@ -843,17 +903,34 @@ Agent(
 )
 ```
 
-Any finding (nits-and-up) → Main Agent fixes them directly in ONE batch, updates the Step 5 mapping, and reruns focused regression/affected-consumer/guard checks plus required build(s). A fix does not trigger another full suite merely because it came from review; run it when the current checkpoint, strict override or unsafe mapping requires it. Final convergence must cover the last source/test edit. Recheck AC and ship-token preconditions before committing.
+**Security review (deep tier only).** Dispatch it alongside the code review from the same persisted scope, on the role's own pinned model (never a lower tier):
 
-**Fresh reviewer, warm closure.** Write the review scope (stories, AC, changed files, constraints, evidence locations) to the run's work folder first, and start the reviewer from that persisted scope rather than from conversation history, so it judges the diff independently. After the fixes, send them back to the **same reviewer** for a closure pass. Tell it to verify only that each listed finding is closed and not to hunt for new issues. **Three reviewer passes per scope is the hard maximum** (the review, its closure, and at most one more), and there is no reviewer for reviewers.
-- A new finding counts only if it is CRITICAL or MAJOR and was introduced by one of the fixes. Main Agent fixes it and proves it with a test. Only such a finding earns the third pass, which again verifies only that finding's fix.
-- A new MINOR or NIT is fixed by Main Agent and proven by a test, with no further review.
-- A CRITICAL or MAJOR still open after the third pass is never looped: it comes to the user as a decision.
+```
+Agent(
+  subagent_type: "security-auditor",
+  prompt: """
+  Security review for wave {N} stories: {IDs} (risk tier: deep — {triggers})
+  Scope file: {persisted review scope path}
+  Files changed: {list}
+  Trust boundaries: {auth model, permission checks, untrusted inputs, credentials touched}
+  Report findings as CRITICAL / MAJOR / MINOR / NIT with file:line and an exploit or failure path.
+  Write findings to docs/.output/findings/reviews/{YYMMDD-HHMM}-{slug}-wave{N}-security.md.
+  Do not edit source files.
+  """,
+  description: "Security review wave {N}"
+)
+```
+
+It runs in the same single pass. Its findings join the code-review findings in the same fix batch.
+
+Any finding (nits-and-up) → Main Agent fixes them directly in ONE batch, updates the Step 5 mapping, and reruns focused regression/affected-consumer/guard checks plus required build(s) once for the whole batch — one build gate per review-fix batch, never one per finding or per fix. A fix does not trigger another full suite merely because it came from review; run it when the current checkpoint, strict override or unsafe mapping requires it. Final convergence must cover the last source/test edit. Recheck AC and ship-token preconditions before committing.
+
+**Fresh reviewer, one pass, then done.** Write the review scope (stories, AC, changed files, constraints, evidence locations) to the run's work folder first, and start the reviewer from that persisted scope rather than from conversation history, so it judges the diff independently. The review then follows "One review pass, then done" in the `code-review` skill. The wave's review is done when every finding is fixed (or recorded with a one-line reason), each fix is proven by a test, and the Step 5 checks are green after the last fix. Never send fixes back to a reviewer and never dispatch a second one.
 - For an open-ended classifier (regexes or word lists over free text), do not chase paraphrases. Document the known gaps with one pinned test sentence each, and have the proof record quote the decisive sentences for a person to confirm.
 
-Record the review and its closure in a tracked findings report (`docs/.output/findings/reviews/`), not only in scratch. While the authoritative gate (Step 5) runs, the reviewer runs only cheap, targeted reads: installs, full suites or other heavy commands running at the same time cause load-induced timeouts that are not regressions.
+Record the review and how each finding was resolved in a tracked findings report (`docs/.output/findings/reviews/`), not only in scratch. While the authoritative gate (Step 5) runs, the reviewer runs only cheap, targeted reads: installs, full suites or other heavy commands running at the same time cause load-induced timeouts that are not regressions.
 
-**Skip code review when:** all stories in the wave are XS or S, **AND no story's function touches unvalidated external/untrusted input** (parsed dates, free-text regex targets, anything from an external feed/adapter), **AND no story shipped Path A while introducing a genuinely new technical surface** (a first-of-its-kind dependency/stack in the repo, or a composition/rendering concern), **AND no story is a test-only story whose primary purpose is regression coverage for a previously-fixed MAJOR/CRITICAL finding** (that test file is higher-stakes than its size signals — give it at least a lightweight pass), **AND no story's diff touches a HIGH-risk-tier path** (per the project's own risk map). Story size gates review *depth* (Fast-Lane vs Standard), not *whether review happens* — untrusted-input risk, new-technical-surface risk, and risk-tier path don't correlate with story size.
+**Skip code review when:** every story in the wave is tier `standard`, all stories in the wave are XS or S, **AND no story's function touches unvalidated external/untrusted input** (parsed dates, free-text regex targets, anything from an external feed/adapter), **AND no story shipped Path A while introducing a genuinely new technical surface** (a first-of-its-kind dependency/stack in the repo, or a composition/rendering concern), **AND no story is a test-only story whose primary purpose is regression coverage for a previously-fixed MAJOR/CRITICAL finding** (that test file is higher-stakes than its size signals — give it at least a lightweight pass), **AND no story's diff touches a HIGH-risk-tier path** (per the project's own risk map). Story size gates review *depth* (Fast-Lane vs Standard), not *whether review happens* — untrusted-input risk, new-technical-surface risk, and risk-tier path don't correlate with story size.
 
 `TaskUpdate: "Wave {N}: Code review" → completed` (or skipped)
 
@@ -863,7 +940,22 @@ Record the review and its closure in a tracked findings report (`docs/.output/fi
 
 `TaskUpdate: "Wave {N}: Update TODO + commit" → in_progress`
 
-**8a. Update TODO (`standard` tier)**
+**Write each fact once.** Every wave fact has one home; other documents link to it rather than restating it.
+
+| Fact | Single home | Everywhere else |
+|------|-------------|-----------------|
+| Story done, criterion met | TODO story marker and AC ticks | nothing |
+| Current state (ready queue, blocked, owner decisions, release/deploy state, next action) | the plan's Resume Point, overwritten each wave | the handoff links it |
+| Wave verification, AC counts, review result, commit hash | the plan's Wave Execution Log entry (8d) | the TODO's one-line Execution Log pointer; the handoff links the plan's Resume Point |
+| Scope or approach decision | TODO Key Decisions | the plan entry may link it |
+| Review findings and their resolution | one review file per wave in `docs/.output/findings/reviews/` | the plan entry links it |
+| Evidence | the plan entry: command, counts, exit status | a separate receipt file only when the evidence cannot fit a log line (a SQL proof transcript, a browser run); the plan entry links it |
+
+Do not create per-story receipt or summary files, or status columns in a second tracker or execution guide. A cross-file dependency graph is a static document with no status column; `release-slice.js --deps-from` reads cross-file status from the TODOs themselves.
+
+**8a. Update TODO**
+
+Main Agent makes these edits directly. Dispatch the `doc-writer` below only when the wave closes many stories (more than about five) and the edits would crowd Main Agent's context.
 
 ```
 Agent(
@@ -878,8 +970,10 @@ Agent(
      checkboxes — so flip it. Also check the story's done sub-task `- [ ]` boxes
      for human readability. (R7: status.js treats the header marker as
      authoritative; a header left [ ] reads as not-done even with all tasks checked.)
-  2. Add to Execution Log:
-     {date}: Wave {N} — {story IDs and one-line summaries}
+  2. Add ONE line to the Execution Log, and nothing else there:
+     {date}: Wave {N} — {story IDs} — details: {plan path} (Wave {N}){; Path A, no subagent | ; review skipped: reason — only when true}
+     Verification, AC counts, review results and the commit hash live in the plan,
+     not in the TODO.
   3. Add Key Decisions if any approach deviated from plan. **If a Key Decision
      states a numeric threshold, range, or formula-derived value, include a
      one-line hand-verified recomputation of that arithmetic — don't transcribe
@@ -938,7 +1032,7 @@ If any misalignment or quality issue was observed in Step 4, append to today's d
 **8d. Update the execution plan file**
 
 Open `docs/.output/plans/{YYMMDD-HHMM}-run-todo-{slug}.md` (written in Phase 1 Step 3). Update:
-- **Resume Point:** `Waves 1..{N} committed — resume from Wave {N+1}` (or `ALL WAVES COMPLETE` if this was the last wave)
+- **Resume Point:** OVERWRITE the whole section with current state only, using the template's fields (next wave and ready stories, blocked items, open owner decisions, release and deploy state, next action), or `ALL WAVES COMPLETE`. Never append to it and never carry earlier text forward; what happened lives in the Wave Execution Log.
 - Append a new block under **Wave Execution Log**:
 
 ```markdown
@@ -949,7 +1043,9 @@ Open `docs/.output/plans/{YYMMDD-HHMM}-run-todo-{slug}.md` (written in Phase 1 S
 - **Full-suite checkpoint:** {none due / checkpoint name + evidence reference; do not label focused results as full-suite PASS}
 - **AC:** {total_pass}/{total} passed, {manual_count} manual
 - **Agent issues:** {count, or "none"}
-- **Code review:** {PASS/SKIP — reason}
+- **Tier:** {deep | standard}{ — raised from standard: reason}
+- **Code review:** {PASS/SKIP — reason} — {review file link}{; security review: link}
+- **Receipts:** {none | link to a receipt file, only for evidence that cannot fit this entry}
 ```
 
 **8e. Regenerate the session handoff — session-handoff skill**
@@ -1000,7 +1096,7 @@ If anything wrong → fix and re-verify.
 
 **8h. Update plan file with the committed hash**
 
-Edit the Wave Execution Log entry from 8d — replace `{pending}` with the short hash from 8g. This creates a tiny follow-up: either amend it into the wave commit (if still safe to amend) OR leave it for the next wave's commit to sweep up. Leaving the hash-fill for the next wave is preferred — avoids amending.
+Edit only the `**Commit:**` line of this wave's Wave Execution Log entry, replacing `{pending}` with the short hash from 8g. Do not commit that edit on its own: the next wave's commit carries it, and the last wave's hash rides in the Ship gate or final plan commit (Phase 3 Step 6). Never make a separate "record the hash" commit, never amend for it, and never run a search-and-replace across files to fill hashes; the plan entry is the only place the hash is written.
 
 `TaskUpdate: "Wave {N}: Update TODO + commit" → completed`
 
@@ -1008,7 +1104,29 @@ Edit the Wave Execution Log entry from 8d — replace `{pending}` with the short
 
 #### Step 9: Proceed to next wave
 
-Move to next wave. Repeat from Step 1.
+Move to next wave. Repeat from Step 1. When the wave just committed was the last core wave and later stories remain, go to Step 9a before any later wave.
+
+---
+
+#### Step 9a: Ship gate (core slice complete)
+
+Run this when the last core wave has committed and `release-slice.js` (with every sibling TODO of the feature passed as `--deps-from`) reports `phase: "ship-gate"`. Skip it for a TODO with no later stories (`phase: "complete"`).
+
+`TaskUpdate: "Ship gate: core slice complete" → in_progress`
+
+1. Run the final convergence checks (Phase 3 Step 1) on the core slice, so the release candidate has fresh full-suite evidence. If the owner then says stop, this run IS the final convergence: Phase 3 reuses it under its source-identity rule instead of running it again on an unchanged tree.
+2. Write a short **release packet** into the plan file under `## Ship Gate`. It summarizes and links; it never restates an acceptance packet or runbook that already exists:
+   - core stories and their wave commits;
+   - flags: each flag's current value and the value to set at release;
+   - migrations: pending or held, and who applies them;
+   - runbook: a link to the project's release runbook, which must name the rollback target and why rolling back to it is safe (write or fix the runbook before the gate if it does not);
+   - evidence: a link to the final full-suite row in Full-Suite Checkpoint Evidence, plus required E2E or integration legs;
+   - open owner items and manual checks;
+   - later stories still open, with the resume trigger from the TODO's Release Slices.
+3. Commit the plan and handoff (Step 8 rules), then **stop and ask the owner**: ship the core slice, then continue into the later slice, stop here, or re-plan it. Do not start a later wave in the same turn.
+4. Continue only on an explicit go. Record it in the plan as `**Later slice go:** {YYYY-MM-DD} — {the owner's words}`, and from then on run the check with `node .claude/core/release-slice.js "{TODO_PATH}" --later-approved`. A resumed run whose plan has no recorded go stops here again. "Stop" or "re-plan" ends the run with the Phase 3 report for the core slice.
+
+`TaskUpdate: "Ship gate: core slice complete" → completed`
 
 ---
 
@@ -1020,6 +1138,8 @@ built yet. That forward-looking gap is exactly what an epic-close `/retro` has r
 only after every wave was already committed (an early wave's output turns out to be missing a field
 a not-yet-built later wave's consumer needs). Waiting for epic-close means the fix costs a
 follow-up patch instead of a one-line addition while the diff is still a wave old.
+
+This is Main Agent's own short read plus the midpoint full suite, never a reviewer dispatch.
 
 **When this epic has 3 or more waves** (per the plan's Wave Breakdown), run this checkpoint ONCE,
 immediately after the MIDDLE wave's Step 8 commit and before the next wave's Step 1 (3 waves →
@@ -1034,7 +1154,7 @@ same data — and if so, whether the already-shipped code actually includes ever
 will need. This is a plan-vs-code read, not a fresh whole-epic pass: ~10-15 minutes.
 
 Any gap found is fixed immediately, in this step, while the diff is one wave old — do not defer it
-to the epic-close retro. Verify fixes with the affected checks, required builds and AC/review closure. Then run the full ordinary application suite through `node .claude/core/gate.js test` after those source/test fixes and before the next wave starts. A same-source full run already performed at this checkpoint may be reused under Phase 3's rules. Persist counts, filters, source identity and evidence path in Full-Suite Checkpoint Evidence; failure or zero collection blocks the next wave. Commit any checkpoint fixes with their verification and ship token using the same ownership/atomic-commit rules. If no semantic gap is found, log "checkpoint clean" along with the full-suite result; this is not a mandatory-finding exercise.
+to the epic-close retro. Verify fixes with the affected checks, required builds and AC. Then run the full ordinary application suite through `node .claude/core/gate.js test` after those source/test fixes and before the next wave starts. A same-source full run already performed at this checkpoint may be reused under Phase 3's rules. Persist counts, filters, source identity and evidence path in Full-Suite Checkpoint Evidence; failure or zero collection blocks the next wave. Commit any checkpoint fixes with their verification and ship token using the same ownership/atomic-commit rules. If no semantic gap is found, log "checkpoint clean" along with the full-suite result; this is not a mandatory-finding exercise.
 
 **Skip when:** the epic has ≤2 waves — nothing has shipped early enough for a forward-looking gap to
 exist yet, and the epic-close retro is timely enough on its own.
@@ -1188,3 +1308,6 @@ Stories that are read-only verification (no code changes):
 18. **3+ wave epics get a mid-epic cross-wave checkpoint and full ordinary suite (Step 9b), not just an epic-close retro.** Wave-time review (Step 7) only checks a wave against earlier waves; it can't see a forward-looking gap where an early wave's output turns out to be missing something a not-yet-built later wave will need. Run the checkpoint once, at the epic's middle wave.
 
 19. **Focused waves, explicit full checkpoints.** Persist a complete grounded mapping; missing/unsafe mapping falls back to full for that wave. Zero-collected runs fail. Reverify affected checks after every source/test fix; review fixes do not automatically require a full suite. Full baseline and final remain mandatory for ordinary application runs, and 3+ waves add a full midpoint after `ceil(totalWaves / 2)`. Final evidence must follow the last source/test edit and may be reused across last-wave/post phases only under Phase 3's source-identity rules. Keep all locks, safety exclusions, thresholds, required touched/contract legs, test ownership and meaningful mutation proof.
+20. **Core first, then a ship gate.** Execute the core slice, stop at the Ship gate with a release packet, and build `later` stories only after the owner's recorded go (`release-slice.js --later-approved`).
+21. **Assurance follows the risk tier.** `deep` stories get edge-path tests, security review in the same single pass, and mutation where useful; `standard` stories get AC tests. Both tiers get one review pass when review is due, every finding fixed and proven by a test, and no re-review.
+22. **Owner decisions in one round; wave agents report or get resumed.** Ask every predictable owner decision before Wave 1 (Phase 0 Step 4); an unanswered one blocks only its own stories. Wave agents wait for their gates in the foreground, end with a terminal report, are resumed once if they do not, and stop processes by PID or port.

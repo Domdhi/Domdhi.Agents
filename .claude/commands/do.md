@@ -53,6 +53,8 @@ IF INPUT is empty → infer:
 
 **Surface the Complexity score at pick-time.** When the resolved task is a story that carries a persisted `**Complexity:** {1–10}` field (emitted by `/todo` and `/create:project-epics-todo`), echo it now with the route it implies — e.g. `T15.2 · Complexity 4 → Path A (Main Agent direct)`. This makes the size/route decision visible the moment the story is picked, before planning. If the story has no Complexity field (older TODO), say so and note the route will be sized from the plan at Step 6b. The threshold is defined in Step 6b.
 
+**Surface the Risk tier too.** Echo the story's `**Risk tier:** deep | standard` with its trigger (`T15.2 · Complexity 4 → Path A · tier standard (wiring only)`). The tier sets test depth (Step 5) and whether an independent review runs (Step 8d), using the rubric in `/todo` (Release Slices and Risk Tiers). A story without a tier, or ad-hoc work, takes `deep` when it matches a trigger in the `/todo` tier table (auth or permissions, migrations or storage/auth-guarding schemas, code that computes money or calculation results, untrusted input reaching storage/auth/external calls, credentials, security controls, data deletion, the shared request pipeline, release flags, deploy/rollback/runbook procedure, wide blast radius), and `standard` otherwise. You may raise a tier when you find a trigger (record why in the plan); lower it only with the owner's agreement.
+
 **Branch pre-flight (run before any work):** `git branch --show-current`. If it prints the default branch (`main`), STOP and create a feature branch first (`git checkout -b {type}/{kebab-task-name}`) — unless the user explicitly said to work on main, or the repo's own CLAUDE.md convention is main-direct commits (docs-only lifecycle repos). Committing task work straight to local `main` has required manual git surgery to untangle (field-proven twice on an adopter — retro-emp-profile-hr-consolidation, 2026-07). If multiple unrelated tasks run in one session, each gets its own branch.
 
 ---
@@ -199,6 +201,8 @@ This same file is updated in Step 10 with the completion section appended (below
 
 Write tests BEFORE implementation. Tests are derived from the acceptance criteria, not from the code — this prevents agents from optimizing tests for what they built instead of what was specified.
 
+**Size tests by the risk tier.** `deep`: every AC bullet plus its edge and failure paths, with an oracle, property or mutation check where wrong arithmetic, access or data would survive ordinary tests. `standard`: one test per AC behavior using existing patterns, no oracle/property/mutation work; docs, registration and wiring are proven by a live check when the existing suite already covers the behavior.
+
 ### Path A: Main Agent writes tests directly (default)
 
 Read `.claude/skills/qa-engineer/SKILL.md` for test patterns, naming conventions, and organization before writing.
@@ -343,21 +347,16 @@ Use when the task is too large for Main Agent to hold in working memory, or when
 
 | Task domain | Agent | Model |
 |-------------|-------|-------|
-| Frontend / UI components | `general-purpose` | risk-routed (see B1a) |
-| Backend / API / business logic | `general-purpose` | risk-routed (see B1a) |
-| Database / migrations | `general-purpose` | risk-routed (see B1a) |
+| Frontend / UI components | `general-purpose` | `standard` (see B1a) |
+| Backend / API / business logic | `general-purpose` | `standard` (see B1a) |
+| Database / migrations | `general-purpose` | `standard` (see B1a) |
 | Tests only | `qa-engineer` | `standard` |
 | Documentation only | `doc-writer` | `standard` |
-| Infrastructure / config | `general-purpose` | risk-routed (see B1a) |
+| Infrastructure / config | `general-purpose` | `standard` (see B1a) |
 
-##### B1a. Risk-route the `general-purpose` model
+##### B1a. Subagent model: always `standard`
 
-Pass `model: "opus"` when ANY of the following is true:
-- The task touches **> 3 files or crosses module boundaries** (multi-component refactor)
-- The task involves **concurrency, data-integrity, or migration logic**
-- The task is **ambiguous and needs design judgment** (multiple valid approaches, unclear spec)
-
-Omit `model:` (`standard` default) for tasks that are small and well-specified: ≤ 3 files, mechanical spec-to-code, scripted changes.
+Omit `model:` for every delegated agent: subagents always run on the `standard` tier, and Main Agent stays on the `deep` tier as the orchestrator. Never pass `model: "opus"` to a subagent; risk, size and ambiguity are handled by Main Agent's planning and by review, not by upgrading the subagent. A role whose own model-routing policy pins a higher floor (for example `security-auditor`) keeps that floor.
 
 `qa-engineer` and `doc-writer` always omit `model:` (they stay on their own `standard` default).
 
@@ -574,7 +573,8 @@ For each AC bullet in the story:
 | Data/schema | Read migration or schema file |
 | Integration | Check imports, wiring, registration |
 | CI-runtime only (matrix job, env-bound, no local runner) | Verify by **inspection** + note `[CI-pending]`; record a fallback if CI rejects it (F33). Local execution isn't possible — don't block on it |
-| Manual-only (UI, visual) | Note as `[manual]` — cannot verify in CLI |
+| UI behavior | Headless Playwright (the project's E2E runner or `playwright-cli`) or `curl`; a headless screenshot is the evidence. Never open a headed browser or a preview tab that takes the owner's focus |
+| Manual-only (UI, visual) | Note as `[manual]` — a check that truly needs a headed browser or the owner's real session is the owner's |
 
 **Process:**
 1. Read each AC bullet
@@ -605,6 +605,10 @@ Only after spec passes. Check:
 | 2 | {criterion} | PASS | {command output confirming} |
 | 3 | {criterion} | [manual] | Requires UI testing |
 ```
+
+### 8d. Independent review (`deep` tier only)
+
+A `deep`-tier story gets the same review `/run-todo` Step 7 gives a deep wave before it commits: a fresh `code-reviewer` started from a persisted scope (story, AC, changed files, constraints), plus `security-auditor` on its pinned model when the diff touches auth, permissions, credentials, untrusted input, security controls, the shared request pipeline or release gating. It is one pass with no re-review. Main Agent fixes every finding, CRITICAL to NIT, in one batch, proves each fix with a test, and reruns the affected checks. The review is done when every finding is fixed or recorded with a reason and the checks are green ("One review pass, then done" in the `code-review` skill). Record the review in `docs/.output/findings/reviews/`. A `standard`-tier story relies on Steps 8a–8b and needs no separate reviewer. Run this before the ship token; review fixes invalidate earlier evidence.
 
 ### 8c. Ship-token precondition (hard precondition for commit)
 
@@ -642,8 +646,9 @@ Agent(
   prompt: """
   Update the TODO file at {path}:
   1. Change story {ID} from [>] to [x]
-  2. Add to the Execution Log section:
-     - {date}: {story ID} — {one-line summary}
+  2. Add ONE line to the Execution Log section:
+     - {date}: {story ID} — details: {plan path}{; Path A, no subagent — only when true}
+     Verification, AC results and the commit hash live in the plan file, not here.
   3. Add to Key Decisions if approach deviated from plan:
      - {decision}: {rationale}
      If the decision states a numeric threshold, range, or formula-derived

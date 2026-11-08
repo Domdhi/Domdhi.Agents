@@ -31,6 +31,8 @@ const {
     readSystemFiles,
     readGateRuns,
     readScannerBlocks,
+    readScannerBypasses,
+    readScannerTopRules,
 } = require('../../../.agents/core/feedback-digest');
 const { createTmpDir } = require('./_helpers/tmp-dir');
 
@@ -195,6 +197,58 @@ describe('readScannerBlocks', () => {
     });
 });
 
+describe('scanner bypasses and top rules (secret engine telemetry)', () => {
+    const scanner = (extra, ts) => ({ event: 'guardrail', decision: 'block', rule: 'secret-scanner', source: 'secret-scanner', timestamp: ts, ...extra });
+
+    it('a --no-scan bypass is counted as a bypass and never as a block', () => {
+        writeJsonl(`${TEL}/guardrail-events.jsonl`, [
+            scanner({}, '2026-06-13T10:00:00Z'),
+            { event: 'guardrail', decision: 'bypass', rule: 'commit-no-scan', source: 'secret-scanner', timestamp: '2026-06-13T11:00:00Z' },
+            { event: 'guardrail', decision: 'bypass', rule: 'commit-no-scan', source: 'secret-scanner', timestamp: '2026-06-13T12:00:00Z' },
+        ]);
+        expect(readScannerBlocks(tmp.root)).toBe(1);
+        expect(readScannerBypasses(tmp.root)).toBe(2);
+    });
+
+    it('ranks the rules that fired by the number of blocks they stopped, and counts a rule once per block', () => {
+        writeJsonl(`${TEL}/guardrail-events.jsonl`, [
+            scanner({ patterns: ['Stripe Key', 'Stripe Key', 'Password Assignment'], count: 3 }, '2026-06-13T10:00:00Z'),
+            scanner({ patterns: ['Password Assignment'], count: 1 }, '2026-06-13T11:00:00Z'),
+            scanner({ patterns: ['Password Assignment', 'JWT Token'], count: 2 }, '2026-06-13T12:00:00Z'),
+            scanner({}, '2026-06-13T13:00:00Z'),
+            { event: 'guardrail', decision: 'bypass', rule: 'commit-no-scan', source: 'secret-scanner', patterns: ['Ignored'], timestamp: '2026-06-13T14:00:00Z' },
+        ]);
+        expect(readScannerTopRules(tmp.root)).toEqual([
+            { rule: 'Password Assignment', blocks: 3 },
+            { rule: 'JWT Token', blocks: 1 },
+            { rule: 'Stripe Key', blocks: 1 },
+        ]);
+        expect(readScannerTopRules(tmp.root, null, 1)).toHaveLength(1);
+    });
+
+    it('returns an empty list and zero for a missing log', () => {
+        expect(readScannerTopRules(tmp.root)).toEqual([]);
+        expect(readScannerBypasses(tmp.root)).toBe(0);
+    });
+
+    it('shows the top rules and the bypass count in the digest markdown and the summary', () => {
+        writeJsonl(`${TEL}/guardrail-events.jsonl`, [
+            scanner({ patterns: ['Stripe Key'], count: 1 }, '2026-06-13T10:00:00Z'),
+            { event: 'guardrail', decision: 'bypass', rule: 'commit-no-scan', source: 'secret-scanner', timestamp: '2026-06-13T11:00:00Z' },
+        ]);
+        const d = buildDigest(tmp.root);
+        expect(d.scannerBlocks).toBe(1);
+        expect(d.scannerBypasses).toBe(1);
+        expect(d.scannerTopRules).toEqual([{ rule: 'Stripe Key', blocks: 1 }]);
+        const md = renderMarkdown(d);
+        expect(md).toMatch(/top rules: 1× Stripe Key/);
+        expect(md).toMatch(/scan bypasses: \*\*1\*\*/);
+        const s = summarize(d);
+        expect(s.scanner_bypasses).toBe(1);
+        expect(s.scanner_top_rules).toEqual([{ rule: 'Stripe Key', blocks: 1 }]);
+    });
+});
+
 // ── S-PI.5: buildDigest integration (AC5) ───────────────────────────────────
 
 describe('buildDigest — S-PI.5 gate + scanner fields', () => {
@@ -313,5 +367,97 @@ describe('buildDigest + render + summarize', () => {
         expect(() => buildDigest(tmp.root)).not.toThrow();
         const d = buildDigest(tmp.root);
         expect(() => renderMarkdown(d)).not.toThrow();
+    });
+});
+
+// ── run window (--since / --until) ───────────────────────────────────────────
+
+describe('run window', () => {
+    const { parseWindow, parseArgs } = require('../../../.agents/core/feedback-digest');
+    const at = iso => ({ timestamp: iso });
+
+    function seedTwoRuns() {
+        writeJsonl(`${TEL}/command-usage.jsonl`, [
+            { ...at('2026-10-01T12:00:00.000Z'), type: 'command_invocation', command: 'todo' },
+            { ...at('2026-10-01T12:05:00.000Z'), type: 'gate_run', outcome: 'failure', duration_ms: 1000 },
+            { ...at('2026-11-05T12:00:00.000Z'), type: 'command_invocation', command: 'run-todo' },
+            { ...at('2026-11-06T12:00:00.000Z'), type: 'gate_run', outcome: 'success', duration_ms: 3000 },
+            { type: 'command_invocation', command: 'no-timestamp' },
+        ]);
+        writeJsonl(`${TEL}/hook-events.jsonl`, [
+            { ...at('2026-10-01T12:00:00.000Z'), name: 'organize', outcome: 'success' },
+            { ...at('2026-11-06T12:00:00.000Z'), name: 'organize', outcome: 'failure' },
+        ]);
+        writeJsonl(`${TEL}/guardrail-events.jsonl`, [
+            { ...at('2026-10-01T12:00:00.000Z'), event: 'guardrail', decision: 'block', rule: 'secret-scanner', source: 'secret-scanner' },
+            { ...at('2026-11-06T12:00:00.000Z'), event: 'guardrail', decision: 'nudge', rule: 'rm' },
+        ]);
+        writeJsonl(`${TEL}/skill-usage.jsonl`, [
+            { ...at('2026-10-01T12:00:00.000Z'), type: 'agent_dispatch', agent: 'architect', skills: [] },
+            { ...at('2026-11-06T12:00:00.000Z'), type: 'agent_dispatch', agent: 'code-reviewer', skills: ['code-review'] },
+        ]);
+        writeJsonl(`${TEL}/memory-injection.jsonl`, [
+            { ...at('2026-10-01T12:00:00.000Z'), type: 'memory_injection' },
+            { ...at('2026-11-06T12:00:00.000Z'), type: 'memory_access' },
+        ]);
+    }
+
+    it('limits every timestamped source to the window', () => {
+        seedTwoRuns();
+        const d = buildDigest(tmp.root, { since: '2026-11-05T00:00:00Z', until: '2026-11-07T00:00:00Z' });
+        expect(d.window).toEqual({ since: '2026-11-05T00:00:00.000Z', until: '2026-11-07T00:00:00.000Z' });
+        expect(d.commands.invocations).toEqual({ 'run-todo': 1 });
+        expect(d.gateRuns).toMatchObject({ total: 1, passed: 1, failed: 0, source: 'jsonl' });
+        expect(d.commands.gates.avgDurationMs).toBe(3000);
+        expect(d.hooks).toMatchObject({ rows: 1, failures: 1 });
+        expect(d.guardrail.total).toBe(1);
+        expect(d.scannerBlocks).toBe(0);
+        expect(d.agents.agents).toEqual(['code-reviewer']);
+        expect(d.memoryTelemetry).toMatchObject({ injections: 0, accesses: 1 });
+    });
+
+    it('without a window keeps the project lifetime, including rows with no timestamp', () => {
+        seedTwoRuns();
+        const d = buildDigest(tmp.root);
+        expect(d.window).toBeNull();
+        expect(d.commands.totalInvocations).toBe(3);
+        expect(renderMarkdown(d)).toContain('**Window**: project lifetime');
+    });
+
+    it('labels snapshot sections as current and names the window', () => {
+        seedTwoRuns();
+        const md = renderMarkdown(buildDigest(tmp.root, { since: '2026-11-05T00:00:00Z' }));
+        expect(md).toContain('**Window**: 2026-11-05T00:00:00.000Z → now');
+        expect(md).toContain('### System files (current)');
+        expect(md).toContain('store counts are current; injection telemetry is windowed');
+        expect(summarize(buildDigest(tmp.root, { since: '2026-11-05T00:00:00Z' }))).toMatchObject({ window_since: '2026-11-05T00:00:00.000Z', window_until: null });
+    });
+
+    it('windows the gate-log fallback by the timestamp in the log name', () => {
+        tmp.write(`${TEL}/logs/gate-2026-10-01T12-00-00-000Z.log`, 'x');
+        tmp.write(`${TEL}/logs/gate-2026-11-06T12-00-00-000Z.log`, 'x');
+        expect(readGateRuns(tmp.root).total).toBe(2);
+        expect(readGateRuns(tmp.root, null, parseWindow({ since: '2026-11-05T00:00:00Z' }))).toMatchObject({ total: 1, source: 'logs' });
+    });
+
+    it('date-only bounds cover whole local days', () => {
+        const w = parseWindow({ since: '2026-11-05', until: '2026-11-07' });
+        expect(w.since).toEqual(new Date(2026, 10, 5));
+        expect(w.until).toEqual(new Date(2026, 10, 7, 23, 59, 59, 999));
+    });
+
+    it.each([
+        [{ since: 'nope' }],
+        [{ until: '2026-02-30' }],
+        [{ since: '2026-11-07', until: '2026-11-05' }],
+    ])('rejects an invalid window %j', options => {
+        expect(() => parseWindow(options)).toThrow();
+    });
+
+    it('parses CLI arguments strictly', () => {
+        expect(parseArgs(['--json', '--since', '2026-11-05'])).toEqual({ json: true, since: '2026-11-05', until: undefined });
+        expect(() => parseArgs(['--since'])).toThrow();
+        expect(() => parseArgs(['--since', '2026-11-05', '--since', '2026-11-06'])).toThrow();
+        expect(() => parseArgs(['--from', '2026-11-05'])).toThrow();
     });
 });

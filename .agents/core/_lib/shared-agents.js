@@ -4,22 +4,29 @@
 const fs = require('fs');
 const path = require('path');
 const { createHash } = require('crypto');
-const { safeWrite, assertNoSymlinkedAncestor } = require('./fs-safe');
+const { safeWrite, safeDelete, assertNoSymlinkedAncestor } = require('./fs-safe');
 const { parseAgentSections, extractFieldBlock, extractSkillsList, mergeAgentContent, stripExcludedSkills } = require('./agent-merger');
 const { mergeSkillContent, hasProjectAdditions } = require('./skill-merger');
 const { walkDir } = require('./file-walker');
-const { classifySharedFile } = require('./zone-classifier');
+const { classifySharedFile, classifyClaudeFile } = require('./zone-classifier');
 const { ignoredFilter } = require('./git-ignored');
 const { renderModelProse } = require('./model-prose');
 const { renderWorkflowRoutes } = require('./workflow-routes');
 const { hookIdentities, changedTrustHandlers } = require('./codex-hook-identities');
 
 const STATE_PATH = '.agents/render-state.json';
+const RETIRED_PATH = '.agents/adapters/retired-outputs.json';
 const HOOK_IDENTITIES_PATH = '.codex/hook-identities.json';
 const HOOK_IDENTITIES_SOURCE = '.agents/core/_lib/codex-hook-identities.js';
 const COMMAND_NOTICE = '<!-- Generated command entry point from ';
 const normalize = text => text.replace(/\r\n/g, '\n');
 const digest = text => createHash('sha256').update(typeof text === 'string' ? normalize(text) : text).digest('hex');
+
+// Canonical config that has no native copy. The files under .agents/config/ are normally mirrored to
+// .claude/ because the runtime reads them there (guardrail-rules.yaml). The secret-engine files are read
+// only from .agents/config/ (the engine wrapper resolves them through its own __dirname), so a
+// .claude/ copy would be dead weight that looks editable and changes nothing.
+const CANONICAL_ONLY_CONFIG = new Set(['.agents/config/secret-engine.json', '.agents/config/secret-engine.toml']);
 
 function read(root, rel) { return normalize(fs.readFileSync(path.join(root, rel), 'utf8')); }
 function write(root, rel, content) {
@@ -148,7 +155,7 @@ function projectionPaths(root) {
     for (const rel of canonicalFiles(root)) {
         if (/^\.agents\/(core|hooks|templates)\//.test(rel)) out.add(rel.replace('.agents/', '.claude/'));
         if (/^\.agents\/(core|hooks)\//.test(rel)) out.add(rel.replace('.agents/', '.codex/'));
-        if (rel.startsWith('.agents/config/')) out.add(rel.replace('.agents/config/', '.claude/'));
+        if (rel.startsWith('.agents/config/') && !CANONICAL_ONLY_CONFIG.has(rel)) out.add(rel.replace('.agents/config/', '.claude/'));
         if (rel === '.agents/gate.config.json') out.add('.claude/gate.config.json');
         const skill = /^\.agents\/skills\/([^/]+)\/(.+)$/.exec(rel);
         if (skill) {
@@ -239,6 +246,132 @@ function loadModelAdapter(root, runtime, files = new Map()) {
     return { ...defaults, ...native, roles, tiers };
 }
 
+// Retirement may delete only toolkit-owned template files. These trees are the ones an update owns: a
+// canonical skill, helper or hook, and the native projections rendered from them.
+const RETIRED_OWNED_TREES = [
+    /^\.agents\/(?:skills\/[^/]+|core|hooks)\//,
+    /^\.claude\/(?:skills|core|hooks|commands)\//,
+    /^\.codex\/(?:core|hooks)\//,
+];
+// Project-owned, local and state paths are refused even when the ledger or a digest list names them.
+const RETIRED_DENIED = [
+    /^\.agents\/(?:intake|learning-intake)\//,
+    /(?:^|\/)(?:agent-memory|\.state|\.output|node_modules|\.git)\//,
+    /(?:^|\/)[^/]*\.local\.[^/]*$/,
+    /^\.(?:claude|codex)\/(?:settings[^/]*|update-config|shared-agents|push-guardrail|version|hooks|hook-identities)\.json$/,
+    /^\.agents\/(?:render-state|gate\.config)\.json$/,
+];
+
+/** Why a listed path may not be retired, or null when it is a toolkit-owned template file. */
+function retiredPathProblem(rel, priorState) {
+    if (typeof rel !== 'string' || !/^\.(?:agents|claude|codex)\/[^\\]+$/.test(rel) || rel.split('/').some(part => part === '..' || part === '.' || part === '')) return 'not a normalized path inside .agents/, .claude/ or .codex/';
+    if (rel === STATE_PATH || rel === RETIRED_PATH || RETIRED_DENIED.some(re => re.test(rel))) return 'project-owned, local or state path';
+    const zone = rel.startsWith('.agents/') ? classifySharedFile(rel) : classifyClaudeFile(rel.slice(rel.indexOf('/') + 1));
+    if (zone !== 'template') return `${zone} zone, not toolkit-owned`;
+    if (!RETIRED_OWNED_TREES.some(re => re.test(rel)) && !priorState[rel]) return 'outside the toolkit-owned trees and not recorded in the render ledger';
+    return null;
+}
+
+/** Numeric dotted-version comparison; non-numeric suffixes are ignored. */
+function compareVersions(a, b) {
+    const parts = v => (/^\d+(?:\.\d+)*/.exec(String(v)) || ['0'])[0].split('.').map(Number);
+    const [x, y] = [parts(a), parts(b)];
+    for (let i = 0; i < Math.max(x.length, y.length); i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) < (y[i] || 0) ? -1 : 1;
+    return 0;
+}
+
+const matchesShipped = (bytes, known) => known.includes(digest(bytes)) || known.includes(digest(bytes.toString('utf8')));
+
+/** Active entries of the retired list for the toolkit version being installed (entries past `until` are ignored). */
+function loadRetiredEntries(root, files, incoming) {
+    if (!incoming && !files.has(RETIRED_PATH) && !fs.existsSync(path.join(root, RETIRED_PATH))) return [];
+    const parsed = JSON.parse(incoming ? incoming.list : files.has(RETIRED_PATH) ? files.get(RETIRED_PATH) : read(root, RETIRED_PATH));
+    if (!Array.isArray(parsed.retired)) throw new Error(`shared-agents: ${RETIRED_PATH} must define a retired array`);
+    const versionRel = '.agents/config/version.json';
+    const versionText = incoming ? incoming.version : files.has(versionRel) ? files.get(versionRel) : fs.existsSync(path.join(root, versionRel)) ? read(root, versionRel) : null;
+    const version = versionText ? JSON.parse(versionText).version : null;
+    return parsed.retired.filter(entry => !(version && entry && typeof entry.until === 'string' && compareVersions(version, entry.until) > 0));
+}
+
+/**
+ * Plan the removal of toolkit-owned files the toolkit renamed or dropped (see RETIRED_PATH).
+ * A listed file is removed only when its bytes are provably what the toolkit shipped: the
+ * ledger digest recorded when it was rendered or accepted, or a listed historical digest.
+ * Any other listed file that still exists (edited, unrecorded, behind a symlink, not a regular
+ * file) is a conflict, so it is reported and never deleted. A listed file already gone only
+ * has its ledger entry forgotten. Pure: it reads the checkout and removes nothing.
+ */
+function planRetirement(root, files, priorState, incoming) {
+    const plan = { paths: new Set(), remove: new Set(), forget: new Set(), conflicts: [], reasons: {}, known: new Map() };
+    const conflict = (rel, reason) => { plan.conflicts.push(rel); plan.reasons[rel] = reason; };
+    const entries = loadRetiredEntries(root, files, incoming);
+    for (const entry of entries) {
+        const rel = entry && entry.path;
+        const problem = retiredPathProblem(rel, priorState);
+        if (problem) throw new Error(`shared-agents: invalid retired path ${JSON.stringify(rel)} in ${RETIRED_PATH}: ${problem}`);
+        plan.paths.add(rel);
+    }
+    for (const entry of entries) {
+        const rel = entry.path;
+        const abs = path.join(root, rel);
+        try { assertNoSymlinkedAncestor(abs, root); } catch (error) {
+            if (!/symlink/i.test(error.message)) throw error;
+            conflict(rel, 'a parent directory is a symlink'); continue;
+        }
+        const stat = fs.lstatSync(abs, { throwIfNoEntry: false });
+        if (!stat) { plan.forget.add(rel); continue; }
+        if (!stat.isFile()) { conflict(rel, 'not a regular file'); continue; }
+        // A canonical source is removed only on an explicitly listed historical digest. The ledger records whatever an
+        // update accepted, so for a mistakenly listed live source it would vouch for the current file.
+        const known = (rel.startsWith('.agents/') ? [...(entry.digests || [])] : [priorState[rel], ...(entry.digests || [])]).filter(Boolean);
+        plan.known.set(rel, known);
+        if (matchesShipped(fs.readFileSync(abs), known)) plan.remove.add(rel);
+        else conflict(rel, 'edited, or not a version the toolkit shipped');
+    }
+    return plan;
+}
+
+/** The successor named by a retired entry, for conflict messages; null when `rel` is not retired. */
+function retiredReplacement(root, rel) {
+    try {
+        const entry = loadRetiredEntries(root, new Map()).find(e => e && e.path === rel);
+        return entry ? (entry.replacedBy || 'the current toolkit equivalent') : null;
+    } catch { return null; }
+}
+
+/** One conflict line for a retired file; shared by the render CLI and the updater. */
+function describeRetiredConflict(root, rel, reasons = {}) {
+    const replacement = retiredReplacement(root, rel);
+    if (!replacement) return null;
+    return `${rel} — retired toolkit file (${reasons[rel] || 'edited, or not a version the toolkit shipped'}); it is replaced by ${replacement}. Move any changes you want to keep there, delete this file, then update again`;
+}
+
+/**
+ * Remove one planned file after re-verifying it at delete time, then prune the directories that
+ * leaves empty inside its retired skill (never above the skill root). Returns 'removed', 'gone'
+ * (already absent) or 'changed' (edited, replaced or unsafe since planning, so it is kept).
+ */
+function removeRetired(root, rel, known) {
+    const abs = path.join(root, rel);
+    try { assertNoSymlinkedAncestor(abs, root); } catch { return 'changed'; }
+    const stat = fs.lstatSync(abs, { throwIfNoEntry: false });
+    if (!stat) return 'gone';
+    if (!stat.isFile()) return 'changed';
+    let bytes;
+    try { bytes = fs.readFileSync(abs); } catch (error) { return error.code === 'ENOENT' ? 'gone' : 'changed'; }
+    if (!matchesShipped(bytes, known)) return 'changed';
+    safeDelete(abs, root); // force: an already-removed file is not an error
+    const skill = /^(\.(?:agents|claude)\/skills\/[^/]+)\//.exec(rel);
+    if (skill) {
+        for (let dir = path.posix.dirname(rel); dir.length >= skill[1].length; dir = path.posix.dirname(dir)) {
+            const abs = path.join(root, dir);
+            assertNoSymlinkedAncestor(abs, root);
+            try { fs.rmdirSync(abs); } catch { break; } // rmdir refuses a non-empty directory
+        }
+    }
+    return 'removed';
+}
+
 /** Render native surfaces without mutating canonical skills or role settings. */
 function renderSharedAgents(root, options = {}) {
     root = path.resolve(root);
@@ -266,8 +399,13 @@ function renderSharedAgents(root, options = {}) {
         const raw = files.has(source) ? files.get(source) : fs.readFileSync(path.join(root, source));
         return source.endsWith('.md') && /\{\{model-arg|```workflow-routes/.test(raw.toString()) ? prose(raw.toString(), runtime) : raw;
     };
-    const sources = [...new Set([...canonicalFiles(root), ...files.keys()])].sort();
-    for (const [rel, text] of commandEntries(root, options.commands, sources, options.excludedSkills)) outputs.set(rel, text);
+    // A partial render (the version marker) touches nothing else, so it retires nothing.
+    const retirement = options.onlyOutputs ? { paths: new Set(), remove: new Set(), forget: new Set(), conflicts: [], reasons: {}, known: new Map() } : planRetirement(root, files, priorState, options.incomingRetirement);
+    // A retired path is never a source or a command to project, whether it is being removed or kept as a conflict.
+    const retiring = rel => retirement.paths.has(rel);
+    const sources = [...new Set([...canonicalFiles(root), ...files.keys()])].filter(rel => !retiring(rel)).sort();
+    const commands = (options.commands || commandFiles(root)).filter(rel => !retiring(rel));
+    for (const [rel, text] of commandEntries(root, commands, sources, options.excludedSkills)) outputs.set(rel, text);
     for (const [name, dest] of Object.entries(workflowMap(root, files))) {
         if (options.excludedSkills?.has(name)) continue;
         const source = `.agents/skills/${name}/references/workflow.md`;
@@ -291,7 +429,7 @@ function renderSharedAgents(root, options = {}) {
             if (!exists || digest(read(root, native)) === digest(get(source)) || (priorState[native] && digest(read(root, native)) === priorState[native])) outputs.set(native, get(source));
             continue;
         }
-        if (source === '.agents/config/guardrail-rules.project.yaml') continue;
+        if (source === '.agents/config/guardrail-rules.project.yaml' || CANONICAL_ONLY_CONFIG.has(source)) continue;
         if (source.startsWith('.agents/config/')) { outputs.set(source.replace('.agents/config/', '.claude/'), files.has(source) ? files.get(source) : fs.readFileSync(path.join(root, source))); continue; }
         if (/^\.agents\/(core|hooks)\//.test(source)) {
             const native = source.replace('.agents/', '.codex/');
@@ -370,17 +508,27 @@ function renderSharedAgents(root, options = {}) {
     for (const rel of outputs.keys()) if (!selected(rel)) outputs.delete(rel);
     for (const rel of outputs.keys()) assertNoSymlinkedAncestor(path.join(root, rel), root);
 
+    for (const rel of retirement.paths) {
+        if (outputs.has(rel)) throw new Error(`shared-agents: retired path ${JSON.stringify(rel)} in ${RETIRED_PATH} is still a current output of this toolkit`);
+        // The incoming canonical sources are known only when installing; a checkout's own sources are never vouched for
+        // by the ledger (see planRetirement), so a mistakenly listed one there is a conflict, not a deletion.
+        if (options.files && files.has(rel)) throw new Error(`shared-agents: retired path ${JSON.stringify(rel)} in ${RETIRED_PATH} is still a canonical source of the toolkit being installed`);
+    }
     const previous = priorState;
     const next = { ...previous };
     // An updater can replace a generated selector with an authored skill. Once
     // that canonical input is accepted, retire its old output-ledger entry.
     for (const rel of sources) if (/^\.agents\/skills\/[^/]+\/SKILL\.md$/.test(rel) && !outputs.has(rel)) delete next[rel];
+    for (const rel of [...retirement.remove, ...retirement.forget]) delete next[rel];
     // Canonical hashes are the updater's accepted-input baseline, not a record
     // of what was most recently rendered. Bootstrap missing entries for legacy
     // checkouts, then advance them only for the install/update's accepted files.
     // A local source edit followed by any render must remain detectable at sync.
     for (const rel of sources) if (/^\.agents\/(core|hooks|templates|config|adapters)\//.test(rel) && (files.has(rel) || !previous[rel])) next[rel] = digest(files.has(rel) ? files.get(rel) : fs.readFileSync(path.join(root, rel)));
-    const result = { changed: [], conflicts: [] };
+    const result = { changed: [], conflicts: [...retirement.conflicts] };
+    // Reported only when something is retiring, so a render with nothing to retire keeps its established result shape.
+    if (retirement.remove.size) result.retired = [...retirement.remove].sort();
+    if (retirement.conflicts.length) { result.retiredConflicts = [...retirement.conflicts]; result.retiredReasons = { ...retirement.reasons }; }
     // Metadata cannot consume a pending trust warning before the native
     // registrations change. A sidecar-only selection must describe installed hooks.
     if (outputs.has(HOOK_IDENTITIES_PATH) && !outputs.has('.codex/hooks.json')) {
@@ -424,7 +572,7 @@ function renderSharedAgents(root, options = {}) {
             return false; // unreadable: keep reporting it, as before
         }
     };
-    for (const rel of Object.keys(previous)) if (selected(rel) && !isExcludedSkillPath(rel, options.excludedSkills, workflowMap(root, files)) && !outputs.has(rel) && rel !== '.claude/settings.json' && !rel.startsWith('.agents/') && fs.existsSync(path.join(root, rel)) && !sourceHiddenByIgnoreAndOutputUnchanged(rel)) result.conflicts.push(rel);
+    for (const rel of Object.keys(previous)) if (selected(rel) && !isExcludedSkillPath(rel, options.excludedSkills, workflowMap(root, files)) && !outputs.has(rel) && !retiring(rel) && !retirement.conflicts.includes(rel) && rel !== '.claude/settings.json' && !rel.startsWith('.agents/') && fs.existsSync(path.join(root, rel)) && !sourceHiddenByIgnoreAndOutputUnchanged(rel)) result.conflicts.push(rel);
     // Validate every output before any write: a conflict cannot leave the other
     // runtime silently updated while the edited projection stays behind.
     for (const [rel, content] of outputs) {
@@ -437,6 +585,15 @@ function renderSharedAgents(root, options = {}) {
     }
     if (!options.dryRun && result.conflicts.length === 0) {
         for (const rel of result.changed) write(root, rel, outputs.get(rel));
+        // Re-verified at delete time: a file edited since planning is kept, reported and keeps its ledger entry.
+        for (const rel of retirement.remove) {
+            if (removeRetired(root, rel, retirement.known.get(rel)) !== 'changed') continue;
+            result.conflicts.push(rel);
+            (result.retiredConflicts ||= []).push(rel);
+            (result.retiredReasons ||= {})[rel] = 'edited while the update was running';
+            result.retired = result.retired.filter(kept => kept !== rel);
+            if (previous[rel] !== undefined) next[rel] = previous[rel];
+        }
         if (JSON.stringify(previous) !== JSON.stringify(next)) write(root, STATE_PATH, JSON.stringify(next, null, 2) + '\n');
     }
     return result;
@@ -452,10 +609,39 @@ function syncSharedAgents(source, target, options = {}) {
     const result = { copied: 0, merged: 0, skipped: 0, conflicts: [], warnings: [], changed: [] };
     const incoming = canonicalFiles(source);
     const sourceState = fs.existsSync(path.join(target, STATE_PATH)) ? JSON.parse(read(target, STATE_PATH)) : {};
-    for (const rel of incoming) if (/^\.agents\/(core|hooks|templates|config|adapters)\//.test(rel) && sourceState[rel] && fs.existsSync(path.join(target, rel)) && digest(fs.readFileSync(path.join(target, rel))) !== sourceState[rel]) result.conflicts.push(rel);
+    for (const rel of incoming) if (/^\.agents\/(core|hooks|templates|config|adapters)\//.test(rel) && sourceState[rel] && fs.existsSync(path.join(target, rel)) && digest(fs.readFileSync(path.join(target, rel))) !== sourceState[rel]
+        // Bytes already equal to the incoming release are no local edit: an earlier update that stopped after copying them leaves exactly this.
+        && digest(fs.readFileSync(path.join(target, rel))) !== digest(fs.readFileSync(path.join(source, rel)))) result.conflicts.push(rel);
+    if (result.conflicts.length) return result;
+    // A skill name introduced by a rename is new to every checkout, so anything already at it is the adopter's own
+    // (the legacy-skill adoption below would otherwise overwrite it silently). A recorded native skill means the
+    // toolkit itself installed it on an earlier update.
+    let renamedSkills = [];
+    try {
+        renamedSkills = [...new Set(loadRetiredEntries(source, new Map()).map(entry => /^\.(?:agents|claude)\/skills\/([^/]+)\//.exec(entry.replacedBy || '')?.[1]).filter(Boolean))];
+    } catch { /* an unreadable list is reported by the render that follows */ }
+    for (const name of renamedSkills) {
+        if (options.excludedSkills?.has(name)) continue;
+        if (Object.keys(sourceState).some(rel => rel.startsWith(`.claude/skills/${name}/`) || rel === `.claude/commands/${name}.md`)) continue;
+        const canonical = path.join(target, '.agents/skills', name);
+        if (fs.existsSync(canonical)) {
+            // Ours (an earlier update stopped after copying it) only if every file is one the new release ships, byte for byte.
+            const shipped = new Set(incoming.filter(rel => rel.startsWith(`.agents/skills/${name}/`)));
+            const foreign = [...walkDir(canonical)].some(abs => {
+                const rel = path.relative(target, abs).replace(/\\/g, '/');
+                return !shipped.has(rel) || digest(fs.readFileSync(abs)) !== digest(fs.readFileSync(path.join(source, rel)));
+            });
+            if (foreign) result.conflicts.push(`.agents/skills/${name}/`);
+        } else if (fs.existsSync(path.join(target, '.claude/skills', name))) result.conflicts.push(`.claude/skills/${name}/`);
+    }
     if (result.conflicts.length) return result;
     if (!incoming.length) return result;
-    const before = renderSharedAgents(target, { dryRun: true, excludedSkills: options.excludedSkills, deferredOutputs: options.deferredOutputs });
+    // The target's own copy of the retired list is the previous release's, so even this first preview needs the incoming one:
+    // a file the new release retires would otherwise read as an orphan of a removed source.
+    const listFile = path.join(source, RETIRED_PATH);
+    const versionFile = path.join(source, '.agents/config/version.json');
+    const incomingRetirement = fs.existsSync(listFile) ? { list: read(source, RETIRED_PATH), version: fs.existsSync(versionFile) ? read(source, '.agents/config/version.json') : null } : undefined;
+    const before = renderSharedAgents(target, { dryRun: true, excludedSkills: options.excludedSkills, deferredOutputs: options.deferredOutputs, incomingRetirement });
     if (before.conflicts.length) { result.conflicts = before.conflicts; return result; }
     const files = new Map();
     const adoptPaths = new Set();
@@ -489,7 +675,7 @@ function syncSharedAgents(source, target, options = {}) {
         // The old specialization front door was a slash command, before it
         // became a native skill. Its marked project additions survive adoption.
         if (rel === '.agents/skills/review-specialize/SKILL.md' && !fs.existsSync(path.join(target, legacy))) legacy = '.claude/commands/review/specialize.md';
-        if (/^\.agents\/(core|hooks|templates|config)\//.test(rel)) {
+        if (/^\.agents\/(core|hooks|templates|config)\//.test(rel) && !CANONICAL_ONLY_CONFIG.has(rel)) {
             const native = rel.startsWith('.agents/config/') ? rel.replace('.agents/config/', '.claude/') : rel.replace('.agents/', '.claude/');
             const nativeAbs = path.join(target, native);
             if (fs.existsSync(nativeAbs)) {
@@ -551,17 +737,19 @@ function syncSharedAgents(source, target, options = {}) {
         queue(rel, JSON.stringify(obj, null, 2) + '\n', fs.existsSync(dest));
     }
     const commands = commandFiles(source);
-    const preview = renderSharedAgents(target, { dryRun: true, files, adoptPaths, excludedSkills: options.excludedSkills, deferredOutputs: options.deferredOutputs, commands });
+    const preview = renderSharedAgents(target, { incomingRetirement, dryRun: true, files, adoptPaths, excludedSkills: options.excludedSkills, deferredOutputs: options.deferredOutputs, commands });
     result.warnings.push(...(preview.warnings || []));
+    if (preview.retired) result.retired = preview.retired;
+    if (preview.retiredConflicts) result.retiredConflicts = preview.retiredConflicts;
     if (preview.conflicts.length) { result.conflicts = preview.conflicts; result.copied = result.merged = 0; result.changed = []; return result; }
     result.changed.push(...preview.changed);
     result.copied += preview.changed.length;
     if (!options.dryRun) {
         for (const [rel, content] of pending) write(target, rel, content);
-        const rendered = renderSharedAgents(target, { files, adoptPaths, excludedSkills: options.excludedSkills, deferredOutputs: options.deferredOutputs, commands });
+        const rendered = renderSharedAgents(target, { incomingRetirement, files, adoptPaths, excludedSkills: options.excludedSkills, deferredOutputs: options.deferredOutputs, commands });
         result.conflicts.push(...rendered.conflicts);
     }
     return result;
 }
 
-module.exports = { loadModelAdapter, renderSharedAgents, syncSharedAgents, syncStartupInstructions, projectionPaths, canonicalFiles, commandFiles, workflowMap, isExcludedSkillPath, STATE_PATH };
+module.exports = { describeRetiredConflict, removeRetired, planRetirement, loadModelAdapter, renderSharedAgents, syncSharedAgents, syncStartupInstructions, projectionPaths, canonicalFiles, commandFiles, workflowMap, isExcludedSkillPath, STATE_PATH };

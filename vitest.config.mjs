@@ -20,6 +20,8 @@ export default defineConfig({
       'tools/**/__tests__/**/*.test.{js,cjs}',
     ],
     exclude: ['node_modules', 'docs/.output/**'],
+    // Warns once when the secret engine binary is not installed (the engine suites run the real binary).
+    globalSetup: ['./.agents/hooks/__tests__/_helpers/warn-secret-engine.js'],
     testTimeout: 30000,
     pool: 'forks',
     minWorkers: 1,

@@ -29,7 +29,10 @@
  *     useful filepath to cite.
  *   - Clean content → no output, no rewrite.
  *
- * Pattern library shared with secret-scanner.cjs via secret-patterns.cjs.
+ * Detection is shared with secret-scanner.cjs via secret-patterns.cjs (the pinned Betterleaks
+ * engine). This hook can never block, so when the engine is missing or fails it falls back to the
+ * named-provider regex list instead of failing (the Write/Edit hook and the commit scan fail
+ * closed on the same condition). It never throws and always exits 0.
  *
  * Spec note: `hookSpecificOutput.updatedToolOutput` is documented in the
  * Claude Code 2.1.x changelog as "PostToolUse hooks can rewrite output for
@@ -57,7 +60,7 @@
 const {
     isHardSkipPath,
     isTestFilePath,
-    scanContent,
+    scanContentWithFallback,
     redactSecretsInText,
     readStdin,
 } = require('./secret-patterns.cjs');
@@ -182,13 +185,13 @@ function processEvent(parsedJson) {
 
     // Full-length scan for both Read and Bash (no head/tail cap — see the
     // F70/F9 history comment above `inferToolKind` for why).
-    const findings = scanContent(toolOutput, fileContext, { namedProvidersOnly });
+    const findings = scanContentWithFallback(toolOutput, fileContext, { namedProvidersOnly, honorMarkers: false });
     if (findings.length === 0) return null;
 
     // Build the redacted version. This may be byte-identical to the original
     // if all findings are HIGH_RISK_FILE meta-flags (no in-content match);
     // when that happens we fall through to warning-only without emitting JSON.
-    const redactedOutput = redactSecretsInText(toolOutput, fileContext);
+    const redactedOutput = redactSecretsInText(toolOutput, fileContext, { namedProvidersOnly });
     const didRedact = redactedOutput !== toolOutput;
 
     // Stderr warning — Read only (Bash has no meaningful file path to cite,
@@ -238,7 +241,13 @@ async function main() {
         process.exit(0);
     }
 
-    processEvent(data);
+    try {
+        processEvent(data);
+    } catch (err) {
+        // A post-tool-use hook cannot block; report the fault and let the tool output through
+        // (the Write/Edit hook and the commit scan are the blocking gates).
+        process.stderr.write('[post-read-scrubber] scan failed: ' + (err && err.message ? err.message : String(err)) + '\n');
+    }
 
     // Always exit 0 — post-tool-use cannot block
     process.exit(0);

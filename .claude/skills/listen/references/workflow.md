@@ -2,6 +2,8 @@
 
 The first **post-MVP lifecycle** command. When the initial backlog drains, the harness has no model for *push-from-reality* work — bug reports, telemetry drift, unaddressed agent issues, expiring flags. `/listen` is the listener: it sweeps every available signal source, tags each finding with its provenance, and writes a single dated intake file. It does **not** triage, prioritize, or ask questions — that is `/triage`'s job (Tier 2). `/listen` only gathers.
 
+Not to be confused with `/intake`, which records lessons about the toolkit for its maintainers; the "intake" here is the dated signal file under `docs/.output/evolution/intake/`.
+
 Shape: like `/prime`, but it reads *reality* (git, telemetry, logs, drift) instead of session context, and it persists the result.
 
 ## Telemetry (run first)

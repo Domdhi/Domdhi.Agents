@@ -28,7 +28,8 @@ const mockExecSync = vi.fn();
 // shell) — checkClaudeCli still uses execSync ('claude --version', a fixed
 // string with no interpolation risk). Both must be mocked.
 const mockExecFileSync = vi.fn();
-const fakeChildProcess = { execSync: mockExecSync, execFileSync: mockExecFileSync };
+// spawnSync stays real: the secret engine (loaded through secret-safe-write) runs its scan with it.
+const fakeChildProcess = { execSync: mockExecSync, execFileSync: mockExecFileSync, spawnSync: require('node:child_process').spawnSync };
 // Built-in module cache key is just the module name (no file path)
 require.cache['child_process'] = {
   id: 'child_process',

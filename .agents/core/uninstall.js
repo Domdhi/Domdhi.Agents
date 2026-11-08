@@ -7,6 +7,7 @@ const { createHash } = require('crypto');
 const { classifySharedFile, classifyClaudeFile } = require('./_lib/zone-classifier');
 const { safeDelete, assertNoSymlinkedAncestor } = require('./_lib/fs-safe');
 const { hasProjectAdditions } = require('./_lib/skill-merger');
+const { removeHooks } = require('./git-hooks');
 
 const STATE_PATH = '.agents/render-state.json';
 const ROOTS = ['.agents', '.claude', '.codex'];
@@ -221,6 +222,9 @@ function runUninstall({ target = '.', source, dryRun = true, approvedPlan } = {}
             safeDelete(path.join(plan.target, item.path), plan.target);
             result.removed.push(item.path);
         }
+        // The managed git hooks live in the git directory, outside the ledger, and run the scanner that was just
+        // removed: left behind they would block every commit. Marker hooks only; a hook we did not write stays.
+        try { result.hooks = removeHooks(plan.target, { requireRoot: true }); } catch (err) { result.hooks = { status: 'failed', removed: [], kept: [], summary: err.message }; }
         result.ok = true;
     } catch (err) { result.error = err.message; }
     return result;
@@ -242,7 +246,7 @@ function main(argv = process.argv.slice(2)) {
         const approvedPlan = review ? JSON.parse(fs.readFileSync(review, 'utf8').replace(/^\uFEFF/, '')) : undefined;
         const result = runUninstall({ target: target || '.', source, dryRun, approvedPlan });
         if (!result.ok) throw new Error(`${result.error}; removed ${result.removed.length} files: ${JSON.stringify(result.removed)}`);
-        console.log(JSON.stringify(dryRun ? result.plan : { ok: true, removed: result.removed }, null, 2));
+        console.log(JSON.stringify(dryRun ? result.plan : { ok: true, removed: result.removed, hooks: result.hooks }, null, 2));
         return result;
     } catch (err) {
         console.error(`uninstall: ${err.message}`);

@@ -13,6 +13,8 @@ allowed-tools: Bash(playwright-cli:*) Read Write
 
 # Browser Automation with playwright-cli
 
+**Headless by default.** `playwright-cli open` runs headless, and agents keep it that way: never pass `--headed`, and never open a browser window or preview tab that takes the owner's focus. A headless screenshot is the on-screen evidence. A check that truly needs a headed browser becomes a manual item for the owner. A project can allow headed runs through its own instructions.
+
 ## Quick start
 
 ```bash

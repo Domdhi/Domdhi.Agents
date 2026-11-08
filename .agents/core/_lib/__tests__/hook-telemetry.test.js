@@ -175,11 +175,45 @@ describe('emitGuardrailHit', () => {
         expect(events[1].source).toBeNull();
     });
 
+    it('records bounded rule names and a count, and drops anything else (secret-scanner telemetry)', () => {
+        const { emitGuardrailHit } = require('../../../../.agents/core/_lib/hook-telemetry');
+        emitGuardrailHit({ decision: 'block', rule: 'secret-scanner', source: 'secret-scanner', patterns: ['Stripe Key', 'Password Assignment'], count: 2 });
+        emitGuardrailHit({ decision: 'block', rule: 'secret-scanner', source: 'secret-scanner' });
+        emitGuardrailHit({ decision: 'block', rule: 'secret-scanner', source: 'secret-scanner', patterns: 'Stripe Key', count: -1 });
+        emitGuardrailHit({ decision: 'block', rule: 'secret-scanner', source: 'secret-scanner', patterns: [1, null, '', 'x'.repeat(100), ...Array.from({ length: 30 }, (_, i) => `r${i}`)], count: 1.5 });
+
+        const events = readGuardrailEvents();
+        expect(events[0]).toMatchObject({ patterns: ['Stripe Key', 'Password Assignment'], count: 2 });
+        expect(events[1]).not.toHaveProperty('patterns');
+        expect(events[1]).not.toHaveProperty('count');
+        expect(events[2]).not.toHaveProperty('patterns');
+        expect(events[2]).not.toHaveProperty('count');
+        expect(events[3].patterns).toHaveLength(20);
+        expect(events[3].patterns[0]).toHaveLength(64);
+        expect(events[3]).not.toHaveProperty('count');
+    });
+
     it('never throws and returns null on a malformed hit (telemetry is best-effort)', () => {
         const { emitGuardrailHit } = require('../../../../.agents/core/_lib/hook-telemetry');
         expect(emitGuardrailHit(null)).toBeNull();
         expect(emitGuardrailHit({})).toBeNull();          // no decision
         expect(readGuardrailEvents()).toHaveLength(0);
+    });
+
+    it('returns null when the event could not be written, so a caller never claims a record that is not there (SEC-MAJOR-2)', () => {
+        const blocker = path.join(tmp.root, 'not-a-directory');
+        fs.writeFileSync(blocker, 'x');
+        process.env.CLAUDE_PROJECT_DIR = blocker;       // the telemetry directory cannot be created under a file
+        delete require.cache[require.resolve('../../../../.agents/core/_lib/hook-telemetry')];
+        const { emitGuardrailHit } = require('../../../../.agents/core/_lib/hook-telemetry');
+        expect(emitGuardrailHit({ decision: 'bypass', rule: 'git-hook-no-scan', source: 'secret-scanner' })).toBeNull();
+    });
+
+    it('returns the entry when it was written', () => {
+        const { emitGuardrailHit } = require('../../../../.agents/core/_lib/hook-telemetry');
+        const entry = emitGuardrailHit({ decision: 'bypass', rule: 'git-hook-no-scan', source: 'secret-scanner' });
+        expect(entry).toMatchObject({ decision: 'bypass', rule: 'git-hook-no-scan' });
+        expect(readGuardrailEvents()).toHaveLength(1);
     });
 
     it('tail-rotates guardrail-events.jsonl past MAX_LINES (5000) down to TAIL_KEEP (4000)', () => {

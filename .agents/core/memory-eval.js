@@ -117,8 +117,8 @@ const SEED_MEMORIES = [
         id: 'secret-scanner-hook',
         importance: 4,
         content: {
-            description: 'The secret scanner runs ONLY as a Claude Code PreToolUse:Write/Edit hook. The legacy .githooks/pre-commit fallback was retired 2026-05-09. Manual git commit outside Claude Code gets no scan.',
-            evidence: 'CLAUDE.md Hooks table; secret-scanner.cjs hook definition.',
+            description: 'The secret scanner (credential check) runs on every write and commit path: the Claude Code PreToolUse:Write/Edit hook, commit.js, and the toolkit-managed git hooks (pre-commit + commit-msg) that git-hooks.js installs untracked into the git directory on install and update, so a raw terminal git commit is scanned too. All fail closed (a missing engine or scanner blocks); the one audited bypass is CLAUDE_COMMIT_NO_SCAN=1. The tracked .githooks/pre-commit fallback retired 2026-05-09 must not come back: in adopters it rotted (committed non-executable, calling a renamed scanner file).',
+            evidence: 'git-hooks.js; secret-scanner.cjs --git-precommit / --commit-msg; commit-guard.cjs blocks git commit --no-verify.',
             confidence: 0.8,
         },
     },

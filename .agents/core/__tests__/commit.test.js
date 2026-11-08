@@ -165,6 +165,109 @@ describe('commit.js secret-scan gate', () => {
     expect(commitCount(repo.repoPath)).toBe(before + 1);
   });
 
+  it.skipIf(!gitAvailable())('blocks a commit when the secret engine is missing (fail closed, with an install hint)', () => {
+    const repo = createGitRepo({ root: tmp.root });
+    fs.writeFileSync(path.join(repo.repoPath, 'README.md'), '# init\n');
+    execFileSync('git', ['add', 'README.md'], { cwd: repo.repoPath, stdio: 'pipe' });
+    execFileSync('git', ['commit', '-m', 'init', '--no-verify'], { cwd: repo.repoPath, stdio: 'pipe' });
+    const before = commitCount(repo.repoPath);
+
+    fs.writeFileSync(path.join(repo.repoPath, 'app.js'), 'const x = 1;\n');
+    execFileSync('git', ['add', 'app.js'], { cwd: repo.repoPath, stdio: 'pipe' });
+    const msg = path.join(tmp.root, 'MSG');
+    fs.writeFileSync(msg, 'feat: add app\n');
+
+    const { status, stdout } = runCommit(repo.repoPath, msg, [], { AGENTS_SECRET_ENGINE_BIN: path.join(tmp.root, 'no-such-engine') });
+    expect(status).not.toBe(0);
+    expect(stdout).toMatch(/FAIL-CLOSED/);
+    expect(stdout).toMatch(/secret-engine-install/);
+    expect(commitCount(repo.repoPath)).toBe(before);
+  });
+
+  // The message is content too: a key in "fix: rotate <key>" would land in history and, after a push, on the remote.
+  describe('commit message scan', () => {
+    const awsInMessage = 'AKIA' + 'QW3ERTY7UIOP' + 'AS2D';
+    function stagedRepo() {
+      const repo = createGitRepo({ root: tmp.root });
+      fs.writeFileSync(path.join(repo.repoPath, 'README.md'), '# init\n');
+      execFileSync('git', ['add', 'README.md'], { cwd: repo.repoPath, stdio: 'pipe' });
+      execFileSync('git', ['commit', '-m', 'init', '--no-verify'], { cwd: repo.repoPath, stdio: 'pipe' });
+      fs.writeFileSync(path.join(repo.repoPath, 'app.js'), 'const x = 1;\n');
+      execFileSync('git', ['add', 'app.js'], { cwd: repo.repoPath, stdio: 'pipe' });
+      return repo;
+    }
+
+    it.skipIf(!gitAvailable())('blocks an inline -m message that contains a key, and writes no commit', () => {
+      const repo = stagedRepo();
+      const before = commitCount(repo.repoPath);
+      const msg = path.join(tmp.root, 'MSG');
+      fs.writeFileSync(msg, 'unused\n');
+      const { status, stdout } = runCommit(repo.repoPath, msg, ['-m', `fix: rotate ${awsInMessage}`]);
+      expect(status).not.toBe(0);
+      expect(stdout).toMatch(/commit message contains what looks like a secret/);
+      expect(stdout).toMatch(/AWS Access Key/);
+      expect(stdout).not.toContain(awsInMessage);
+      expect(commitCount(repo.repoPath)).toBe(before);
+    });
+
+    it.skipIf(!gitAvailable())('blocks a message file that was written by something other than the Write tool', () => {
+      const repo = stagedRepo();
+      const before = commitCount(repo.repoPath);
+      const msg = path.join(tmp.root, 'MSG');
+      fs.writeFileSync(msg, `fix: rotate\n\nold key was ${awsInMessage}\n`);
+      const { status } = runCommit(repo.repoPath, msg);
+      expect(status).not.toBe(0);
+      expect(commitCount(repo.repoPath)).toBe(before);
+    });
+
+    it.skipIf(!gitAvailable())('allows a clean message', () => {
+      const repo = stagedRepo();
+      const before = commitCount(repo.repoPath);
+      const msg = path.join(tmp.root, 'MSG');
+      fs.writeFileSync(msg, 'fix: rotate the access key\n\nThe old one was revoked.\n');
+      expect(runCommit(repo.repoPath, msg).status).toBe(0);
+      expect(commitCount(repo.repoPath)).toBe(before + 1);
+    });
+
+    it.skipIf(!gitAvailable())('fails closed when the engine is missing, before any commit', () => {
+      const repo = stagedRepo();
+      const before = commitCount(repo.repoPath);
+      const msg = path.join(tmp.root, 'MSG');
+      fs.writeFileSync(msg, 'fix: something\n');
+      const { status } = runCommit(repo.repoPath, msg, [], { AGENTS_SECRET_ENGINE_BIN: path.join(tmp.root, 'no-such-engine') });
+      expect(status).not.toBe(0);
+      expect(commitCount(repo.repoPath)).toBe(before);
+    });
+
+    it.skipIf(!gitAvailable())('--no-scan covers the message check too (and is logged as a bypass)', () => {
+      const repo = stagedRepo();
+      const before = commitCount(repo.repoPath);
+      const msg = path.join(tmp.root, 'MSG');
+      fs.writeFileSync(msg, `fix: rotate ${awsInMessage}\n`);
+      expect(runCommit(repo.repoPath, msg, ['--no-scan']).status).toBe(0);
+      expect(commitCount(repo.repoPath)).toBe(before + 1);
+    });
+  });
+
+  it.skipIf(!gitAvailable())('--no-scan is recorded as its own guardrail event (decision bypass)', () => {
+    const repo = createGitRepo({ root: tmp.root });
+    fs.writeFileSync(path.join(repo.repoPath, 'README.md'), '# init\n');
+    execFileSync('git', ['add', 'README.md'], { cwd: repo.repoPath, stdio: 'pipe' });
+    execFileSync('git', ['commit', '-m', 'init', '--no-verify'], { cwd: repo.repoPath, stdio: 'pipe' });
+    fs.writeFileSync(path.join(repo.repoPath, 'app.js'), 'const x = 1;\n');
+    execFileSync('git', ['add', 'app.js'], { cwd: repo.repoPath, stdio: 'pipe' });
+    const msg = path.join(tmp.root, 'MSG');
+    fs.writeFileSync(msg, 'feat: add app\n');
+
+    const { status } = runCommit(repo.repoPath, msg, ['--no-scan']);
+    expect(status).toBe(0);
+    const rel = fs.readdirSync(repo.repoPath, { recursive: true }).map(String).find(f => f.endsWith('guardrail-events.jsonl'));
+    expect(rel, 'guardrail-events.jsonl written under the project').toBeTruthy();
+    const events = fs.readFileSync(path.join(repo.repoPath, rel), 'utf8').trim().split('\n').map(JSON.parse);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ decision: 'bypass', rule: 'commit-no-scan', source: 'secret-scanner' });
+  });
+
   it.skipIf(!gitAvailable())('allows a commit when staged content is clean', () => {
     const repo = createGitRepo({ root: tmp.root });
     fs.writeFileSync(path.join(repo.repoPath, 'README.md'), '# init\n');
@@ -441,13 +544,22 @@ describe('commit.js readMessage (in-process)', () => {
 });
 
 describe('commit.js runScan (in-process)', () => {
-  let exitSpy;
+  let exitSpy, scanTmp, prevCwd;
   beforeEach(() => {
     exitSpy = vi.spyOn(process, 'exit').mockImplementation((code) => {
       throw new Error(`process.exit(${code})`);
     });
+    // Run outside any repository: runScan skips its own scan when the managed git hooks are active in the
+    // current repository (a developer who installed them here must not change what these tests exercise).
+    prevCwd = process.cwd();
+    scanTmp = createTmpDir({ prefix: 'commit-runscan-' });
+    process.chdir(scanTmp.root);
   });
-  afterEach(() => exitSpy.mockRestore());
+  afterEach(() => {
+    process.chdir(prevCwd);
+    scanTmp.cleanup();
+    exitSpy.mockRestore();
+  });
 
   it('is a no-op when noScan is true (never spawns the scanner)', () => {
     // With noScan true the function returns immediately; process.exit untouched.
@@ -476,6 +588,49 @@ describe('commit.js runScan (in-process)', () => {
     } finally {
       spawnSpy.mockRestore();
       loadFreshCommit(); // restore a commit instance bound to the real seam for later tests
+    }
+  });
+
+  it('fails closed when the scanner file is missing (it used to warn and commit unscanned)', () => {
+    const real = fs.existsSync;
+    const existsSpy = vi.spyOn(fs, 'existsSync').mockImplementation(p => (/secret-scanner\.cjs$/.test(String(p)) ? false : real(p)));
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const fresh = loadFreshCommit();
+      expect(() => fresh.runScan(false)).toThrow(/process\.exit\(1\)/);
+      expect(exitSpy).toHaveBeenCalledWith(1);
+      expect(errSpy.mock.calls.flat().join(' ')).toMatch(/secret scanner not found/);
+    } finally {
+      existsSpy.mockRestore();
+      errSpy.mockRestore();
+      loadFreshCommit();
+    }
+  });
+
+  it('fails closed when the scanner cannot be started', () => {
+    const cp = require('node:child_process');
+    const spawnSpy = vi.spyOn(cp, 'spawnSync').mockReturnValue({ status: null, error: new Error('spawn failed') });
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const fresh = loadFreshCommit();
+      expect(() => fresh.runScan(false)).toThrow(/process\.exit\(1\)/);
+      expect(errSpy.mock.calls.flat().join(' ')).toMatch(/could not run the secret scanner/);
+    } finally {
+      spawnSpy.mockRestore();
+      errSpy.mockRestore();
+      loadFreshCommit();
+    }
+  });
+
+  it('fails closed when the scanner is killed by a signal (status null)', () => {
+    const cp = require('node:child_process');
+    const spawnSpy = vi.spyOn(cp, 'spawnSync').mockReturnValue({ status: null, signal: 'SIGKILL' });
+    try {
+      const fresh = loadFreshCommit();
+      expect(() => fresh.runScan(false)).toThrow(/process\.exit\(1\)/);
+    } finally {
+      spawnSpy.mockRestore();
+      loadFreshCommit();
     }
   });
 

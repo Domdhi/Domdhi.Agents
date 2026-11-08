@@ -27,6 +27,7 @@
 //   to commit specific files.
 //
 // GUARANTEES:
+//   - Secret-scans the staged files and the message once (by the managed git hooks when active, else itself).
 //   - Preserves supplied message content without adding attribution.
 //   - Trims trailing blank / stray-token lines (e.g. a leaked '@', quote, backtick).
 //   - Commits on the CURRENT branch only — never switches or creates branches.
@@ -115,26 +116,101 @@ function readMessage(inlineMsg, msgFile) {
   return lines;
 }
 
-// Run the secret-scan gate (the pre-commit hook, living in our own flow).
-// A plain .git/hooks/pre-commit was retired (fossil-prone across the fleet), and
-// the PreToolUse:Write/Edit scanner only sees Claude's Write/Edit tool — NOT files
-// that reach the index via Bash, scripts, or a human's terminal. commit.js IS the
-// project's commit path, so the staged-content scan lives here: it runs
-// secret-scanner.cjs over the staged set and aborts the commit on a finding.
-// Bypass (rare — e.g. a deliberately-redacted example that still matches a
-// pattern): --no-scan, or CLAUDE_COMMIT_NO_SCAN=1.
-function runScan(noScan) {
-  if (noScan) return;
-  const scanner = path.join(__dirname, '..', 'hooks', 'secret-scanner.cjs');
-  if (fs.existsSync(scanner)) {
-    const scan = spawnSync(process.execPath, [scanner, '--git-precommit'], { stdio: 'inherit', windowsHide: true });
-    if (scan.status !== 0) {
-      console.error('[commit] secret scan blocked the commit. Remove the secret, or override with --no-scan / CLAUDE_COMMIT_NO_SCAN=1 (NOT recommended).');
-      process.exit(scan.status || 1);
-    }
-  } else {
-    console.warn(`[commit] WARNING: secret scanner not found at ${scanner} — committing WITHOUT a secret scan.`);
+// Run the secret-scan gate.
+//
+// Two layers share one engine and one fail-closed contract:
+//   1. The toolkit-managed git hooks (installed by git-hooks.js into the git directory, never tracked) scan a
+//      raw `git commit -F` from a terminal too: pre-commit + commit-msg for commits, pre-merge-commit for merges,
+//      pre-applypatch for `git am`, and pre-push for every commit a push would publish, whatever wrote it.
+//      When they are installed, current and active, they ARE the scan: commit.js skips its own so the
+//      staged files and the message are scanned once, not twice.
+//   2. Otherwise (hooks not installed, outdated, or shadowed by a foreign core.hooksPath) commit.js scans
+//      itself, exactly as it always did: secret-scanner.cjs over the staged set, then the message.
+//
+// FAIL CLOSED: a scanner that is missing from disk blocks the commit (it used to warn and
+// commit unscanned). The scanner itself blocks when its engine is missing or broken.
+//
+// Bypass (rare — a reviewed false positive that cannot take a betterleaks:allow comment):
+// --no-scan, or CLAUDE_COMMIT_NO_SCAN=1. A bypass is recorded as its own guardrail event
+// (decision 'bypass') so the feedback digest can show how often the gate is skipped. The bypass reaches
+// the hooks through the child's environment (see bypassEnv). With active hooks THEY record the event (once per
+// commit); commit.js records it only when no managed hook will run.
+function recordScanBypass() {
+  try {
+    const { emitGuardrailHit } = require('./_lib/hook-telemetry');
+    return Boolean(emitGuardrailHit({ decision: 'bypass', rule: 'commit-no-scan', source: 'secret-scanner' }));
+  } catch {
+    return false; // telemetry is best effort and never blocks the commit
   }
+}
+
+// The environment the child `git commit` runs with. A bypass must also skip the managed hooks, and they honor
+// CLAUDE_COMMIT_NO_SCAN=1. Nothing else is passed: whether the hooks record the event is decided from files in
+// the git dir, never from a flag the environment could set.
+function bypassEnv(noScan) {
+  return noScan ? { ...process.env, CLAUDE_COMMIT_NO_SCAN: '1' } : process.env;
+}
+
+// Are the managed hooks the ones git will actually run for this commit? Any doubt answers no, so commit.js
+// scans itself.
+function managedHooksActive() {
+  try {
+    return require('./git-hooks').isActive(process.cwd());
+  } catch {
+    return false;
+  }
+}
+
+// The commit message is content too: a key pasted into "fix: rotate <key>" lands in history and, after a
+// push, on the remote. It goes through the same engine as the staged files and fails closed the same way.
+// The scan itself is shared with the managed commit-msg hook (secret-scanner.cjs scanCommitMessage).
+function scanMessage(message) {
+  const { scanCommitMessage } = require('../hooks/secret-scanner.cjs');
+  const { formatFindings, installHint } = require('../hooks/secret-patterns.cjs');
+  const result = scanCommitMessage(message);
+  if (result.status === 'engine-error') {
+    const err = result.error;
+    console.error(`[commit] ABORT: the secret engine could not scan the commit message (${err.message}). ${err.code === 'ENGINE_UNAVAILABLE' ? installHint() : ''}`);
+    process.exit(1);
+  }
+  if (result.status === 'findings') {
+    console.error(formatFindings(result.findings));
+    console.error('[commit] ABORT: the commit message contains what looks like a secret. Remove it and re-run.');
+    process.exit(1);
+  }
+}
+
+function runScan(noScan, message) {
+  if (noScan) {
+    if (managedHooksActive()) {
+      // The hooks see CLAUDE_COMMIT_NO_SCAN=1 and record the event themselves, once; commit.js adds none.
+      console.warn('[commit] WARNING: secret scan bypassed (--no-scan / CLAUDE_COMMIT_NO_SCAN=1). The managed git hooks record the bypass.');
+    } else {
+      console.warn(recordScanBypass()
+        ? '[commit] WARNING: secret scan bypassed (--no-scan / CLAUDE_COMMIT_NO_SCAN=1). Recorded in guardrail-events.jsonl.'
+        : '[commit] WARNING: secret scan bypassed (--no-scan / CLAUDE_COMMIT_NO_SCAN=1). NOT recorded: guardrail-events.jsonl could not be written.');
+    }
+    return;
+  }
+  if (managedHooksActive()) {
+    console.log('[commit] secret scan: handled by the managed git hooks (pre-commit scans the staged files, commit-msg the message).');
+    return;
+  }
+  const scanner = path.join(__dirname, '..', 'hooks', 'secret-scanner.cjs');
+  if (!fs.existsSync(scanner)) {
+    console.error(`[commit] ABORT: secret scanner not found at ${scanner}. Refusing to commit without a secret scan (restore it, or pass --no-scan if you accept that).`);
+    process.exit(1);
+  }
+  const scan = spawnSync(process.execPath, [scanner, '--git-precommit'], { stdio: 'inherit', windowsHide: true });
+  if (scan.error) {
+    console.error(`[commit] ABORT: could not run the secret scanner (${scan.error.message}).`);
+    process.exit(1);
+  }
+  if (scan.status !== 0) {
+    console.error('[commit] secret scan blocked the commit. Remove the secret, add a betterleaks:allow comment to a reviewed false positive, or (last resort) --no-scan / CLAUDE_COMMIT_NO_SCAN=1.');
+    process.exit(scan.status || 1);
+  }
+  if (typeof message === 'string' && message.trim()) scanMessage(message);
 }
 
 // A path whose deletion is already staged (e.g. the source side of a `git mv`)
@@ -225,7 +301,7 @@ function main() {
   let stagedTreeOid = null;
   try { stagedTreeOid = git(['write-tree']); } catch { /* unborn/empty index — no tree to guard */ }
 
-  runScan(noScan);
+  runScan(noScan, finalMsg);
 
   if (stagedTreeOid !== null) {
     let treeNow = null;
@@ -243,7 +319,7 @@ function main() {
     : ['commit', '-F', msgFile, ...(amend ? ['--amend'] : [])];
 
   // Use spawnSync with inherited stdio so hook output streams through live.
-  const res = spawnSync('git', commitArgs, { stdio: 'inherit', windowsHide: true });
+  const res = spawnSync('git', commitArgs, { stdio: 'inherit', windowsHide: true, env: bypassEnv(noScan) });
   if (res.status !== 0) {
     console.error(`[commit] git commit failed (exit ${res.status}).`);
     process.exit(res.status || 1);
@@ -268,4 +344,4 @@ if (require.main === module) {
   main();
 }
 
-module.exports = { parseArgs, readMessage, runScan, main, currentBranch };
+module.exports = { parseArgs, readMessage, runScan, main, currentBranch, bypassEnv, managedHooksActive };

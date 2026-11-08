@@ -23,10 +23,10 @@ Always run spec compliance before code quality. Never run code quality review if
 3. If implementer has questions → answer before they proceed
 4. Implementer implements, tests, commits, self-reviews, reports back
 5. Dispatch spec compliance reviewer
-6. If spec reviewer finds issues → implementer fixes → spec reviewer verifies only the listed fixes (one closure pass)
+6. If spec reviewer finds issues → implementer fixes each one and proves it with a test (no re-review)
 7. Once spec compliance passes → dispatch code quality reviewer
-8. If code quality reviewer finds issues → implementer fixes → the same reviewer verifies only the listed fixes (one closure pass)
-   - Each reviewer gets at most three passes: the review, its closure, and one more only for a CRITICAL or MAJOR a fix introduced. New MINOR/NIT findings are fixed and proven by a test, not re-reviewed.
+8. If code quality reviewer finds issues → implementer fixes each one and proves it with a test (no re-review)
+   - Each reviewer runs exactly once. Done = every finding fixed or recorded with a reason, each fix proven by a test, gate green (see "One review pass, then done" in `SKILL.md`).
 9. Once both pass → mark task complete
 10. Repeat for next task
 11. After all tasks → dispatch final code reviewer for entire implementation

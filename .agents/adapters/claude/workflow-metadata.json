@@ -46,6 +46,6 @@
   "review-optimize-backlog": "description: Analyze backlog for dependency optimization, critical path, and parallel workstreams",
   "create-project-brief": "description: Create a project brief capturing strategic vision and project scope\nargument-hint: [project name or description]",
   "sweep": "description: Autonomous post-work maintenance sweep \u2014 code review \u2192 retro (+ doc-drift check) \u2192 implement recommendations \u2192 promote \u2192 optimize agents \u2192 defrag \u2192 health (memory + .claude/ templates audit) \u2192 timeline refresh. One command, auto-approved, report at end.\nargument-hint: \"[PR range / epic names \u2014 e.g. '109-128' or 'Auth,Billing,Search'] [--review-scope high-risk|systemic|all] [--gated] [--skip 1,4]\"",
-  "learning-intake": "description: Capture selected toolkit lessons and inspect or explicitly deliver retained learning requests\nargument-hint: \"[init | capture | status | submit | reconcile | refresh | recover] [validated input path or occurrence ID]\"",
+  "intake": "description: Capture selected toolkit lessons and inspect or explicitly deliver retained learning requests\nargument-hint: \"[init | capture | status | submit | reconcile | refresh | recover] [validated input path or occurrence ID]\"",
   "council": "description: Decide open questions within the authorized task using independent stakeholder advice\nargument-hint: \"[question | file path] [roles=product,architecture,ux,dev] [model=<native model>] [effort=<native effort>] [max=1..10]\""
 }

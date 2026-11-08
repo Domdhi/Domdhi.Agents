@@ -799,6 +799,20 @@ function main() {
     }
 
     process.exitCode = stats.ok === false ? 1 : 0;
+
+    // The scanner engine lives in a per-user cache, not in the target. Report it, and on a
+    // terminal offer to download the pinned build (checksum verified). Never fails the install.
+    if (stats.ok !== false) {
+        console.log('');
+        try { require('./secret-engine-install').offerEngine({ dryRun: opts.dryRun, interactive }); } catch (err) {
+            console.log(`Secret engine: status check failed (${err.message})`);
+        }
+        // The managed git hooks (commit, merge, am and push) run the secret scan where git creates and publishes commits.
+        // They live in the git directory, never in the tracked tree. No prompt; never fails the install.
+        try { require('./git-hooks').ensureHooks(verified.target, { dryRun: opts.dryRun }); } catch (err) {
+            console.log(`Git hooks: status check failed (${err.message})`);
+        }
+    }
 }
 
 // Read one line from stdin (fd 0) synchronously, byte by byte until newline or

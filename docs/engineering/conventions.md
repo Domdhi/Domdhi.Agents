@@ -38,7 +38,7 @@ Do not trust a clean union merge of `.claude` files. After any union-merged sync
 In this workshop, run exact focused test files with:
 
 ~~~bash
-node tools/run-toolkit-tests.cjs focused .agents/core/__tests__/learning-intake.test.js
+node tools/run-toolkit-tests.cjs focused .agents/core/__tests__/intake.test.js
 ~~~
 
 Focused feedback is partial. Map each changed behavior to its affected callers, sibling tests and architecture guards; use the full suite when that map cannot be bounded safely. The runner accepts 1–16 exact ordinary test paths, isolates one worker, verifies the machine-readable report and refuses wildcard/zero-collection runs. Quick mode is also partial.

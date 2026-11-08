@@ -58,7 +58,7 @@ Implementations live in `.agents/core/`. Run native helpers through the active r
 | `runtime-context.js`, `_lib/project-root.js`, `_lib/memory-paths.js` | Installed assets, source checkout and ignored shared-state roots |
 | `gate.js`, `commit.js` | Application/toolkit gate routing and staged secret-scanned commits |
 | `build-lock-recovery.js`, `_lib/owned-process-tree.js` | Gate lock recovery: evidence for stale build/test locks and, on Windows, owned process-tree leases. See [gate lock recovery](gate-lock-recovery.md) |
-| `learning-intake.js`, `learning-intake-github.js` | Project-owned learning-intake identity, policy and authorized delivery. See the [learning intake guide](guides/learning-intake.md) |
+| `intake.js`, `intake-github.js` | Project-owned intake identity, policy and authorized delivery. See the [intake guide](guides/intake.md) |
 | `uninstall.js` | Reviewed, approval-bound removal of unchanged template files recorded in the render ledger; edited, unlisted and linked files are kept |
 | `context-audit.js` | Read-only inventory of instruction-file sizes with optional baseline and per-file budget comparison |
 | `status.js`, `gen-timeline.js`, `handoff-path.js` | TODO dashboards, timeline and continuity paths |

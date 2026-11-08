@@ -77,6 +77,7 @@ const GUARD_WINDOW = 6; // lines to look back for a preceding ancestor-symlink g
 const TRUST_BOUNDARY_FILES = [
     '.agents/core/install.js',
     '.agents/core/uninstall.js',
+    '.agents/core/git-hooks.js',
     '.agents/core/template-updater.js',
     '.agents/core/scaffold.js',
     '.agents/core/_lib/skill-merger.js',

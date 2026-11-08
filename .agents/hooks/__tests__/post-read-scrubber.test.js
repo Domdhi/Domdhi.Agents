@@ -12,6 +12,10 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createRequire } from 'node:module';
+import { spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 const require = createRequire(import.meta.url);
 
@@ -326,5 +330,50 @@ describe('post-read-scrubber', () => {
             expect(result).toBeNull(); // still non-blocking
             expect(writes.join('')).toContain('REDACTED');
         });
+    });
+});
+
+// ─── The scrubber never blocks, even when the secret engine cannot run ───────────
+// A PostToolUse hook cannot block, and it must not leave tool output unredacted just because
+// the engine is missing or broken: it falls back to the named-provider list. (The Write/Edit
+// hook and the commit scan fail CLOSED on the same condition; see secret-engine.test.js.)
+
+describe('post-read-scrubber with a broken engine (spawned hook)', () => {
+    const hook = path.join(__dirname, '..', 'post-read-scrubber.cjs');
+    const { createFakeEngineKit } = require('./_helpers/fake-engine');
+    let tmp;
+    let kit;
+    beforeEach(() => {
+        tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'scrubber-engine-'));
+        kit = createFakeEngineKit(path.join(tmp, 'kit'));
+    });
+    afterEach(() => fs.rmSync(tmp, { recursive: true, force: true }));
+
+    const run = (engineBin, payload, extra = {}) => spawnSync(process.execPath, [hook], {
+        input: JSON.stringify(payload),
+        encoding: 'utf8',
+        env: { ...process.env, AGENTS_SECRET_ENGINE_BIN: engineBin, CLAUDE_PROJECT_DIR: tmp, ...extra },
+    });
+    const bash = stdout => ({ tool_name: 'Bash', tool_input: { command: 'env' }, tool_response: { stdout } });
+    const fake = body => ({ engine: kit.exe(path.join(tmp, 'engine' + (process.platform === 'win32' ? '.exe' : ''))), env: kit.childEnv(body) });
+
+    it.each([
+        ['missing', () => ({ engine: path.join(tmp, 'no-such-engine'), env: {} })],
+        ['exiting non-zero', () => fake("process.stdin.resume();process.stdin.on('data',()=>{});process.stdin.on('end',()=>process.exit(6));")],
+        ['printing garbage', () => fake("process.stdin.resume();process.stdin.on('data',()=>{});process.stdin.on('end',()=>console.log('}{'));")],
+        ['reporting that it scanned nothing', () => fake("process.stdin.resume();process.stdin.on('data',()=>{});process.stdin.on('end',()=>{process.stderr.write('INF scanned ~0 bytes (0) in 1ms\\n');console.log('[]');});")],
+    ])('exits 0 and still redacts a named-provider key when the engine is %s', (_name, make) => {
+        const { engine, env } = make();
+        const r = run(engine, bash(`AWS_KEY=${fakeAwsKey()}\n`), env);
+        expect(r.status).toBe(0);
+        const payload = JSON.parse(r.stdout.trim());
+        expect(payload.hookSpecificOutput.updatedToolOutput).toBe('AWS_KEY=<REDACTED:AWS Access Key>\n');
+        expect(r.stderr).toMatch(/named-provider fallback/);
+    });
+
+    it('exits 0 and prints nothing for clean output when the engine is missing', () => {
+        const r = run(path.join(tmp, 'no-such-engine'), bash('all good\n'));
+        expect(r.status).toBe(0);
+        expect(r.stdout).toBe('');
     });
 });

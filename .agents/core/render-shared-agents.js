@@ -2,7 +2,7 @@
 'use strict';
 const path = require('path');
 const fs = require('fs');
-const { renderSharedAgents, loadModelAdapter, canonicalFiles } = require('./_lib/shared-agents');
+const { renderSharedAgents, loadModelAdapter, canonicalFiles, describeRetiredConflict } = require('./_lib/shared-agents');
 const { renderModelProse } = require('./_lib/model-prose');
 const { renderWorkflowRoutes, checkWorkflowRoutes } = require('./_lib/workflow-routes');
 const { assertNoSymlinkedAncestor, safeWrite } = require('./_lib/fs-safe');
@@ -51,10 +51,14 @@ function main(args = process.argv.slice(2)) {
     }
     const result = renderSharedAgents(root, { dryRun: args.includes('--dry-run') || args.includes('--check'), force: args.includes('--force'), excludedSkills: loadExcludedSkills(path.join(root, '.claude')) });
     for (const warning of result.warnings || []) console.warn(warning);
+    const retired = result.retired || [];
     for (const file of result.changed) console.log(`RENDER ${file}`);
-    for (const file of result.conflicts) console.error(`CONFLICT ${file}: generated output edited; move intended changes to .agents sources or native shared-agents.json, then render with --force.`);
-    if (result.conflicts.length || (args.includes('--check') && result.changed.length)) process.exitCode = 1;
-    if (!result.changed.length) console.log('Shared agent projections are current.');
+    for (const file of retired) console.log(`RETIRE ${file}`);
+    for (const file of result.conflicts) console.error(describeRetiredConflict(root, file, result.retiredReasons)
+        ? `CONFLICT ${describeRetiredConflict(root, file, result.retiredReasons)}`
+        : `CONFLICT ${file}: generated output edited; move intended changes to .agents sources or native shared-agents.json, then render with --force.`);
+    if (result.conflicts.length || (args.includes('--check') && (result.changed.length || retired.length))) process.exitCode = 1;
+    if (!result.changed.length && !retired.length) console.log('Shared agent projections are current.');
     return result;
 }
 if (require.main === module) {
