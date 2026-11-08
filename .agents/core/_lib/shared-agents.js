@@ -579,7 +579,8 @@ function renderSharedAgents(root, options = {}) {
         const exists = fs.existsSync(path.join(root, rel));
         const current = exists ? (Buffer.isBuffer(content) ? fs.readFileSync(path.join(root, rel)) : read(root, rel)) : null;
         if (exists && digest(current) === digest(content)) { next[rel] = digest(content); continue; }
-        if (exists && !options.force && !options.adoptPaths?.has(rel) && (!previous[rel] || digest(current) !== previous[rel])) result.conflicts.push(rel);
+        if (exists && !options.force && !options.adoptPaths?.has(rel) && (!previous[rel] || digest(current) !== previous[rel])
+            && !(options.shippedFrom && shippedBefore(options.shippedFrom, rel, digest(current)))) result.conflicts.push(rel);
         result.changed.push(rel);
         next[rel] = digest(content);
     }
@@ -605,13 +606,38 @@ function renderSharedAgents(root, options = {}) {
  * A legacy native role/skill can seed project-owned zones on its first update;
  * this relies on today's files, never on migration history.
  */
+// Bytes the toolkit itself shipped at some earlier commit are no local edit, even when the
+// target's render ledger recorded different bytes (a ledger left stale by a merge or an
+// interrupted update). Looked up only for a conflict candidate, in the source's own git history.
+const shippedCache = new Map();
+function shippedBefore(source, rel, fileDigest) {
+    const key = `${source}\0${rel}`;
+    if (!shippedCache.has(key)) {
+        const seen = new Set();
+        try {
+            const { execFileSync } = require('child_process');
+            const opts = { cwd: source, encoding: 'buffer', windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 64 * 1024 * 1024 };
+            const commits = execFileSync('git', ['log', '--format=%H', '-n', '300', '--', rel], opts).toString().split('\n').filter(Boolean);
+            for (const commit of commits) {
+                try {
+                    const blob = execFileSync('git', ['show', `${commit}:${rel}`], opts);
+                    seen.add(digest(blob)); seen.add(digest(blob.toString('utf8')));
+                } catch { /* path absent at that commit */ }
+            }
+        } catch { /* not a git checkout: no history to consult */ }
+        shippedCache.set(key, seen);
+    }
+    return shippedCache.get(key).has(fileDigest);
+}
+
 function syncSharedAgents(source, target, options = {}) {
     const result = { copied: 0, merged: 0, skipped: 0, conflicts: [], warnings: [], changed: [] };
     const incoming = canonicalFiles(source);
     const sourceState = fs.existsSync(path.join(target, STATE_PATH)) ? JSON.parse(read(target, STATE_PATH)) : {};
     for (const rel of incoming) if (/^\.agents\/(core|hooks|templates|config|adapters)\//.test(rel) && sourceState[rel] && fs.existsSync(path.join(target, rel)) && digest(fs.readFileSync(path.join(target, rel))) !== sourceState[rel]
         // Bytes already equal to the incoming release are no local edit: an earlier update that stopped after copying them leaves exactly this.
-        && digest(fs.readFileSync(path.join(target, rel))) !== digest(fs.readFileSync(path.join(source, rel)))) result.conflicts.push(rel);
+        && digest(fs.readFileSync(path.join(target, rel))) !== digest(fs.readFileSync(path.join(source, rel)))
+        && !shippedBefore(source, rel, digest(fs.readFileSync(path.join(target, rel))))) result.conflicts.push(rel);
     if (result.conflicts.length) return result;
     // A skill name introduced by a rename is new to every checkout, so anything already at it is the adopter's own
     // (the legacy-skill adoption below would otherwise overwrite it silently). A recorded native skill means the
@@ -737,7 +763,7 @@ function syncSharedAgents(source, target, options = {}) {
         queue(rel, JSON.stringify(obj, null, 2) + '\n', fs.existsSync(dest));
     }
     const commands = commandFiles(source);
-    const preview = renderSharedAgents(target, { incomingRetirement, dryRun: true, files, adoptPaths, excludedSkills: options.excludedSkills, deferredOutputs: options.deferredOutputs, commands });
+    const preview = renderSharedAgents(target, { incomingRetirement, shippedFrom: source, dryRun: true, files, adoptPaths, excludedSkills: options.excludedSkills, deferredOutputs: options.deferredOutputs, commands });
     result.warnings.push(...(preview.warnings || []));
     if (preview.retired) result.retired = preview.retired;
     if (preview.retiredConflicts) result.retiredConflicts = preview.retiredConflicts;
@@ -746,10 +772,10 @@ function syncSharedAgents(source, target, options = {}) {
     result.copied += preview.changed.length;
     if (!options.dryRun) {
         for (const [rel, content] of pending) write(target, rel, content);
-        const rendered = renderSharedAgents(target, { incomingRetirement, files, adoptPaths, excludedSkills: options.excludedSkills, deferredOutputs: options.deferredOutputs, commands });
+        const rendered = renderSharedAgents(target, { incomingRetirement, shippedFrom: source, files, adoptPaths, excludedSkills: options.excludedSkills, deferredOutputs: options.deferredOutputs, commands });
         result.conflicts.push(...rendered.conflicts);
     }
     return result;
 }
 
-module.exports = { describeRetiredConflict, removeRetired, planRetirement, loadModelAdapter, renderSharedAgents, syncSharedAgents, syncStartupInstructions, projectionPaths, canonicalFiles, commandFiles, workflowMap, isExcludedSkillPath, STATE_PATH };
+module.exports = { describeRetiredConflict, removeRetired, shippedBefore, planRetirement, loadModelAdapter, renderSharedAgents, syncSharedAgents, syncStartupInstructions, projectionPaths, canonicalFiles, commandFiles, workflowMap, isExcludedSkillPath, STATE_PATH };

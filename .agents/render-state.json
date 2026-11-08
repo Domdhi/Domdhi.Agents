@@ -373,7 +373,7 @@
   ".claude/core/_lib/model-policy.js": "959df31afd1108bb73e6ec87d52810fdf3c795879470b25b50a03332e87d79b3",
   ".claude/core/runtime-context.js": "df4aab3dcc998ace04a8dcca9fa15bf8a469f888187d3ff7431875d755b4cc68",
   ".claude/guardrail-rules.yaml": "8ca3404e6fe721c746c1f3a08116d00957fc4efdb4c74e2326fed09750cf8c2d",
-  ".claude/version.json": "60a6149c865a5ff8945a372907c91fb7bcaf5e4d8b827845deb4a8278017592a",
+  ".claude/version.json": "ad0239ada4bf41fb0e333824bc745aa6f40009c1e674ee73be0e2e4ea9eba0d3",
   ".codex/hooks/command-usage-logger.cjs": "268a774bb3c62f9aaada4deafe40b171149855928b6e28e66c970f56465aea80",
   ".codex/hooks/commit-guard.cjs": "7ec75b7dd13b0986ad4df83c1d2600dcce74bf545d17c3d50656cc8dca40d1c5",
   ".codex/hooks/damage-control.cjs": "25e071c12fefe5719e8d112233bb0f80b0831c35a6bfc091a546bce7b2560dab",
