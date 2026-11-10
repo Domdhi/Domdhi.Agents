@@ -34,9 +34,9 @@ const { notesContext, captureEnabled, syncEnabled } = require('../core/_lib/memo
 
 /** True when a capture provider is configured (cheap check; the CLI resolves the key itself). */
 function providerConfigured(env) {
-    if (String(env.MEMORY_CAPTURE_PROVIDER || '').toLowerCase().replace(/^claude$/, 'claude-cli') === 'claude-cli') return true;
-    if (String(env.MEMORY_CAPTURE_PROVIDER || '').toLowerCase() === 'openai') return Boolean(env.MEMORY_CAPTURE_MODEL);
-    return Boolean(env.ANTHROPIC_API_KEY || env.MEMORY_CAPTURE_KEY_COMMAND);
+    const chain = String(env.MEMORY_CAPTURE_PROVIDER || '').split(',').map(s => s.trim().toLowerCase().replace(/^claude$/, 'claude-cli')).filter(Boolean);
+    if (!chain.length) chain.push('anthropic');
+    return chain.some(p => p === 'claude-cli' ? true : p === 'openai' ? Boolean(env.MEMORY_CAPTURE_MODEL) : Boolean(env.ANTHROPIC_API_KEY || env.MEMORY_CAPTURE_KEY_COMMAND));
 }
 
 /** @returns {boolean} true when a capture child was started */

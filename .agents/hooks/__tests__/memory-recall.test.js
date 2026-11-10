@@ -123,6 +123,11 @@ describe('tuning and precision telemetry', () => {
         expect(hook.tuning({}).maxHits).toBe(3);
         delete process.env.MEMORY_RECALL_MAX;
     });
+    it('MEMORY_RECALL_KW_SCORE reaches the hook tuning (default 1.75, clamped 0.25..4)', () => {
+        expect(hook.tuning({}).kwScore).toBe(1.75);
+        expect(hook.tuning({ MEMORY_RECALL_KW_SCORE: '1' }).kwScore).toBe(1);
+        expect(hook.tuning({ MEMORY_RECALL_KW_SCORE: '0.01' }).kwScore).toBe(0.25);
+    });
     it('MEMORY_RECALL_FLOOR defaults to 0.70 and is clamped', () => {
         expect(hook.tuning({}).floor).toBe(0.7);
         expect(hook.tuning({ MEMORY_RECALL_FLOOR: '0.72' }).floor).toBe(0.72);

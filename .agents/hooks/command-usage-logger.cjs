@@ -200,8 +200,15 @@ function processEvent(parsedJson) {
         // its own, so the summary is the only source for gate_run duration.
         const summary = readGateSummary();
 
+        // A killed run (a leg stopped by a signal, the gate's own SIGINT/SIGTERM, or a gate
+        // that died without finishing: its in-progress marker is still there) is no verdict
+        // on the code. Record it as 'unknown' with the signal, never as a failure.
+        const killed = summary && (summary.killed || (summary.inProgress ? 'unfinished' : null));
+
         let outcome;
-        if (exitCode !== null) {
+        if (killed) {
+            outcome = 'unknown';
+        } else if (exitCode !== null) {
             outcome = exitCode === 0 ? 'success' : 'failure';
         } else if (summary === null) {
             outcome = 'unknown';
@@ -219,6 +226,7 @@ function processEvent(parsedJson) {
             command: gateCommand,
             duration_ms: durationMs,
             outcome,
+            ...(killed ? { killed } : {}),
             session_id: resolveSessionId(parsedJson),
         };
     }

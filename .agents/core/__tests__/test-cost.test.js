@@ -57,6 +57,15 @@ describe('classifyPath', () => {
         }
     });
 
+    it('handles .NET layouts: razor markup is source, Migrations/bin/obj/wwwroot/lib are not counted', () => {
+        expect(classifyPath('src/Web/Pages/Home.razor')).toBe('source');
+        expect(classifyPath('src/Web/Views/Index.cshtml')).toBe('source');
+        expect(classifyPath('tests/Web.Tests/Components/HomeTests.cs')).toBe('test');
+        for (const f of ['src/Web/Migrations/20260101_a.cs', 'src/Web/Migrations/20260101_a.Designer.cs', 'src/Web/bin/Debug/a.cs', 'src/Web/obj/b.cs', 'src/Web/wwwroot/lib/x.js']) {
+            expect(classifyPath(f)).toBeNull();
+        }
+    });
+
     it('skips .agents/ unless the toolkit workshop asks for it', () => {
         expect(classifyPath('.agents/core/gate.js')).toBeNull();
         expect(classifyPath('.agents/core/gate.js', { includeAgents: true })).toBe('source');

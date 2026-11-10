@@ -685,6 +685,45 @@ describe('scanContent', () => {
             }
         });
 
+        // PowerShell: an unquoted value is an expression, so reading a secret (Read-Host, a
+        // [Marshal] call) is not a finding. Each row used to block a commit on setup.ps1.
+        it.each([
+            ['marshalBstrNested', '$env:BW_PASSWORD = [Runtime.InteropServices.Marshal]::PtrToStringBSTR([Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec))'],
+            ['marshalBstrNoSpaces', '$env:BW_PASSWORD=[Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)'],
+            ['networkCredentialEmptyUser', '$password = [System.Net.NetworkCredential]::new("", $sec).Password'],
+            ['readHostSecureString', '$Password = Read-Host "Vaultwarden master password" -AsSecureString'],
+            ['convertFromSecureString', '$masterPassword = ConvertFrom-SecureString -SecureString $sec -AsPlainText'],
+            ['getSecret', '$apiKey = Get-Secret -Name RustDesk -AsPlainText'],
+        ])('scanContent_powershellSecretRead_%s_noDetection', (_name, content) => {
+            for (const file of ['Homelab/deploy/setup.ps1', 'tools/Mod.psm1']) {
+                for (const text of [content, content + '\r\n']) {
+                    expect(scanContent(text, file).filter(f => /Secret|Password/.test(f.name)), file).toHaveLength(0);
+                    expect(redactSecretsInText(text, file)).toBe(text);
+                }
+            }
+        });
+
+        // The exemption is scoped to PowerShell files and to calls with no quoted literal on the line:
+        // a literal cannot ride a call shape, a cast, a trailing comment or a second assignment.
+        it.each([
+            ['convertToSecureStringDouble', '$password = ConvertTo-SecureString "Summer2024Winter!" -AsPlainText -Force'],
+            ['convertToSecureStringSingle', "$password = ConvertTo-SecureString 'Summer2024Winter!' -AsPlainText -Force"],
+            ['staticCallLiteralArg', '$password = [Foo]::Bar("hunter2hunter2")'],
+            ['staticCallSpacedLiteralArg', '$password = [Foo]::Bar( "hunter2hunter2" )'],
+            ['staticCallLiteralSecondArg', '$password = [Foo]::Bar($x, "hunter2hunter2")'],
+            ['castedLiteral', '$password = [string]"Summer2024Winter!"'],
+            ['bareWord', '$password = Summer2024Winter!'],
+            ['literalInTrailingComment', '$env:BW_PASSWORD = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($b) # "hunter2hunter2"'],
+            ['secondAssignmentOnSameLine', '$secret = [Foo]::Bar($x); $password = Summer2024Winter!'],
+        ])('scanContent_powershellLookalike_%s_stillDetected', (_name, content) => {
+            expect(scanContent(content, 'deploy/x.ps1').filter(f => /Secret|Password/.test(f.name)).length).toBeGreaterThan(0);
+        });
+
+        it('scanContent_powershellSecretRead_inNonPowershellFile_stillDetected', () => {
+            const content = '$env:BW_PASSWORD=[Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)';
+            expect(scanContent(content, 'notes.env').filter(f => /Secret|Password/.test(f.name)).length).toBeGreaterThan(0);
+        });
+
         it.each([
             ['bareIdentifierTerminated', 'const password = encryptedKey;'],
             ['environmentObjectWithSibling', 'env: { ...process.env, PGPASSWORD: password, PGCONNECT_TIMEOUT: "10" },'],

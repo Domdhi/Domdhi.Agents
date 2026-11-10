@@ -101,6 +101,9 @@ AC: "Given a valid email, When user submits login, Then redirect to dashboard"
 - Configuration files
 - Exact values that are not contracts: tuning numbers, thresholds, seeded card or spawn orders, pixel layout, UI copy, config defaults, case counts. Assert invariants and bounds instead (stays in range, never negative, monotonic, the same seed gives the same result). Pin exact values only on contracts: money, the output a seeded RNG gives for a seed, wire and storage formats, public signatures, access decisions, ordering guarantees (`/todo` Release Slices and Risk Tiers, Pin contracts, not tuning)
 - Pass or fail on balance in soak and survival harnesses: report a balance signal (deaths, win rate, time to clear) and fail only on crashes, hangs and broken invariants
+- Private state reached by reflection, full CSS class strings, a constant asserted equal to its own literal, a `data-testid` that only has to exist, or exact UI copy: each pins implementation and fails on harmless changes. Assert the behavior the user or caller sees
+- Wall-clock bounds (`< 2 s`) in unit tests: they fail on a busy machine and prove nothing about the code. Measure performance in a benchmark, not an assertion
+- Copy-paste families of one-fact tests (including a scanner's self-tests): table-drive them with `it.each` so one case is one row
 - Another edge case, input or branch for its own sake: on a `standard` story with no named trigger, extra coverage that no defect asked for is cost, not assurance. A suite that adds many test lines per source line (the `test-cost.js` signal) is a prompt to ask which tests guard a contract
 
 ## Quality Criteria
@@ -166,6 +169,17 @@ expect(notify).toHaveBeenCalledTimes(1); // not 2 — one caller must lose the c
 ```
 
 This is the shared-mutable-state generalization of the cross-item pattern above: whenever a shared key/resource can be reached by more than one concurrent caller, add a test that actually runs two calls concurrently and asserts only one wins — a single-call test cannot see a check-then-act race.
+
+### What a passing test can and cannot prove
+
+(From the largest adopter's memory review, 2026-11.) Each of these produced a green suite over a real defect.
+
+- **Prove a test can fail by injecting exactly one defect.** Break the one thing the test guards, see that test go red for the stated reason, restore, rebuild and see green. A predicted list of which tests "would" fail is not proof, and several injected defects at once hide which test caught what. After restoring a file by copying it back, touch it and rebuild: an unchanged timestamp can leave the broken build in place.
+- **A helper that computes both the expected and the actual value proves nothing.** If the test derives its expectation with the code under test (or a copy of its logic), a bug in that logic passes. Expected values come from the spec, a literal or an independent calculation.
+- **A fake data provider cannot prove the real database's behavior.** In-memory providers and mocks skip SQL translation, constraints, collation, transactions and concurrency. A test whose claim is about a query, a constraint or a migration runs against the real engine (a container or a disposable database).
+- **Mock fixtures cannot prove a data-loading defect is fixed.** If the bug was in what was loaded (a missing include, a lazy load, a projection), the test must load through the real path; a fixture that hands the code the fully loaded object passes either way.
+- **Fixtures hide the default production shape.** Hand-built fixtures fill every field. Production rows have nulls, empty collections, legacy values and defaults. Include at least one fixture built the way production creates the record (its constructor, factory or a copy of a real row).
+- **The first live run of a new end-to-end suite indicts the test first.** When a brand-new suite fails on its first real run, check the test's selectors, timing, data and environment before filing a product bug.
 
 ## Testing Conventions & Checkers
 

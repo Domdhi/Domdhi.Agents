@@ -47,7 +47,7 @@ node .claude/core/memory-manager.js lint
 Capture the full output. The result is a JSON object. Parse:
 
 - `score`: integer 0–70
-- `checks`: array of 7 check result objects, each with a description and pass/fail status
+- `checks`: object of 10 check results keyed by name, each `{ count, severity, findings[] }` (a check passes at `count: 0`). `corrected_in_place` flags bodies edited to say CORRECTED/OBSOLETE instead of being superseded; `id_drift` flags ids whose words no longer appear in the body; `schema_drift` flags a memory with neither `description` nor `summary` (startup and recall then show only its id) or an importance off the 1-5 scale; `broken_refs` covers `[[wiki-links]]`, `references[]` and `see_also[]`.
 
 Track `lint_score` = `score` value.
 
@@ -96,7 +96,7 @@ If any condition above is not met, **persist before reporting:** Write the full 
 | Archive candidates (< 0.1) | {archive_count} |
 
 ### Lint Issues
-{If lint_score is 70, write: "No issues — all 7 checks passed."}
+{If lint_score is 70, write: "No issues — all 10 checks passed."}
 {If lint_score < 70, list each failing check with its description and the points deducted.}
 
 ### Stale Memories
@@ -111,6 +111,7 @@ If any condition above is not met, **persist before reporting:** Write the full 
 {- "Run `node .claude/core/memory-manager.js report` to view all memories, or `node .claude/core/memory-manager.js decay-report` to inspect stalest entries first."}
 {- "Consider archiving {archive_count} memories below 0.1 confidence using memory-manager."}
 {- "Fix lint issues: {summary of failing checks}."}
+{- For `corrected_in_place` or `id_drift`: "Write the corrected memory under an id that states the current claim, then `node .claude/core/memory-manager.js supersede <category> <oldId> <newId>`; do not edit the old body again."}
 {- "Run /retro to re-validate stale pattern memories from recent epics."}
 {If nothing actionable was found beyond the silent threshold, write: "Memory system is near-healthy — monitor decay over the next few sessions."}
 ```

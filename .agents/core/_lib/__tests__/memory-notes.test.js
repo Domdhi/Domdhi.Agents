@@ -76,6 +76,16 @@ describe('engine adapter', () => {
         expect(d.body).toContain('- a\n- b');
         expect(d.description).toBe('Run bw sync before list');
     });
+    it('recalls rejected alternatives, why/how-to-apply, and text kept under pattern when there is no description', () => {
+        const body = N.engineBody({
+            pattern: 'Skip immutable zones in a path codemod.',
+            why: 'History must not be rewritten.',
+            alternatives: [{ approach: 'Rewrite every match', why_not: 'it edits archived handoffs' }, 'Plain string option'],
+        });
+        expect(body.startsWith('Skip immutable zones in a path codemod.')).toBe(true);
+        expect(body).toContain('**Why:** History must not be rewritten.');
+        expect(body).toContain('**Rejected alternatives:**\n- Rewrite every match (rejected: it edits archived handoffs)\n- Plain string option');
+    });
     it('a markdown note with the same name shadows its engine twin', () => {
         const root = path.join(tmp.root, '.memory');
         engine(root, 'constraints', 'bw-sync-first', { content: { description: 'engine copy' } });

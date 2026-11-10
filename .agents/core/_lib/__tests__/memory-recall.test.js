@@ -43,6 +43,25 @@ describe('keyword ranking', () => {
         const { hits: found } = await R.recall({ corpus: corpusOf(...common, rare), query: 'quasar telemetry decoder drops frames', stateDir: tmp.root, cfg: { provider: 'none' } });
         expect(found.map(h => h.name)).toEqual(['rare']);
     });
+    it('the keyword score factor is tunable: a hit between two factors is kept by the lower and rejected by the higher', async () => {
+        const common = Array.from({ length: 12 }, (_, i) => doc(`c${i}.md`, `common-${i}`, 'deploy production server notes', `deploy production server checklist ${i} for the rollout`));
+        const rare = doc('r.md', 'rare', 'quasar telemetry decoder', 'quasar telemetry decoder drops frames when the buffer overflows');
+        const corpus = corpusOf(...common, rare);
+        const query = 'quasar telemetry decoder drops frames';
+        const top = R.bm25Rank(corpus, query).ranked[0].score;
+        const perLn = top / Math.log(1 + Object.keys(corpus).length);          // the factor at which this hit just clears the gate
+        const run = kwScore => R.recall({ corpus, query, stateDir: tmp.root, cfg: { provider: 'none' }, kwScore });
+        expect((await run(perLn * 0.5)).hits.map(h => h.name)).toEqual(['rare']);
+        expect((await run(perLn * 1.5)).hits).toEqual([]);
+        expect(R.minScore(1000, 1)).toBeCloseTo(Math.log(1001), 6);
+    });
+    it('tuningFromEnv reads MEMORY_RECALL_FLOOR and MEMORY_RECALL_KW_SCORE, clamps them, and falls back on junk', () => {
+        expect(R.tuningFromEnv({})).toEqual({ floor: 0.7, kwScore: 1.75 });
+        expect(R.tuningFromEnv({ MEMORY_RECALL_KW_SCORE: '1.0', MEMORY_RECALL_FLOOR: '0.8' })).toEqual({ floor: 0.8, kwScore: 1 });
+        expect(R.tuningFromEnv({ MEMORY_RECALL_KW_SCORE: '0', MEMORY_RECALL_FLOOR: '5' })).toEqual({ floor: 0.95, kwScore: 0.25 });
+        expect(R.tuningFromEnv({ MEMORY_RECALL_KW_SCORE: '99' }).kwScore).toBe(4);
+        expect(R.tuningFromEnv({ MEMORY_RECALL_KW_SCORE: 'lots', MEMORY_RECALL_FLOOR: '' })).toEqual({ floor: 0.7, kwScore: 1.75 });
+    });
     it('minScore scales with corpus size and minMatched wants three terms for a real prompt', () => {
         expect(R.minScore(320)).toBeGreaterThan(R.minScore(100));
         expect(R.minScore(320)).toBeCloseTo(10.1, 0);
@@ -84,6 +103,13 @@ describe('embeddings against an OpenAI-compatible server', () => {
     it('throws on a server error so callers can degrade', async () => {
         const s = await embedServer({ fail: true });
         await expect(R.embed(['x'], 'doc', cfgFor(s))).rejects.toThrow(/500/);
+    });
+    it('a 404 names the missing model and the fix, and the whole message reaches the recall source', async () => {
+        const notFound = async () => ({ ok: false, status: 404 });
+        const cfg = { provider: 'ollama', url: 'http://127.0.0.1:1/v1', model: 'embeddinggemma', key: '' };
+        await expect(R.embed(['x'], 'doc', cfg, { fetchImpl: notFound })).rejects.toThrow(/model "embeddinggemma" not found.*MEMORY_EMBED_MODEL/);
+        const { source } = await R.recall({ corpus: corpusOf(pkill), query: 'pkill matched its own command line and killed the shell', stateDir: tmp.root, cfg, fetchImpl: notFound });
+        expect(source).toContain('MEMORY_EMBED_MODEL');
     });
 });
 

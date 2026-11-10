@@ -352,6 +352,27 @@ describe('command-usage-logger', () => {
             expect(entry.outcome).toBe('failure');
         });
 
+        it.each([
+            [{ overall: false, killed: 'SIGKILL' }, 'SIGKILL'],
+            [{ overall: false, inProgress: true, pid: 1 }, 'unfinished'],
+        ])('processEvent_gateKilledOrUnfinished_isUnknownWithTheKill_notAFailure (%j)', (summaryBody, killed) => {
+            // A killed gate is no verdict on the code; an unfinished one left its in-progress
+            // marker instead of a stale earlier verdict.
+            const summaryPath = path.join(tmp.root, 'docs', '.output', '.state', 'telemetry', '_latest-summary.json');
+            const jsonlPath = path.join(tmp.root, 'docs', '.output', '.state', 'telemetry', 'command-usage.jsonl');
+            fs.mkdirSync(path.dirname(summaryPath), { recursive: true });
+            fs.writeFileSync(summaryPath, JSON.stringify(summaryBody));
+
+            processEvent({
+                tool_input: { command: 'node .claude/core/gate.js test' },
+                tool_response: { stdout: '', stderr: '', interrupted: true, isImage: false },
+            });
+
+            const entry = JSON.parse(fs.readFileSync(jsonlPath, 'utf8').trim().split('\n')[0]);
+            expect(entry.outcome).toBe('unknown');
+            expect(entry.killed).toBe(killed);
+        });
+
         it('processEvent_gateNoExitCode_noSummaryFile_outcomeUnknown', () => {
             // A4 schema: no exit_code AND no summary file → outcome 'unknown'.
             // Previously defaulted to 'fail', but that misrepresented the absence

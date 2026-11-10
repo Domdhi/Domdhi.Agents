@@ -268,6 +268,64 @@ describe('engine memories and recall', () => {
     });
 });
 
+describe('capture provider fallback chain (MEMORY_CAPTURE_PROVIDER=claude-cli,anthropic)', () => {
+    const fake = behavior => writeFakeClaude(path.join(tmp.root, 'fakebin'), behavior);
+    const chain = (bin, extra = {}) => ({ MEMORY_CAPTURE_PROVIDER: 'claude-cli,anthropic', MEMORY_CAPTURE_CLAUDE_BIN: bin, ...extra });
+
+    it('parses a list: aliases, case, spaces and duplicates; unknown names mean anthropic; empty means anthropic', () => {
+        const { captureProviders } = require('../memory-capture');
+        expect(captureProviders({ MEMORY_CAPTURE_PROVIDER: 'claude, ANTHROPIC ,claude-cli' })).toEqual(['claude-cli', 'anthropic']);
+        expect(captureProviders({ MEMORY_CAPTURE_PROVIDER: 'openai' })).toEqual(['openai']);
+        expect(captureProviders({ MEMORY_CAPTURE_PROVIDER: 'mystery' })).toEqual(['anthropic']);
+        expect(captureProviders({})).toEqual(['anthropic']);
+    });
+    it('uses the first provider and never touches the second when the first works', async () => {
+        const s = await anthropic(() => ({ items: goodItems }));
+        const f = fake({ items: goodItems });
+        longSession('sess-a');
+        const r = await cli(['capture', '--session', 'sess-a'], chain(f.bin, { ANTHROPIC_API_KEY: 'k', ANTHROPIC_BASE_URL: s.url }));
+        expect(r.code).toBe(0);
+        expect(f.call()).not.toBeNull();
+        expect(s.calls).toHaveLength(0);
+        expect(candidatesLeft()).toHaveLength(2);
+    });
+    it('falls back to the API key when claude -p fails, says so, and stages from the second provider', async () => {
+        const s = await anthropic(() => ({ items: goodItems }));
+        const f = fake({ exit: 1, stderr: 'Not logged in' });
+        longSession('sess-a');
+        const r = await cli(['capture', '--session', 'sess-a'], chain(f.bin, { ANTHROPIC_API_KEY: 'k', ANTHROPIC_BASE_URL: s.url }));
+        expect(r.code).toBe(0);
+        expect(r.stdout).toMatch(/capture provider claude-cli failed .*Not logged in.*trying anthropic/);
+        expect(s.calls.length).toBeGreaterThan(0);
+        expect(candidatesLeft()).toHaveLength(2);
+        expect(JSON.parse(fs.readFileSync(path.join(stateDir, 'ledger.json'), 'utf8'))['sess-a']).toMatchObject({ staged: 2 });
+    });
+    it('falls back when the first provider is not usable at all (no key for anthropic first, then claude)', async () => {
+        const f = fake({ items: goodItems });
+        longSession('sess-a');
+        const r = await cli(['capture', '--session', 'sess-a'], { MEMORY_CAPTURE_PROVIDER: 'anthropic,claude-cli', MEMORY_CAPTURE_CLAUDE_BIN: f.bin });
+        expect(r.code).toBe(0);
+        expect(r.stdout).toMatch(/capture provider anthropic failed .*no Anthropic key.*trying claude-cli/);
+        expect(candidatesLeft()).toHaveLength(2);
+    });
+    it('when every provider fails it exits 1 naming each, and leaves nothing staged or ledgered', async () => {
+        const f = fake({ exit: 1, stderr: 'Not logged in' });
+        longSession('sess-a');
+        const r = await cli(['capture', '--session', 'sess-a'], chain(f.bin));
+        expect(r.code).toBe(1);
+        expect(r.stderr).toMatch(/every capture provider failed: claude-cli: .*Not logged in.*anthropic: no Anthropic key/);
+        expect(candidatesLeft()).toHaveLength(0);
+        expect(fs.existsSync(path.join(stateDir, 'ledger.json'))).toBe(false);
+    });
+    it('status lists the fallback and its readiness', async () => {
+        const f = fake({ items: [] });
+        const r = await cli(['status'], chain(f.bin, { ANTHROPIC_API_KEY: 'k' }));
+        expect(r.stdout).toMatch(/capture provider:  claude-cli .*ready/);
+        expect(r.stdout).toMatch(/capture fallback:  anthropic .*ready/);
+        expect((await cli(['status'], chain(f.bin))).stdout).toMatch(/capture fallback:  anthropic .*NOT READY/);
+    });
+});
+
 describe('keyless capture through claude -p (MEMORY_CAPTURE_PROVIDER=claude-cli)', () => {
     const fake = behavior => writeFakeClaude(path.join(tmp.root, 'fakebin'), behavior);
     const keyless = bin => ({ MEMORY_CAPTURE_PROVIDER: 'claude-cli', MEMORY_CAPTURE_CLAUDE_BIN: bin });

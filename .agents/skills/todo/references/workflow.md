@@ -150,6 +150,8 @@ Agent(
   9. Compute candidate wave groupings under both shapes: (a) file-overlap partitioning for concurrent writers in a shared checkout and (b) functional grouping for single-hotspot collapse. Identify shared files that need serialized edits, handoffs or separate-worktree integration. Leave the final shape decision to Main Agent.
   10. **Shared-git-index check:** if a wave's stories each run `git mv` / `git rm` / `git add` on the SAME working tree, they contend on `.git/index.lock` even when their files are disjoint — disjoint files ≠ disjoint git state. Flag such a wave `git-serial`: it must execute Main Agent direct sequentially, NOT as parallel agents, regardless of file-overlap partitioning. (Field-proven: skill-owned-templates Wave 2, six disjoint `git mv` migrations — ran sequential to avoid index-lock races.)
 
+  11. **Shared state beyond files:** stories that touch no common file can still collide: one database schema or migration sequence, globally numbered artifacts (migration, ADR or error-code numbers, ports, seed ids), shared config keys, a shared test database or fixture. Flag each such wave and name the shared resource; numbered artifacts are allocated by listing the live state when the file is written, never from the plan.
+
   Write findings to: docs/.output/.state/work/{YYYY-MM-DD}/{slug}/{HHMM}-research-codebase.md
   """,
   description: "Research codebase for {slug}"

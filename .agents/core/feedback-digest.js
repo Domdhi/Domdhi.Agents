@@ -386,7 +386,7 @@ function buildDigest(root = resolveRoot(), options = {}) {
         system: readSystemFiles(root),
         stack: gateSummary?.stack || null,
         lastGate: gateSummary
-            ? { overall: gateSummary.overall, mode: gateSummary.mode || null, durationMs: gateSummary.durationMs ?? null }
+            ? { overall: gateSummary.overall, killed: gateSummary.killed || (gateSummary.inProgress ? 'unfinished' : null), mode: gateSummary.mode || null, durationMs: gateSummary.durationMs ?? null }
             : null,
         // S-PI.5: explicit gate-run counter (primary: gate_run JSONL rows;
         // fallback: gate-*.log file count). Separate from commands.gates so the
@@ -443,7 +443,7 @@ function renderMarkdown(d) {
     const g = d.commands.gates;
     L.push(`- runs **${g.runs}** · pass ${g.pass} · fail ${g.fail} · unknown ${g.unknown} · pass-rate ${pct(g.passRate)}`);
     L.push(`- duration: last ${ms(g.lastDurationMs)} · avg ${ms(g.avgDurationMs)} (${g.durationsCaptured}/${g.runs} captured)`);
-    if (d.lastGate) L.push(`- last summary${current}: overall ${d.lastGate.overall ? 'PASS' : 'FAIL'} · mode ${d.lastGate.mode || '?'} · ${ms(d.lastGate.durationMs)}`);
+    if (d.lastGate) L.push(`- last summary${current}: overall ${d.lastGate.overall ? 'PASS' : (d.lastGate.killed ? `KILLED (${d.lastGate.killed})` : 'FAIL')} · mode ${d.lastGate.mode || '?'} · ${ms(d.lastGate.durationMs)}`);
     L.push('');
     L.push('### Hooks');
     L.push(`- total fires: **${d.hooks.rows}** · failures: ${d.hooks.failures}`);

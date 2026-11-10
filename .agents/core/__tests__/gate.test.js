@@ -162,6 +162,29 @@ describe('neutral adopter application gate ownership', () => {
       .toContain('Test time limit: 1500 ms (environment GATE_TEST_TIMEOUT_MS)');
   });
 
+  // A leg stopped from outside (OOM killer, CI cancel) is reported as KILLED, never as an ordinary failure.
+  it.skipIf(process.platform === 'win32')('kill_aTestLegKilledBySignal_isReportedAsKilledNotFailed', () => {
+    withCanonicalLegs({ test: { argv: ['node', '-e', "process.kill(process.pid, 'SIGKILL')"], timeout: 30000 } });
+    const result = gateOutcome(target, 'test');
+    expect(result.code).toBe(1);
+    expect(result.out).toContain('Tests: KILLED (SIGKILL)');
+    expect(result.out).toContain('not a tests failure');
+    expect(result.out).toContain('Overall: KILLED (SIGKILL)');
+    const latest = JSON.parse(fs.readFileSync(path.join(target, 'docs/.output/.state/telemetry/_latest-test.json'), 'utf8'));
+    expect(latest.killedBy).toBe('SIGKILL');
+    const summary = JSON.parse(fs.readFileSync(path.join(target, 'docs/.output/.state/telemetry/_latest-summary.json'), 'utf8'));
+    expect(summary).toMatchObject({ overall: false, killed: 'SIGKILL', test: { killedBy: 'SIGKILL' } });
+    expect(summary.inProgress).toBeUndefined();
+  });
+
+  it('kill_anOrdinaryFailingTestLeg_staysFailedWithNoKillMarker', () => {
+    withCanonicalLegs({ test: { argv: ['node', '-e', 'process.exit(1)'], timeout: 30000 } });
+    const result = gateOutcome(target, 'test');
+    expect(result.out).not.toContain('KILLED');
+    const summary = JSON.parse(fs.readFileSync(path.join(target, 'docs/.output/.state/telemetry/_latest-summary.json'), 'utf8'));
+    expect(summary.killed).toBeUndefined();
+  });
+
   // The visual-regression leg is opt-in, full-gate only and local only (never in CI).
   const visualEnv = { CI: '' };
   const passingVisual = { argv: ['node', 'application-check.cjs', 'integration', '--isolated'], timeout: 30000 };
@@ -2026,6 +2049,22 @@ describe('gate', () => {
       expect(parsed.total).toBe(5);
       expect(parsed.passed).toBe(5);
       expect(isZeroCollected(cmd, r.exitCode, parsed.total)).toBe(false);
+    });
+
+    it('killSignal: a signal or a 128+N shell exit is a kill; a timeout or a plain exit 1 is not', () => {
+      const { killSignal } = require('../../../.agents/core/gate');
+      expect(killSignal({ exitCode: 1, signal: 'SIGKILL' })).toBe('SIGKILL');
+      expect(killSignal({ exitCode: 137 })).toBe('SIGKILL');
+      expect(killSignal({ exitCode: 134 })).toBe('SIGABRT');
+      expect(killSignal({ exitCode: 143 })).toBe('SIGTERM');
+      expect(killSignal({ exitCode: 1 })).toBeNull();
+      expect(killSignal({ exitCode: 1, signal: 'SIGTERM', timedOut: true })).toBeNull();
+    });
+
+    it.skipIf(process.platform === 'win32')('a shell command whose child is SIGKILLed reports the kill', () => {
+      const { killSignal } = require('../../../.agents/core/gate');
+      const r = runCommand(`node -e "process.kill(process.pid, 'SIGKILL')"; exit $?`, process.cwd(), 30000);
+      expect(killSignal(r)).toBe('SIGKILL');
     });
 
     it('still captures stdout + stderr on a FAILING command', () => {

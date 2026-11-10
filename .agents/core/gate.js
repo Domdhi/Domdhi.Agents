@@ -603,7 +603,36 @@ function runCommand(cmd, cwd, timeoutMs) {
         // spawnSync kills the child at the limit and sets error.code ETIMEDOUT; callers
         // report the limit instead of presenting a killed run as an ordinary failure.
         timedOut: Boolean(result.error && result.error.code === 'ETIMEDOUT'),
+        // Set when the child itself died from a signal (argv mode, or a shell that exec'd it).
+        signal: result.signal || null,
     };
+}
+
+// Shell convention: a child killed by signal N makes `sh -c` exit 128+N. These four are the
+// ones a gate run actually meets: Ctrl-C, a Node heap abort, the OOM killer, a CI cancel.
+const SIGNAL_EXIT_CODES = { 130: 'SIGINT', 134: 'SIGABRT', 137: 'SIGKILL', 143: 'SIGTERM' };
+
+/**
+ * The signal that stopped a leg, or null when it ran to an exit of its own. A timeout is
+ * reported separately (the gate's own limit, not an outside kill), so it returns null here.
+ *
+ * @param {{exitCode:number, signal?:string|null, timedOut?:boolean}} result - runCommand output
+ * @returns {string|null}
+ */
+function killSignal(result) {
+    if (!result || result.timedOut) return null;
+    if (result.signal) return result.signal;
+    return SIGNAL_EXIT_CODES[result.exitCode] || null;
+}
+
+/** The line printed when a leg was killed, so it is never read as an ordinary failure. */
+function killNote(leg, signal) {
+    const cause = signal === 'SIGKILL' ? 'usually the out-of-memory killer or a forced stop'
+        : signal === 'SIGABRT' ? 'usually a runtime abort such as "JavaScript heap out of memory"'
+            : signal === 'SIGINT' ? 'an interrupt (Ctrl-C)'
+                : 'a stop request from outside, such as a CI cancel or a tool timeout';
+    return `[GATE] ${leg}: KILLED by ${signal} (${cause}). The run did not finish, so this is not a ` +
+        `${leg.toLowerCase()} failure and says nothing about the code. Re-run it; if it repeats, check memory and what else is running.`;
 }
 
 /**
@@ -1048,9 +1077,22 @@ async function main() {
         process.exit(3);
     }
 
+    // A gate that is itself killed never reaches its final summary, and readers (the telemetry
+    // logger, status) would then report the PREVIOUS run's verdict. Mark the run as in progress
+    // up front, and as killed from the signal handlers; SIGKILL leaves the in-progress marker.
+    const runMarker = (extra) => {
+        try {
+            writeSummary(PROJECT_ROOT, {
+                timestamp: new Date().toISOString(), mode: runE2e ? 'E2E' : (runTests ? 'TEST' : 'BUILD'),
+                overall: false, durationMs: Date.now() - startedAt, ...extra,
+            });
+        } catch { /* a summary write must never block the gate or its lock release */ }
+    };
+    runMarker({ inProgress: true, pid: process.pid });
+
     process.on('exit', releaseLock);
-    process.on('SIGINT', () => { releaseLock(); process.exit(130); });
-    process.on('SIGTERM', () => { releaseLock(); process.exit(143); });
+    process.on('SIGINT', () => { runMarker({ killed: 'SIGINT' }); releaseLock(); process.exit(130); });
+    process.on('SIGTERM', () => { runMarker({ killed: 'SIGTERM' }); releaseLock(); process.exit(143); });
 
     const config = loadConfig();
     console.log(`[GATE] Detected stack: ${config.stack || 'configured'}`);
@@ -1082,18 +1124,23 @@ async function main() {
         // collected 0 e2e tests is a FAIL, not a silent pass (C11/F1).
         const zeroCollected = isZeroCollected(e2eDisplay, e2eResult.exitCode, parsed.total);
         const succeeded = testPassed({ succeeded: parsed.succeeded, total: parsed.total, exitCode: e2eResult.exitCode }, e2eDisplay);
+        const e2eKilled = succeeded ? null : killSignal(e2eResult);
         fs.writeFileSync(
             path.join(GATE_DIR, '_latest-e2e.json'),
-            JSON.stringify({ ...parsed, exitCode: e2eResult.exitCode, command: e2eDisplay, timestamp: new Date().toISOString(), zeroCollected, succeeded }, null, 2),
+            JSON.stringify({ ...parsed, exitCode: e2eResult.exitCode, command: e2eDisplay, timestamp: new Date().toISOString(), zeroCollected, succeeded, ...(e2eKilled ? { killedBy: e2eKilled } : {}) }, null, 2),
         );
-        const e2eStatus = succeeded ? 'PASSED' : (zeroCollected ? 'FAILED (0 tests collected)' : 'FAILED');
+        const e2eStatus = succeeded ? 'PASSED' : (e2eKilled ? `KILLED (${e2eKilled})` : (zeroCollected ? 'FAILED (0 tests collected)' : 'FAILED'));
         console.log(`[GATE] E2E: ${e2eStatus} (${parsed.passed} passed, ${parsed.failed} failed, ${parsed.skipped} skipped)`);
+        if (e2eKilled) {
+            console.log(killNote('E2E', e2eKilled));
+            e2eLog += `\n${killNote('E2E', e2eKilled)}\n`;
+        }
         e2eLog += `\n${'='.repeat(60)}\nE2E gate completed at ${new Date().toISOString()}\nOverall: ${succeeded ? 'PASSED' : 'FAILED'}\n`;
         fs.writeFileSync(logPath, e2eLog);
         writeSummary(PROJECT_ROOT, {
             timestamp: new Date().toISOString(), mode: 'E2E', stack: config.stack || 'configured',
             overall: succeeded, durationMs: Date.now() - startedAt,
-            e2e: { succeeded, passed: parsed.passed, failed: parsed.failed, skipped: parsed.skipped, total: parsed.total, zeroCollected },
+            e2e: { succeeded, passed: parsed.passed, failed: parsed.failed, skipped: parsed.skipped, total: parsed.total, zeroCollected, ...(e2eKilled ? { killedBy: e2eKilled } : {}) },
         });
         console.log(`[GATE] Log: ${logPath}`);
         console.log(`[GATE] Overall: ${succeeded ? 'PASSED' : 'FAILED'}`);
@@ -1137,14 +1184,22 @@ async function main() {
         build.exitCode = buildResult.exitCode;
         build.command = buildDisplay;
         build.timestamp = new Date().toISOString();
+        if (buildResult.timedOut) build.timedOut = true;
+        const buildKilled = build.succeeded ? null : killSignal(buildResult);
+        if (buildKilled) build.killedBy = buildKilled;
 
         fs.writeFileSync(
             path.join(GATE_DIR, '_latest-build.json'),
             JSON.stringify(build, null, 2)
         );
 
-        const buildStatus = build.succeeded ? 'PASSED' : 'FAILED';
+        const buildStatus = build.succeeded ? 'PASSED'
+            : (buildKilled ? `KILLED (${buildKilled})` : (build.timedOut ? `TIMED OUT after ${formatTimeout(legTimeout(config.build))}` : 'FAILED'));
         console.log(`[GATE] Build: ${buildStatus} (${build.errors.length} errors, ${build.warnings.length} warnings)`);
+        if (buildKilled) {
+            console.log(killNote('Build', buildKilled));
+            fullLog += `\n${killNote('Build', buildKilled)}\n`;
+        }
     }
 
     // ── Step 2: Test (if requested and build passed) ────────────────
@@ -1218,14 +1273,23 @@ async function main() {
                 fullLog += `\n${warn}\n`;
             }
 
+            const testKilled = test.succeeded ? null : killSignal(testResult);
+            if (testKilled) {
+                test.killedBy = testKilled;
+                fs.writeFileSync(path.join(GATE_DIR, '_latest-test.json'), JSON.stringify(test, null, 2));
+            }
             const testStatus = test.succeeded
                 ? 'PASSED'
-                : (test.zeroCollected
+                : testKilled ? `KILLED (${testKilled})` : (test.zeroCollected
                     ? 'FAILED (0 tests collected)'
                     : (test.deadProjects > 0 || test.errorCount > 0
                         ? 'FAILED (a project collected no tests / reported errors)'
                         : 'FAILED'));
             console.log(`[GATE] Tests: ${testStatus} (${test.passed} passed, ${test.failed} failed, ${test.skipped} skipped)`);
+            if (testKilled) {
+                console.log(killNote('Tests', testKilled));
+                fullLog += `\n${killNote('Tests', testKilled)}\n`;
+            }
             if (testResult.timedOut) {
                 const killed = `[GATE] Tests: TIMED OUT — the run was killed at ${limit.timeoutMs} ms (${limit.source}). ` +
                     `That is the limit, not a test failure: re-run on a quieter machine or raise it with ${TEST_TIMEOUT_ENV}=<ms> ` +
@@ -1281,11 +1345,17 @@ async function main() {
             lint.exitCode = lintResult.exitCode;
             lint.command = lintDisplay;
             lint.timestamp = new Date().toISOString();
+            const lintKilled = lint.succeeded ? null : killSignal(lintResult);
+            if (lintKilled) lint.killedBy = lintKilled;
 
             fs.writeFileSync(path.join(GATE_DIR, '_latest-lint.json'), JSON.stringify(lint, null, 2));
 
-            const lintStatus = lint.succeeded ? 'PASSED' : 'FAILED';
+            const lintStatus = lint.succeeded ? 'PASSED' : (lintKilled ? `KILLED (${lintKilled})` : 'FAILED');
             console.log(`[GATE] Lint: ${lintStatus} (${lint.errors.length} errors, ${lint.warnings.length} warnings)`);
+            if (lintKilled) {
+                console.log(killNote('Lint', lintKilled));
+                fullLog += `\n${killNote('Lint', lintKilled)}\n`;
+            }
         }
     }
 
@@ -1359,13 +1429,19 @@ async function main() {
                 visualDisplay,
             );
 
+            const visualKilled = visual.succeeded ? null : killSignal(visualResult);
+            if (visualKilled) visual.killedBy = visualKilled;
+
             fs.writeFileSync(path.join(GATE_DIR, '_latest-visual.json'), JSON.stringify(visual, null, 2));
 
             const visualStatus = visual.succeeded
                 ? 'PASSED'
-                : (visual.timedOut ? `FAILED (${visual.timeoutMessage})` : (visual.zeroCollected ? 'FAILED (0 snapshots collected)' : 'FAILED'));
+                : visualKilled ? `KILLED (${visualKilled})` : (visual.timedOut ? `FAILED (${visual.timeoutMessage})` : (visual.zeroCollected ? 'FAILED (0 snapshots collected)' : 'FAILED'));
             console.log(`[GATE] Visual: ${visualStatus} (${visual.passed} passed, ${visual.failed} failed)`);
-            if (!visual.succeeded) {
+            if (visualKilled) {
+                console.log(killNote('Visual', visualKilled));
+                fullLog += `\n${killNote('Visual', visualKilled)}\n`;
+            } else if (!visual.succeeded) {
                 const hint = '[GATE] Visual diffs: inspect the runner\'s diff images before regenerating ' +
                     'baselines; regenerate only when the visual change is intentional.';
                 console.log(hint);
@@ -1390,9 +1466,13 @@ async function main() {
         build: {
             succeeded: build.succeeded,
             errorCount: build.errors.length,
-            warningCount: build.warnings.length
+            warningCount: build.warnings.length,
+            ...(build.killedBy ? { killedBy: build.killedBy } : {}),
         }
     };
+    // Top-level marker: a leg was stopped from outside, so `overall: false` is not a verdict on the code.
+    const killedLeg = [build, test, lint, visual].find(leg => leg && leg.killedBy);
+    if (killedLeg) summary.killed = killedLeg.killedBy;
 
     if (test) {
         summary.test = {
@@ -1404,6 +1484,7 @@ async function main() {
             zeroCollected: !!test.zeroCollected,
             timedOut: !!test.timedOut,
             ...(test.timedOut ? { timeoutMs: test.timeoutMs, timeoutMessage: test.timeoutMessage } : {}),
+            ...(test.killedBy ? { killedBy: test.killedBy } : {}),
             failureNames: test.failures.map(f => f.name)
         };
     }
@@ -1438,7 +1519,7 @@ async function main() {
     fs.writeFileSync(logPath, fullLog);
 
     console.log(`[GATE] Log: ${logPath}`);
-    console.log(`[GATE] Overall: ${overall ? 'PASSED' : 'FAILED'}`);
+    console.log(`[GATE] Overall: ${overall ? 'PASSED' : (summary.killed ? `KILLED (${summary.killed}) — re-run; this is not a verdict on the code` : 'FAILED')}`);
 
     process.exit(overall ? 0 : 1);
 }
@@ -1450,4 +1531,4 @@ if (require.main === module) {
     });
 }
 
-module.exports = { legTimeout, formatTimeout, DEFAULT_LEG_TIMEOUT_MS, loadConfig, parseBuildOutput, parseTestOutput, isZeroCollected, testPassed, runCommand, describeLeg, legRunnable, resolveTestTimeout, acquireLock, releaseLock, isProcessAlive, STALE_LOCK_MS, DEFAULT_TEST_TIMEOUT_MS, TEST_TIMEOUT_ENV };
+module.exports = { killSignal, killNote, SIGNAL_EXIT_CODES, legTimeout, formatTimeout, DEFAULT_LEG_TIMEOUT_MS, loadConfig, parseBuildOutput, parseTestOutput, isZeroCollected, testPassed, runCommand, describeLeg, legRunnable, resolveTestTimeout, acquireLock, releaseLock, isProcessAlive, STALE_LOCK_MS, DEFAULT_TEST_TIMEOUT_MS, TEST_TIMEOUT_ENV };

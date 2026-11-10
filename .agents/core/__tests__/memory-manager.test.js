@@ -981,7 +981,7 @@ describe('memory-manager', () => {
       writeFixtureMemory('patterns', 'has_broken_ref', {
         updated: new Date().toISOString(),
         usage_count: 1,
-        content: { note: 'related: ghost-concept' },
+        content: { description: 'Has a dangling ref.', note: 'related: ghost-concept' },
         metadata: { confidence: 1.0 }
       });
       const manager = makeManager();

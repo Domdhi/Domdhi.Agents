@@ -63,6 +63,12 @@ describe('notes sync at session end (separate opt-in: MEMORY_SYNC=on)', () => {
 const fire = (input = { transcript_path: transcript }) => hook.processEvent(input, { spawn });
 
 describe('keyless provider and the recursion guard', () => {
+    it('a fallback chain counts as configured when any provider in it is usable', () => {
+        expect(hook.providerConfigured({ MEMORY_CAPTURE_PROVIDER: 'claude-cli,anthropic' })).toBe(true);
+        expect(hook.providerConfigured({ MEMORY_CAPTURE_PROVIDER: 'anthropic,openai' })).toBe(false);
+        expect(hook.providerConfigured({ MEMORY_CAPTURE_PROVIDER: 'anthropic,openai', ANTHROPIC_API_KEY: 'k' })).toBe(true);
+        expect(hook.providerConfigured({ MEMORY_CAPTURE_PROVIDER: 'openai,anthropic', MEMORY_CAPTURE_MODEL: 'm' })).toBe(true);
+    });
     it('claude-cli needs no key, but is still opt-in: it starts exactly one detached child', () => {
         Object.assign(process.env, { MEMORY_CAPTURE: 'on', MEMORY_CAPTURE_PROVIDER: 'claude-cli' });
         expect(hook.providerConfigured(process.env)).toBe(true);

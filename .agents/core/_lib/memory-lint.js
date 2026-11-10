@@ -1,5 +1,5 @@
 /**
- * Memory Lint — 7-check health audit over a pre-assembled list of memories.
+ * Memory Lint — 10-check health audit over a pre-assembled list of memories.
  *
  * Extracted from memory-manager.js:740-911 (lintMemories). Pure function of its
  * inputs — no `this.*` coupling in the body. Caller is responsible for:
@@ -25,8 +25,34 @@ const NEGATIVE_SIGNALS = ["don't", 'never', 'avoid', 'skip', 'stop', 'remove'];
 
 const DEDUCTIONS = { error: 3, warning: 2, info: 1 };
 
+const CORRECTION_MARKER = /\b(?:CORRECTED|CORRECTION|OBSOLETE|REFUTED|RETRACTED|SUPERSEDED|NO LONGER (?:TRUE|VALID|ACCURATE))\b/;
+const CORRECTION_KEY = /^(?:correction|corrections|historical_\w+)$/;
+const CORRECTION_PHRASE = /\b(?:(?:the )?(?:earlier|previous|original|above) (?:claim|version|guidance|rule|advice) (?:was|is) (?:wrong|incorrect)|this (?:memory|rule) (?:was|is) wrong)\b/i;
+
+// Words an id carries that say nothing about its subject.
+const ID_STOPWORDS = new Set(['with', 'when', 'that', 'this', 'from', 'into', 'than', 'then', 'only', 'must', 'never', 'always',
+    'should', 'does', 'dont', 'without', 'before', 'after', 'over', 'under', 'every', 'each', 'their', 'there', 'about', 'uses']);
+
 /**
- * Run the 7 lint checks and return a structured health report.
+ * Words of a memory id that the content never mentions. Matching is by a 4-letter stem so
+ * "caching" finds "cache" and "tests" finds "testing". Ids with fewer than three meaningful
+ * words are skipped (too little to judge), and drift needs at least two thirds of them missing
+ * (a body that paraphrases its id still shares about half its words).
+ *
+ * @param {string} id
+ * @param {string} lowerText  the memory content, lower-cased
+ * @returns {{terms:number, missing:string[]}|null}
+ */
+function idDrift(id, lowerText) {
+    const terms = [...new Set(String(id || '').toLowerCase().split(/[^a-z0-9]+/)
+        .filter(w => w.length >= 4 && !ID_STOPWORDS.has(w) && !/^\d+$/.test(w)))];
+    if (terms.length < 3) return null;
+    const missing = terms.filter(w => !lowerText.includes(w.slice(0, 4)));
+    return missing.length * 3 >= terms.length * 2 ? { terms: terms.length, missing } : null;
+}
+
+/**
+ * Run the 10 lint checks and return a structured health report.
  *
  * @param {Array<{category: string, summary: object, full: object}>} allMemories
  *        Pre-assembled memory list. `full` must have id, updated, usage_count,
@@ -52,6 +78,9 @@ function lintMemories(allMemories, { calculateDecayedConfidence, categories, max
         duplicates:       { count: 0, severity: 'warning', findings: [] },
         decay_validation: { count: 0, severity: 'info',    findings: [] },
         category_balance: { count: 0, severity: 'warning', findings: [] },
+        corrected_in_place: { count: 0, severity: 'warning', findings: [] },
+        id_drift:         { count: 0, severity: 'info',    findings: [] },
+        schema_drift:     { count: 0, severity: 'info',    findings: [] },
     };
 
     const knownIds = new Set([...allMemories.map(m => m.full.id), ...retiredIds]);
@@ -98,7 +127,7 @@ function lintMemories(allMemories, { calculateDecayedConfidence, categories, max
             flagRef(category, full, match[1], 'prose ref');
         }
         // (b) [[wiki-link]] slugs in description/evidence prose.
-        const proseText = `${full.content?.description || ''} ${full.content?.evidence || ''}`;
+        const proseText = `${full.content?.description || full.content?.summary || ''} ${full.content?.evidence || ''}`;
         while ((match = wikiPattern.exec(proseText)) !== null) {
             flagRef(category, full, match[1], 'wiki-link');
         }
@@ -107,6 +136,15 @@ function lintMemories(allMemories, { calculateDecayedConfidence, categories, max
         if (Array.isArray(refs)) {
             for (const ref of refs) {
                 if (typeof ref === 'string') flagRef(category, full, ref, 'references[]');
+            }
+        }
+        // (d) content.see_also[]: slug strings or { category, id } objects. The largest
+        // measured store had 143 see_also links to ids that existed nowhere.
+        const seeAlso = full.content?.see_also ?? full.see_also;
+        if (Array.isArray(seeAlso)) {
+            for (const ref of seeAlso) {
+                const id = typeof ref === 'string' ? ref : ref?.id;
+                if (typeof id === 'string') flagRef(category, full, id, 'see_also[]');
             }
         }
     }
@@ -241,6 +279,62 @@ function lintMemories(allMemories, { calculateDecayedConfidence, categories, max
     }
     findings.category_balance.count = findings.category_balance.findings.length;
 
+    // Check 8 — Corrected in place. A memory found wrong gets its body edited ("CORRECTED: ...")
+    // instead of a new memory plus `supersede`, so the stale claim stays live in recall and the
+    // id keeps naming it. Seen at scale: 35 of 1,401 live memories in the largest store, against
+    // 16 ever superseded. Upper-case markers only: lower-case "obsolete" is ordinary content.
+    for (const { category, full } of allMemories) {
+        const text = JSON.stringify(full.content ?? {});
+        const match = CORRECTION_MARKER.exec(text) || CORRECTION_PHRASE.exec(text);
+        // The same habit in structured form: the old claim kept in a side field
+        // (correction, historical_description) or a description that opens "CURRENT:".
+        const sideKey = Object.keys(full.content ?? {}).find(k => CORRECTION_KEY.test(k));
+        const currentPrefix = /^\s*CURRENT:/.test(String(full.content?.description ?? ''));
+        const marker = match ? match[0] : (sideKey ? `${sideKey} field` : (currentPrefix ? 'CURRENT: prefix' : null));
+        if (marker) {
+            findings.corrected_in_place.findings.push({
+                memory: `${category}/${full.id}`,
+                marker,
+                detail: `Body carries a correction (${marker}): supersede it with a corrected memory (memory-manager.js supersede) when the id no longer fits, otherwise rewrite it whole and drop the old claim`,
+            });
+        }
+    }
+    findings.corrected_in_place.count = findings.corrected_in_place.findings.length;
+
+    // Check 9 — Id drift. The id is what startup and recall show first; when most of its words
+    // no longer appear anywhere in the content, the body was rewritten under an id that now
+    // states something else (or the opposite).
+    for (const m of allMemories) {
+        const { category, full } = m;
+        const drift = idDrift(full.id, lintText.get(m).text);
+        if (drift) {
+            findings.id_drift.findings.push({
+                memory: `${category}/${full.id}`,
+                missing_terms: drift.missing,
+                detail: `${drift.missing.length} of ${drift.terms} id words (${drift.missing.join(', ')}) appear nowhere in the content: rename or supersede so the id matches the body`,
+            });
+        }
+    }
+    findings.id_drift.count = findings.id_drift.findings.length;
+
+    // Check 10 — Schema drift: a memory with no description shows only its id in startup and
+    // recall, and an importance off the 1-5 scale skews ranking. A missing importance is not
+    // flagged: it falls back to the default.
+    for (const { category, full } of allMemories) {
+        const problems = [];
+        // Startup and recall fall back to content.summary, so either field counts.
+        const text = [full.content?.description, full.content?.summary].find(v => typeof v === 'string' && v.trim());
+        if (!text) problems.push('empty description');
+        const importance = full.importance ?? full.content?.importance;
+        if (importance !== undefined && importance !== null && !(Number.isInteger(importance) && importance >= 1 && importance <= 5)) {
+            problems.push(`importance ${JSON.stringify(importance)} is off the 1-5 scale`);
+        }
+        if (problems.length) {
+            findings.schema_drift.findings.push({ memory: `${category}/${full.id}`, problems, detail: problems.join('; ') });
+        }
+    }
+    findings.schema_drift.count = findings.schema_drift.findings.length;
+
     // Health score: start at 70, deduct per finding by severity
     let score = 70;
     for (const check of Object.values(findings)) {
@@ -256,4 +350,4 @@ function lintMemories(allMemories, { calculateDecayedConfidence, categories, max
     };
 }
 
-module.exports = { lintMemories, DEDUCTIONS };
+module.exports = { lintMemories, idDrift, DEDUCTIONS };

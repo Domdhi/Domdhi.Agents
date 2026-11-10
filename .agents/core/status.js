@@ -465,7 +465,11 @@ function printTextSummary(files, telemetry, gitMetrics, memMetrics, gateSummary 
     const t = gateSummary.test || {};
     const tests = typeof t.total === 'number' && t.total > 0 ? `, ${t.passed ?? 0}/${t.total} tests` : '';
     const dur = typeof gateSummary.durationMs === 'number' ? `, ${(gateSummary.durationMs / 1000).toFixed(1)}s` : '';
-    console.log(`    Build gate: ${gateSummary.overall ? 'PASS' : 'FAIL'} (${gateSummary.stack || 'unknown'}${tests}${dur})`);
+    // A killed or unfinished run is not a FAIL: it never reached a verdict.
+    const verdict = gateSummary.overall ? 'PASS'
+      : gateSummary.killed ? `KILLED (${gateSummary.killed})`
+        : gateSummary.inProgress ? 'RUNNING or died unfinished' : 'FAIL';
+    console.log(`    Build gate: ${verdict} (${gateSummary.stack || 'unknown'}${tests}${dur})`);
   }
   if (codeMetrics && codeMetrics.fileCount > 0) {
     console.log(`    Code: ${codeMetrics.loc.toLocaleString('en-US')} LOC in ${codeMetrics.fileCount} source files`);

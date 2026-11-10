@@ -6,7 +6,7 @@
  *
  *   capture [--session ID|latest|PATH] [--model haiku|sonnet|ID] [--method W|U] [--max-keep N] [--user-quote-only]
  *           [--min-user-chars N] [--dry-run] [--force] [--quiet] [--then-index]
- *                                       providers (MEMORY_CAPTURE_PROVIDER): anthropic (default; API key), claude-cli (no key: your
+ *                                       providers (MEMORY_CAPTURE_PROVIDER, or a fallback chain such as claude-cli,anthropic): anthropic (default; API key), claude-cli (no key: your
  *                                       own `claude -p` login), openai (any OpenAI-compatible server)
  *   backfill [--older-than-min 30] [--max-sessions 10] [--max-keep 6] [--user-quote-only] [--dry-run]
  *   pending [--older-than-min 30]       sessions not yet captured (no key, no cost)
@@ -58,9 +58,20 @@ function contextFor(env = process.env) {
     return notesContext(path.resolve(__dirname, '..', '..'), env);
 }
 
-function captureConfig(env = process.env) {
-    const asked = String(env.MEMORY_CAPTURE_PROVIDER || 'anthropic').toLowerCase();
-    const provider = asked === 'openai' ? 'openai' : asked === 'claude-cli' || asked === 'claude' ? 'claude-cli' : 'anthropic';
+/**
+ * MEMORY_CAPTURE_PROVIDER is one provider or a comma-separated fallback chain ("claude-cli,anthropic": try your Claude login
+ * first, then the API key if that call fails). Unknown names mean anthropic, as before; duplicates are dropped.
+ */
+function captureProviders(env = process.env) {
+    const names = String(env.MEMORY_CAPTURE_PROVIDER || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean)
+        .map(n => (n === 'openai' ? 'openai' : n === 'claude-cli' || n === 'claude' ? 'claude-cli' : 'anthropic'));
+    const chain = [...new Set(names)];
+    return chain.length ? chain : ['anthropic'];
+}
+
+function captureConfig(env = process.env, which) {
+    const asked = which || captureProviders(env)[0];
+    const provider = asked === 'openai' ? 'openai' : asked === 'claude-cli' ? 'claude-cli' : 'anthropic';
     if (provider === 'openai') {
         const model = env.MEMORY_CAPTURE_MODEL || '';
         return { provider, model, baseUrl: env.MEMORY_CAPTURE_BASE_URL || 'http://127.0.0.1:11434/v1', key: env.MEMORY_CAPTURE_API_KEY || '', keySource: 'n/a', ready: Boolean(model) };
@@ -151,11 +162,6 @@ async function captureOne(file, ctx, o, env, io) {
     // Recursion guard: the keyless provider's own child session must never start a capture.
     if (env.MEMORY_CAPTURE_INNER) throw new Error('capture refused inside a capture child (MEMORY_CAPTURE_INNER is set)');
 
-    const key = cfg.provider === 'anthropic' ? resolveKey(env) : null;
-    if (cfg.provider !== 'openai' && !cfg.model) throw new Error(`cannot resolve model "${cfg.alias}": adapters/claude/model-tiers.json has no directApi.models entry (or set MEMORY_CAPTURE_MODEL to a model id)`);
-    if (cfg.provider === 'anthropic' && !key) throw new Error('no Anthropic key: set ANTHROPIC_API_KEY or MEMORY_CAPTURE_KEY_COMMAND (or MEMORY_CAPTURE_PROVIDER=claude-cli to use your Claude login, or =openai with MEMORY_CAPTURE_MODEL)');
-    if (cfg.provider === 'openai' && !cfg.model) throw new Error('MEMORY_CAPTURE_MODEL is required with MEMORY_CAPTURE_PROVIDER=openai');
-
     const corpus = notes.loadCorpus({ memoryDir: ctx.memoryDir, engineRoot: ctx.engineRoot });
     const staged = [...listMd(ctx.candidatesDir).map(f => path.join(ctx.candidatesDir, f)), ...listMd(ctx.discardedDir).map(f => path.join(ctx.discardedDir, f))]
         .map(f => { try { return fs.readFileSync(f, 'utf8'); } catch { return ''; } });
@@ -163,18 +169,44 @@ async function captureOne(file, ctx, o, env, io) {
     const known = [...Object.values(corpus).map(d => `- ${d.name}: ${d.description.slice(0, 220)}`),
         ...staged.map(t => { const { fm } = notes.splitFrontmatter(t); return `- ${notes.fmValue(fm, 'name')}: ${notes.fmValue(fm, 'description').slice(0, 220)}`; })].join('\n');
 
-    const cands = [];
+    // One provider's whole pass over the session's parts. A failure (preflight or call) throws so the next provider in the chain can try.
+    const attempt = async cfgX => {
+        const key = cfgX.provider === 'anthropic' ? resolveKey(env) : null;
+        if (cfgX.provider !== 'openai' && !cfgX.model) throw new Error(`cannot resolve model "${cfgX.alias}": adapters/claude/model-tiers.json has no directApi.models entry (or set MEMORY_CAPTURE_MODEL to a model id)`);
+        if (cfgX.provider === 'anthropic' && !key) throw new Error('no Anthropic key: set ANTHROPIC_API_KEY or MEMORY_CAPTURE_KEY_COMMAND (or MEMORY_CAPTURE_PROVIDER=claude-cli to use your Claude login, or =openai with MEMORY_CAPTURE_MODEL)');
+        if (cfgX.provider === 'openai' && !cfgX.model) throw new Error('MEMORY_CAPTURE_MODEL is required with MEMORY_CAPTURE_PROVIDER=openai');
+        const out = [];
+        let spent = 0;
+        const m = cfgX.price || { inPerM: 0, outPerM: 0 };
+        for (const text of parts) {
+            const res = cfgX.provider === 'openai'
+                ? await ex.callOpenAI({ baseUrl: cfgX.baseUrl, model: cfgX.model, key: cfgX.key, text, known, fetchImpl: io.fetchImpl })
+                : cfgX.provider === 'claude-cli'
+                    ? await ex.callClaudeCli({ model: cfgX.model, text, known, env })
+                    : await ex.callAnthropic({ model: cfgX.model, key, text, known, fetchImpl: io.fetchImpl, retryMs: io.retryMs });
+            out.push(...ex.parseItems(res.text));
+            spent += res.cost !== undefined ? res.cost : res.inputTokens / 1e6 * m.inPerM + res.outputTokens / 1e6 * m.outPerM;
+        }
+        return { out, spent };
+    };
+
+    const chain = captureProviders(env).map(p => captureConfig(env, p));
+    let cands = [];
     let cost = 0;
-    const m = cfg.price || { inPerM: 0, outPerM: 0 };
-    for (const text of parts) {
-        const res = cfg.provider === 'openai'
-            ? await ex.callOpenAI({ baseUrl: cfg.baseUrl, model: cfg.model, key: cfg.key, text, known, fetchImpl: io.fetchImpl })
-            : cfg.provider === 'claude-cli'
-                ? await ex.callClaudeCli({ model: cfg.model, text, known, env })
-                : await ex.callAnthropic({ model: cfg.model, key, text, known, fetchImpl: io.fetchImpl, retryMs: io.retryMs });
-        cands.push(...ex.parseItems(res.text));
-        cost += res.cost !== undefined ? res.cost : res.inputTokens / 1e6 * m.inPerM + res.outputTokens / 1e6 * m.outPerM;
+    const failures = [];
+    for (const c of chain) {
+        try {
+            const r2 = await attempt(c);
+            cands = r2.out;
+            cost = r2.spent;
+            failures.length = 0;
+            break;
+        } catch (e) {
+            failures.push(`${c.provider}: ${e.message}`);
+            if (chain.indexOf(c) < chain.length - 1) io.log(`  capture provider ${c.provider} failed (${String(e.message).slice(0, 160)}); trying ${chain[chain.indexOf(c) + 1].provider}`);
+        }
     }
+    if (failures.length) throw new Error(chain.length === 1 ? failures[0].replace(/^[a-z-]+: /, '') : `every capture provider failed: ${failures.join(' | ')}`);
     let { kept, dropped } = ex.filterCandidates(cands, r, existing, { isSecret });
     if (o.userQuoteOnly) {
         dropped.not_user_quote = kept.filter(c => !c.quote_in_user).length;
@@ -298,7 +330,8 @@ const commands = {
         const query = a.pos.join(' ');
         if (!query) throw new Error('recall: give a query');
         const corpus = notes.loadCorpus({ memoryDir: ctx.memoryDir, engineRoot: ctx.engineRoot });
-        const { hits } = await rec.recall({ corpus, query, k: Number(a.flags.k || 3), stateDir: ctx.stateDir, cfg: rec.embedConfig(env), sync: true, timeoutMs: 5000, fetchImpl: io.fetchImpl });
+        const { floor, kwScore } = rec.tuningFromEnv(env);
+        const { hits } = await rec.recall({ corpus, query, k: Number(a.flags.k || 3), floor, kwScore, stateDir: ctx.stateDir, cfg: rec.embedConfig(env), sync: true, timeoutMs: 5000, fetchImpl: io.fetchImpl });
         if (!hits.length) io.log('no relevant memory');
         for (const h of hits) io.log(`## ${h.name}  (${h.source}, ${h.file}${h.cos ? `, cos ${h.cos}` : ''})\n${a.flags.full ? h.body : h.description}\n`);
     },
@@ -350,6 +383,7 @@ const commands = {
             `embeddings:        ${emb.provider === 'none' ? 'none (keyword-only)' : `${emb.provider} ${emb.url} model ${emb.model}`}; indexed ${idx ? Object.keys(idx.items).length : 0}/${Object.keys(corpus).length}`,
             `auto capture:      ${on ? 'ON (MEMORY_CAPTURE)' : 'off (set MEMORY_CAPTURE=on to enable the SessionEnd hook)'}`,
             `capture provider:  ${cap.provider} ${cap.model || '(no model)'}; ${cap.provider === 'openai' ? `server ${cap.baseUrl}` : cap.provider === 'claude-cli' ? `runs \`claude -p\` with your Claude login (no API key)` : `key source: ${cap.keySource}`}; ${cap.ready ? 'ready' : 'NOT READY'}`,
+            ...captureProviders(env).slice(1).map(p => { const f = captureConfig(env, p); return `capture fallback:  ${f.provider} ${f.model || '(no model)'}; ${f.ready ? 'ready' : 'NOT READY'}`; }),
             `notes sync:       ${syncLine(ctx)}`,
             `candidates:        ${listMd(ctx.candidatesDir).length} awaiting review; ${pendingSessions(ctx, 30).length} session(s) not yet captured`,
         ].join('\n'));
@@ -381,4 +415,4 @@ if (require.main === module) {
     run(process.argv.slice(2)).catch(e => { console.error(`memory-capture: ${e.message}`); process.exitCode = 1; });
 }
 
-module.exports = { run, parseArgs, contextFor, captureConfig, resolveKey, isSecret };
+module.exports = { run, parseArgs, contextFor, captureConfig, captureProviders, resolveKey, isSecret };

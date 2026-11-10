@@ -66,7 +66,9 @@ function renderMemoryHealthBox(mm) {
  */
 function renderGateStatusBox(gs) {
     if (!gs || typeof gs.overall !== 'boolean') return '';
-    const color = gs.overall ? '#3fb950' : '#da3633';
+    // A killed or unfinished run never reached a verdict; show it neutral, not red.
+    const label = gs.overall ? 'PASS' : gs.killed ? 'KILLED' : gs.inProgress ? 'UNFINISHED' : 'FAIL';
+    const color = gs.overall ? '#3fb950' : (gs.killed || gs.inProgress) ? '#d29922' : '#da3633';
     const titleParts = [];
     if (gs.mode) titleParts.push(esc(gs.mode));
     if (gs.stack) titleParts.push(esc(gs.stack));
@@ -75,7 +77,7 @@ function renderGateStatusBox(gs) {
     }
     if (typeof gs.durationMs === 'number') titleParts.push(`${(gs.durationMs / 1000).toFixed(1)}s`);
     return `<div class="summary-box" title="${titleParts.join(' • ')}">
-          <div class="number" style="color:${color}">${gs.overall ? 'PASS' : 'FAIL'}</div>
+          <div class="number" style="color:${color}">${label}</div>
           <div class="label">Build Gate</div>
         </div>`;
 }

@@ -19,7 +19,8 @@
  * embedding has a 400 ms budget, documents are never embedded here). When the vector index is stale and an
  * embedder is reachable, one detached `memory-capture.js index` is started (at most every 10 minutes).
  *
- * Tuning: MEMORY_RECALL_MAX (1 to 5, default 3), MEMORY_RECALL_FLOOR (cosine floor, 0.3 to 0.95, default 0.70).
+ * Tuning: MEMORY_RECALL_MAX (1 to 5, default 3), MEMORY_RECALL_FLOOR (cosine floor, 0.3 to 0.95, default 0.70),
+ * MEMORY_RECALL_KW_SCORE (keyword-only score per ln(1+N), 0.25 to 4, default 1.75; lower it on a large store).
  * Disable: MEMORY_RECALL=off, or MEMORY_PROFILE=minimal. Codex has no registered UserPromptSubmit hook;
  * Codex agents recall through `memory-capture.js recall`.
  */
@@ -31,7 +32,7 @@ const { isAtLeast } = require('../core/profile');
 const { readHookInput } = require('../core/_lib/hook-input');
 const { notesContext, recallEnabled } = require('../core/_lib/memory-context');
 const { loadCorpus } = require('../core/_lib/memory-notes');
-const { recall, embedConfig, DEFAULT_FLOOR } = require('../core/_lib/memory-recall');
+const { recall, embedConfig, tuningFromEnv, DEFAULT_FLOOR } = require('../core/_lib/memory-recall');
 const { appendJsonl } = require('../core/_lib/jsonl-writer');
 
 const MIN_PROMPT = 20;
@@ -49,10 +50,11 @@ const HEADER = 'Memories recalled for this prompt (matched by meaning and keywor
 
 function tuning(env) {
     const max = Math.round(Number(env.MEMORY_RECALL_MAX));
-    const floor = Number(env.MEMORY_RECALL_FLOOR);
+    const { floor, kwScore } = tuningFromEnv(env);
     return {
         maxHits: Number.isFinite(max) && env.MEMORY_RECALL_MAX !== '' ? Math.min(5, Math.max(1, max)) : MAX_HITS,
-        floor: Number.isFinite(floor) && env.MEMORY_RECALL_FLOOR !== '' ? Math.min(0.95, Math.max(0.3, floor)) : DEFAULT_FLOOR,
+        floor,
+        kwScore,
     };
 }
 
@@ -115,9 +117,9 @@ async function processEvent(input, { env = process.env, fallbackDir = path.resol
 
     const sp = seenPath(ctx.stateDir, input.session_id);
     const seen = new Set(readJson(sp, []));
-    const { maxHits, floor } = tuning(env);
+    const { maxHits, floor, kwScore } = tuning(env);
     const result = await recall({
-        corpus, query: prompt.slice(0, 2000), k: maxHits + seen.size, floor, stateDir: ctx.stateDir,
+        corpus, query: prompt.slice(0, 2000), k: maxHits + seen.size, floor, kwScore, stateDir: ctx.stateDir,
         cfg: embedConfig(env), sync: false, timeoutMs: 400, fetchImpl,
     });
     if (result.stale && /^hybrid/.test(result.source)) spawnIndexOnce(ctx, env);

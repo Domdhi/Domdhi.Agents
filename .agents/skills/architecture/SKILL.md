@@ -54,7 +54,7 @@ State the style explicitly and name the forces that chose it. "Monolith because 
 Happy-path architecture is not architecture. For the system's real load and failure profile, decide and write down:
 
 - **Scalability** — where's the bottleneck (CPU, IO, DB connections, a hot row)? What scales horizontally vs. vertically? What's the stateful choke point?
-- **Reliability** — what happens when each dependency is down/slow? Timeouts, retries with backoff+jitter, circuit breakers, idempotency, graceful degradation. Name the blast radius of each failure.
+- **Reliability** — what happens when each dependency is down/slow? Timeouts, retries with backoff+jitter, circuit breakers, idempotency, graceful degradation. Name the blast radius of each failure. An in-process scheduler or background job dies when its host idles out (an app pool idle timeout, scale to zero, a recycled worker): run scheduled work from an external trigger or a host that never idles, and alert on a missed run.
 - **Data** — ownership (one writer per entity), consistency model (strong vs eventual, and *why* that's acceptable), transaction boundaries, migration/backfill strategy.
 - **Security** — trust boundaries, authN vs authZ, secret handling, data classification, the threat surface. Security is a section, not an afterthought.
 - **Observability** — how you'll know it's healthy (the three pillars: logs/metrics/traces), what the SLIs are, what pages a human.

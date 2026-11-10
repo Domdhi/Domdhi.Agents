@@ -80,16 +80,30 @@ function loadNotes(dir) {
     return out;
 }
 
-const ENGINE_BODY_KEYS = ['correct_pattern', 'steps', 'evidence', 'reason', 'alternative'];
+const ENGINE_BODY_KEYS = ['correct_pattern', 'wrong_pattern', 'steps', 'why', 'how_to_apply', 'evidence', 'reason', 'alternative'];
+
+// One rejected approach from content.alternatives[]: { approach, why_not } or a plain string.
+function alternativeLine(a) {
+    if (a && typeof a === 'object') return `${a.approach || ''}${a.why_not ? ` (rejected: ${a.why_not})` : ''}`.trim();
+    return String(a);
+}
 
 function engineBody(content) {
     const c = content && typeof content === 'object' ? content : {};
-    const parts = [typeof content === 'string' ? content : c.description || c.summary || ''];
+    // description, else summary; older records keep their text under pattern, content or title.
+    const lead = typeof content === 'string' ? content
+        : [c.description, c.summary, c.pattern, c.content, c.title].find(v => typeof v === 'string' && v.trim()) || '';
+    const parts = [lead];
     for (const k of ENGINE_BODY_KEYS) {
         const v = c[k];
         if (!v) continue;
         const label = k.replace(/_/g, ' ').replace(/^./, ch => ch.toUpperCase());
         parts.push(`**${label}:** ` + (Array.isArray(v) ? '\n' + v.map(x => `- ${x}`).join('\n') : String(v)));
+    }
+    // Rejected approaches recorded beside a memory are the "do not try this again" list; the
+    // largest measured store kept 73 of them here against 5 filed as rejected-approaches.
+    if (Array.isArray(c.alternatives) && c.alternatives.length) {
+        parts.push('**Rejected alternatives:**\n' + c.alternatives.map(a => `- ${alternativeLine(a)}`).join('\n'));
     }
     return parts.filter(Boolean).join('\n\n');
 }

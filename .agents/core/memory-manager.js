@@ -1403,10 +1403,10 @@ class MemoryManager {
     }
 
     /**
-     * Run all 7 memory lint checks and return a structured health report.
+     * Run all 10 memory lint checks and return a structured health report.
      */
     /**
-     * Run all 7 memory lint checks and return a structured health report.
+     * Run all 10 memory lint checks and return a structured health report.
      * Thin wrapper: assembles {category, summary, full} tuples then delegates
      * to _lib/memory-lint.js. Keeps per-instance decay resolver wired in.
      */

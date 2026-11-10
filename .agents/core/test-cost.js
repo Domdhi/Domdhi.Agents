@@ -29,8 +29,8 @@ const DEFAULT_MIN_SOURCE = 20;
 const DEFAULT_SINCE_DAYS = 28;
 const MAX_UNTRACKED_BYTES = 2 * 1024 * 1024;
 
-const CODE_EXT = /\.(?:js|jsx|ts|tsx|mjs|cjs|py|cs|go|rs|java|kt|rb|php|swift|c|cc|cpp|h|hpp|vue|svelte|gd|lua|ex|exs)$/i;
-const EXCLUDED_DIR = /(?:^|\/)(?:node_modules|dist|build|out|vendor|coverage|\.next|\.claude|\.codex|docs|migrations|__snapshots__)\//;
+const CODE_EXT = /\.(?:js|jsx|ts|tsx|mjs|cjs|py|cs|go|rs|java|kt|rb|php|swift|c|cc|cpp|h|hpp|vue|svelte|razor|cshtml|gd|lua|ex|exs)$/i;
+const EXCLUDED_DIR = /(?:^|\/)(?:node_modules|dist|build|out|vendor|coverage|\.next|\.claude|\.codex|docs|migrations|__snapshots__|bin|obj|wwwroot\/lib)\//i;
 const EXCLUDED_FILE = /(?:\.min\.[a-z]+|\.d\.ts|\.generated\.[a-z]+|\.g\.cs|\.designer\.cs|package-lock\.json)$/i;
 const TEST_DIR = /(?:^|\/)(?:__tests__|tests?|spec|specs|e2e|__mocks__)\//i;
 const TEST_FILE = /(?:\.(?:test|spec)\.[a-z]+|_test\.(?:py|go|rb|exs?)|_spec\.rb|Tests?\.(?:cs|java|kt|swift|php))$|(?:^|\/)test_[^/]*\.py$/;

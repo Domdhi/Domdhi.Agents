@@ -74,8 +74,24 @@ function minMatched(nTerms) {
  * (16-22% of injected memories useful or adjacent); requiring 3 terms and a score of ~1.75 ln(1+N) (about 10 there)
  * kept the same useful hits and cut the noise by more than half.
  */
-function minScore(corpusSize) {
-    return KW_SCORE_PER_LN * Math.log(1 + corpusSize);
+function minScore(corpusSize, perLn = KW_SCORE_PER_LN) {
+    return perLn * Math.log(1 + corpusSize);
+}
+
+/**
+ * Recall knobs from the environment: MEMORY_RECALL_FLOOR (cosine floor, 0.3 to 0.95, default 0.70) and
+ * MEMORY_RECALL_KW_SCORE (keyword score per ln(1+N), 0.25 to 4, default 1.75). The keyword default was tuned on two
+ * 320-memory stores; a 1,400-memory store with long memories kept only 5 of 28 useful prompts at 1.75 and 12 of 28 at 1.0,
+ * so it is exposed rather than fixed.
+ */
+function tuningFromEnv(env = process.env) {
+    const num = (name, lo, hi, dflt) => {
+        const raw = env[name];
+        if (raw === undefined || raw === '') return dflt;
+        const v = Number(raw);
+        return Number.isFinite(v) ? Math.min(hi, Math.max(lo, v)) : dflt;
+    };
+    return { floor: num('MEMORY_RECALL_FLOOR', 0.3, 0.95, DEFAULT_FLOOR), kwScore: num('MEMORY_RECALL_KW_SCORE', 0.25, 4, KW_SCORE_PER_LN) };
 }
 
 /** BM25 over the corpus. Returns [{key, score, matched}] best first, only docs matching at least one term. */
@@ -142,6 +158,9 @@ async function embed(texts, kind, cfg, { timeoutMs = 600000, fetchImpl = globalT
             method: 'POST', headers, signal: AbortSignal.timeout(timeoutMs),
             body: JSON.stringify({ model: cfg.model, input: texts.slice(i, i + 32).map(t => prefix + t) }),
         });
+        // Ollama answers 404 for a model it has not pulled (the default "embeddinggemma" is not the "embeddinggemma-2" some
+        // installs carry); name the model and the fix, since this text is all that reaches the recall log and status line.
+        if (res.status === 404) throw new Error(`embedding model "${cfg.model}" not found (ollama list; set MEMORY_EMBED_MODEL)`);
         if (!res.ok) throw new Error(`embedding server answered ${res.status}`);
         const j = await res.json();
         if (!Array.isArray(j.data)) throw new Error('unexpected embedding response');
@@ -199,13 +218,14 @@ async function syncIndex(corpus, stateDir, cfg, opts = {}) {
  * @param {string} o.query
  * @param {number} [o.k=3]
  * @param {number} [o.floor=0.7]
+ * @param {number} [o.kwScore=1.75] keyword score per ln(1+N) a keyword-only hit must reach (see tuningFromEnv)
  * @param {string} o.stateDir   holds vectors.json
  * @param {object} [o.cfg]      embedConfig()
  * @param {boolean} [o.sync=false]  embed new/changed docs first (CLI); hooks pass false and only embed the query
  * @param {number} [o.timeoutMs=400]  budget for the query embedding
  * @returns {Promise<{hits: object[], source: string, stale: boolean}>}
  */
-async function recall({ corpus, query, k = 3, floor = DEFAULT_FLOOR, stateDir, cfg = embedConfig(), sync = false, timeoutMs = 400, fetchImpl }) {
+async function recall({ corpus, query, k = 3, floor = DEFAULT_FLOOR, kwScore = KW_SCORE_PER_LN, stateDir, cfg = embedConfig(), sync = false, timeoutMs = 400, fetchImpl }) {
     const keys = Object.keys(corpus);
     if (!keys.length || !String(query || '').trim()) return { hits: [], source: 'empty', stale: false };
     const { ranked, nTerms } = bm25Rank(corpus, query);
@@ -225,10 +245,10 @@ async function recall({ corpus, query, k = 3, floor = DEFAULT_FLOOR, stateDir, c
             usedEmbeddings = Object.keys(cos).length > 0;
             source = usedEmbeddings ? 'hybrid' : 'keyword-only (index empty)';
         } catch (e) {
-            source = `keyword-only (${String(e.message || e).slice(0, 60)})`;
+            source = `keyword-only (${String(e.message || e).slice(0, 100)})`;
         }
     }
-    const need = minMatched(nTerms), minKw = minScore(keys.length);
+    const need = minMatched(nTerms), minKw = minScore(keys.length, kwScore);
     const kwOk = r => r.matched >= need && r.score >= minKw;
     const kw = usedEmbeddings ? ranked : ranked.filter(kwOk);
     const kwKeys = kw.map(r => r.key);
@@ -246,4 +266,4 @@ async function recall({ corpus, query, k = 3, floor = DEFAULT_FLOOR, stateDir, c
     return { hits, source, stale };
 }
 
-module.exports = { STOP, DEFAULT_FLOOR, tokens, queryTerms, minMatched, minScore, bm25Rank, embedConfig, embed, loadIndex, staleKeys, syncIndex, recall, indexFile };
+module.exports = { STOP, DEFAULT_FLOOR, tokens, queryTerms, minMatched, minScore, tuningFromEnv, KW_SCORE_PER_LN, bm25Rank, embedConfig, embed, loadIndex, staleKeys, syncIndex, recall, indexFile };

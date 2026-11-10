@@ -899,6 +899,10 @@ Agent(
   EVERY finding, CRITICAL down to NIT, must be fixed before commit — no
   skipping, nits included (the operating standard). This is fresh, unmerged
   code, so fixing a nit now is cheap; there is no "logged not fixed" tier.
+  One exception, decided by Main Agent, not by you: label a finding TEST-GAP
+  when its only demand is another test and no defect or failing input is
+  shown. On a standard-tier story with no named trigger it is recorded as
+  deferred ("Coverage-only findings on standard stories" below).
 
   STATUS: DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT
   """,
