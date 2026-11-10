@@ -16,6 +16,16 @@ FLAGS: $ARGUMENTS
 
 ## Workflow
 
+### 0. Test cost (only when FLAGS contains `--test-cost`)
+
+`--test-cost` is a different report: it measures how many test lines recent work added per source line added, instead of showing TODO progress. Run it with the other arguments and report its output, then stop; do not run the status script or generate the dashboard.
+
+```bash
+node .claude/core/test-cost.js {FLAGS without --test-cost}
+```
+
+Examples: `--test-cost` (this repo, last 28 days), `--test-cost --fleet ~/code --since 2026-09-01` (every repo under a directory), `--test-cost --worktree` (uncommitted work), `--test-cost --range <a>..<b>`. A `TEST_COST_FLAG` line names scopes above about 2:1; it is a prompt for a reviewer to check whether the tests pin contracts or tuning, not a failure. Read-only.
+
 ### 1. Run the status script
 
 ```bash

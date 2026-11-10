@@ -94,6 +94,9 @@ describe('main() routes memory/db paths through _lib/memory-paths.js (F37)', () 
 
     const tmp = createTmpDir({ prefix: 'memory-backup-f37-' });
     tmp.write('src/.memory/patterns/x.json', '{"marker":"f37"}');
+    tmp.write('notes-dir/n.md', 'a markdown note');
+    const savedMemoryDir = process.env.MEMORY_DIR;
+    process.env.MEMORY_DIR = path.join(tmp.root, 'notes-dir');
     const jsonRoot = path.join(tmp.root, 'src', '.memory');
     const dbPath = path.join(tmp.root, 'src', '.state', 'memory-index', 'memories.db');
     const destDir = path.join(tmp.root, 'dest');
@@ -130,7 +133,10 @@ describe('main() routes memory/db paths through _lib/memory-paths.js (F37)', () 
       expect(
         fs.existsSync(path.join(destDir, 'memories-latest', 'memories', 'patterns', 'x.json'))
       ).toBe(true);
+      // the markdown notes dir is mirrored beside the JSON source, in latest and in the dated snapshot
+      expect(fs.readFileSync(path.join(destDir, 'memories-latest', 'notes', 'n.md'), 'utf8')).toBe('a markdown note');
     } finally {
+      if (savedMemoryDir === undefined) delete process.env.MEMORY_DIR; else process.env.MEMORY_DIR = savedMemoryDir;
       logSpy.mockRestore();
       require.cache[memoryPathsCachePath] = savedMemoryPaths;
       require.cache[projectRootCachePath] = savedProjectRoot;

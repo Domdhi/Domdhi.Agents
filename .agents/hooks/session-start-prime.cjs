@@ -64,6 +64,7 @@ const { isAtLeast } = require('../core/profile');
 const CONSTANTS = require('../core/constants');
 const { resolveProjectRoot } = require('../core/_lib/project-root');
 const { memoryPaths } = require('../core/_lib/memory-paths');
+const { notesContext, startupMode, runtimeOf, syncEnabled } = require('../core/_lib/memory-context');
 const { appendJsonl } = require('../core/_lib/jsonl-writer');
 const { readIndexRows, readRebuildStatus, indexDivergence, hasDivergence } = require('../core/_lib/memory-index-divergence');
 // Referenced via the module object (not destructured) so tests can
@@ -267,17 +268,22 @@ function rankConcepts(concepts, manager, liveUsage = new Map()) {
     return concepts;
 }
 
-function renderOutput(topConcepts, totalCount) {
+const CORE_MIN_IMPORTANCE = 4;
+
+function renderOutput(topConcepts, totalCount, mode = 'titles') {
     const lines = topConcepts.map(c => {
         const confStr = c.decayed.toFixed(2);
         const cat = c.category ? ` [${c.category}]` : '';
         return `- **${c.slug}**${cat} (conf: ${confStr}) — ${c.summary}`;
     });
 
+    const heading = mode === 'core'
+        ? `Always-on core: ${topConcepts.length} of ${totalCount} structured memories (importance ≥ ${CORE_MIN_IMPORTANCE}, ranked by importance-floored confidence × recency). The full text of every other relevant memory is attached to your prompts as you work.`
+        : `Top ${topConcepts.length} of ${totalCount} structured memories (ranked by importance-floored confidence × recency; usage breaks ties).`;
     return `<project_memory>
 # Project Memory
 
-Top ${topConcepts.length} of ${totalCount} structured memories (ranked by importance-floored confidence × recency; usage breaks ties).
+${heading}
 
 ${lines.join('\n')}
 </project_memory>
@@ -366,10 +372,11 @@ function healDivergentIndex(manager, records, dbPath, projectDir) {
     return hasDivergence(divergence) ? spawnRebuild(projectDir) : false;
 }
 
-function processEvent(_parsedJson) {
+function processMemories(_parsedJson) {
     if (!isAtLeast('standard')) {
         return { output: null };
     }
+    const mode = startupMode(process.env);
 
     // Split store (ADR 0006 Amendment 2): prime from the TRACKED JSON source
     // (jsonRoot, current worktree — git checks it out everywhere). projectDir
@@ -445,14 +452,18 @@ function processEvent(_parsedJson) {
     // Heal a divergent index the mtime check cannot see (at most one spawn
     // per start; one small id/invalid_at/updated query).
     if (!rebuildStarted && !incompleteSnapshot) healDivergentIndex(manager, records, dbPath, projectDir);
-    if (memories.length === 0) return { output: null };
+    // 'off' keeps the self-heal above but injects nothing.
+    if (memories.length === 0 || mode === 'off') return { output: null };
     rankConcepts(memories, manager, liveUsage);
 
     // Size budget (ME-4.2): hard top-N cap. Even on an active project where
     // nothing has aged below threshold, this forces ranking down to the budget so
     // the injected tier always earns its tokens.
-    const top = memories.slice(0, N);
-    const output = renderOutput(top, memories.length);
+    // 'core' keeps only the always-on memories (importance >= 4); the rest reach the agent per prompt (memory-recall.cjs).
+    const pool = mode === 'core' ? memories.filter(c => clampImportance(c.importance) >= CORE_MIN_IMPORTANCE) : memories;
+    if (pool.length === 0) return { output: null };
+    const top = pool.slice(0, N);
+    const output = renderOutput(top, pool.length, mode);
 
     // MP-1.2: record which memories were surfaced this session start, so hit-rate
     // analysis has a denominator. Best-effort — a telemetry failure here must
@@ -475,6 +486,41 @@ function processEvent(_parsedJson) {
     }
 
     return { output };
+}
+
+/**
+ * One line at session start when captured memory candidates wait for review (the human gate:
+ * memory-capture.js promote|discard). Cheap: one readdir. Empty when there is nothing to review.
+ */
+function pendingCandidatesNote() {
+    try {
+        const { candidatesDir } = notesContext(path.resolve(__dirname, '..', '..'));
+        const n = fs.readdirSync(candidatesDir).filter(f => f.endsWith('.md') && !f.startsWith('.')).length;
+        if (!n) return '';
+        const dir = runtimeOf(process.env) === 'codex' ? '.codex' : '.claude';
+        return `<memory_candidates>\n${n} captured memory candidate${n === 1 ? '' : 's'} await review. List with \`node ${dir}/core/memory-capture.js list\`, then \`promote <id>\` or \`discard <id>\` (nothing reaches an agent until promoted).\n</memory_candidates>\n`;
+    } catch { return ''; }
+}
+
+/** Opt-in (MEMORY_SYNC=on): pull notes other machines committed into this machine's memory dir. One line only when there is a conflict. */
+function syncNote() {
+    try {
+        const fallbackDir = path.resolve(__dirname, '..', '..');
+        if (!syncEnabled(process.env)) return '';
+        const flagged = require('../core/memory-capture').isSecret;
+        const r = require('../core/_lib/memory-sync').autoSync({ direction: 'pull', fallbackDir, env: process.env, isSecret: flagged });
+        if (!r || !r.conflicts.length) return '';
+        const dir = runtimeOf(process.env) === 'codex' ? '.codex' : '.claude';
+        return `<memory_sync>\n${r.conflicts.length} memory note${r.conflicts.length === 1 ? '' : 's'} changed on this machine and in git (${r.conflicts.map(c => c.name).slice(0, 3).join(', ')}). Resolve with \`node ${dir}/core/memory-capture.js sync --prefer local|tracked\`.\n</memory_sync>\n`;
+    } catch { return ''; }
+}
+
+function processEvent(parsedJson) {
+    if (process.env.MEMORY_CAPTURE_INNER) return { output: null };   // the capture's own claude -p child: inject nothing
+    const result = processMemories(parsedJson);
+    if (!isAtLeast('standard')) return result;
+    const note = syncNote() + pendingCandidatesNote();
+    return note ? { ...result, output: (result.output || '') + note } : result;
 }
 
 if (require.main === module) {

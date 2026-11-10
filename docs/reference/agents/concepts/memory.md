@@ -12,6 +12,10 @@ Claude's registered Stop hook captures daily logs and invokes Sonnet curation un
 
 Codex leaves automatic Stop/Post-Bash extraction unregistered. Optional extractor/curator/benchmark inference is disabled before subprocess launch because a supported, verified no-tools invocation is unavailable. Session-handoff acquisition, explicit curated CRUD, inbox promotion and search remain available. A read-only model sandbox does not establish text-only inference. See the [adapter runtime limits](../../../../.agents/adapters/codex/README.md#runtime-limits-and-verification).
 
+## Notes store: capture and per-prompt recall
+
+Beside the JSON store sits a plain-markdown notes store (Claude's native auto-memory dir, or `MEMORY_DIR`). The opt-in SessionEnd hook stages candidate memories from finished sessions for human `promote`/`discard`; the UserPromptSubmit hook recalls the best three full memories per prompt from the notes **and** the JSON store (hybrid keyword + embedding, keyword-only without an embedder). The JSON store needs no migration and keeps its provenance, supersession and decay; notes carry provenance and an `invalid_at`/`superseded_by` flag but no decay. Notes live per machine; `memory-capture.js sync` (opt-in `MEMORY_SYNC=on`) mirrors them into the tracked `.memory/notes/` so git carries them, and capture works without an API key through `MEMORY_CAPTURE_PROVIDER=claude-cli`. Configuration, evidence, privacy and the Codex limits are in `.agents/startup-reference.md` ("Notes store").
+
 ## Source and shared state
 
 Tracked JSON is read from the active source checkout. Ignored index/inbox/log state is shared at the main worktree's Git-common-directory root unless explicitly overridden. Installed toolkit assets are resolved independently from the invocation/action context.

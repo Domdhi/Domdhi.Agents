@@ -96,7 +96,7 @@ TODO_PATH: $ARGUMENTS (the first non-flag argument; blank → auto-discover)
 - `--e2e` — run the E2E gate leg (`gate.js e2e`) on **every** wave's gate, not just contract-change waves. Pass it when the run will touch contract/interface surfaces (API shapes, shared types/schemas, public signatures, DB migrations, IPC/config contracts). See Step 5.
 - `--no-delegate` — force Main Agent-direct for all stories (sequential; no `standard` tier fan-out).
 
-**Verification cadence (default, no new CLI flag):** every wave gets builds and focused tests for its changed behavior, affected consumers and architecture guards. Run the full ordinary application suite at baseline, midpoint after wave `ceil(totalWaves / 2)` for runs of 3+ waves, and final convergence after review/source fixes. Runs of 1–2 waves skip only the midpoint. An explicit user request for a full suite every wave overrides this default; record it in the plan. All existing safety filters, locks, coverage thresholds and required E2E/integration legs remain.
+**Verification cadence (default, no new CLI flag):** every wave gets builds and focused tests for its changed behavior, affected consumers and architecture guards. Run the full ordinary application suite at baseline, midpoint after wave `ceil(totalWaves / 2)` for runs of 3+ waves, and final convergence after review/source fixes. Runs of 1–2 waves skip only the midpoint. An explicit user request for a full suite every wave overrides this default; record it in the plan. A project may tag its layout and copy browser specs `@volatile` (`/todo` Release Slices and Risk Tiers, Pin contracts, not tuning): per-story and per-wave gates run the browser suite with those specs excluded (for Playwright, `--grep-invert @volatile`, wired through the project's own script), and the baseline, midpoint and final checkpoints run them. Record the exclusion and the checkpoint that covers it in the plan's mapping; an excluded spec is never reported as passed. All existing safety filters, locks, coverage thresholds and required E2E/integration legs remain.
 
 ---
 
@@ -376,8 +376,9 @@ For each story in the wave with testable AC:
 Record the ownership split in the plan's Agent Assignments before dispatch: who authors the tests (Main Agent, per this step), who writes production code, and who reviews. Read the repository's own test-authorship rule first; another project's convention (for example, supervisor-authored tests) is not imported. A deviation, such as a helper drafting tests that the owner reviews before production starts, is written into the plan as a deviation rather than presented as compliance.
 
 **Size tests by the story's risk tier.**
-- `deep` — every AC bullet plus its edge and failure paths (empty, boundary, unauthorized, malformed input). For arithmetic and classifiers, add an independent oracle or property check, and a mutation run where a surviving mutant would mean wrong money, access or data.
+- `deep` — every AC bullet plus its edge and failure paths (empty, boundary, unauthorized, malformed input). For arithmetic and classifiers, add an independent oracle or property check, and a mutation run where a surviving mutant would mean wrong money, access or data. Scope the mutation run to the files that carry the story's trigger, not its whole diff.
 - `standard` — one test per AC behavior, using existing patterns. No oracle, property or mutation work. Docs, registration and wiring stories are verified by a live check (the command, route or build that proves the wiring) instead of new test files when the existing suite already covers the behavior.
+- Both tiers: pin contracts, not tuning (`/todo` Release Slices and Risk Tiers). Thresholds, tuning numbers, content tables, copy and layout are asserted as invariants and bounds, never as the current exact values.
 
 **Skip when:**
 - No test framework detected and no existing tests
@@ -802,15 +803,17 @@ The token, not agent judgment, decides the wave is finished and may commit.
 
 #### Step 7: Code review (M/L stories only)
 
+**Test-cost signal (every wave, even when review is skipped).** Before the review, run `node .claude/core/test-cost.js --worktree` (in a shared checkout, run `--range {waveBaseSha}..HEAD` after the wave's commit instead, so another writer's uncommitted files are not counted). Record its one-line result in the plan's wave row. On `TEST_COST_FLAG` (more than about 2 test lines added per source line added, with at least 20 source lines), it is a prompt to look, never a gate: give the reviewer the output and ask whether the flagged tests pin contracts or tuning. When no review is due, Main Agent reads the flagged tests itself. An exact pin on a non-contract value is rewritten as an invariant or bound; a test that guards a named trigger stays however large it is. Test-only stories and backfills (no source added) are not flagged.
+
 **Review depth follows the wave's risk tier** (the highest tier among its stories; a wave agent may raise it when it finds a trigger and records why in the plan):
 
 | | `deep` wave | `standard` wave |
 |---|---|---|
 | Review | Fresh `code-reviewer` (Deep depth in the `code-review` playbook) | Fresh `code-reviewer`, one pass |
 | Security | `security-auditor` as well, when the diff touches auth, permissions, credentials, untrusted input, security controls, the shared request pipeline or release gating | None unless a deep trigger appears; then raise the tier |
-| Findings | Main Agent fixes every finding, CRITICAL to NIT, in one batch | Main Agent fixes every finding, CRITICAL to NIT, in one batch |
+| Findings | Main Agent fixes every finding, CRITICAL to NIT, in one batch | Main Agent fixes every finding, CRITICAL to NIT, in one batch, except a coverage-only `TEST-GAP` finding with no named trigger, which is recorded as deferred (see below) |
 | After the fixes | No re-review: each fix is proven by a test and the gate | No re-review: each fix is proven by a test and the gate |
-| Extra proof | Mutation or oracle runs where useful (Step 2b) | No mutation runs |
+| Extra proof | Mutation or oracle runs on the files that carry the trigger, where useful (Step 2b) | No mutation runs |
 
 The skip rules at the end of this step still apply to either tier. A `deep`-tier story is never skipped.
 
@@ -923,7 +926,9 @@ Agent(
 
 It runs in the same single pass. Its findings join the code-review findings in the same fix batch.
 
-Any finding (nits-and-up) → Main Agent fixes them directly in ONE batch, updates the Step 5 mapping, and reruns focused regression/affected-consumer/guard checks plus required build(s) once for the whole batch — one build gate per review-fix batch, never one per finding or per fix. A fix does not trigger another full suite merely because it came from review; run it when the current checkpoint, strict override or unsafe mapping requires it. Final convergence must cover the last source/test edit. Recheck AC and ship-token preconditions before committing.
+**Coverage-only findings on `standard` stories.** The reviewer labels a finding `TEST-GAP` when its only demand is another test (a missing edge case, another input, more branches) and no defect was shown. On a `standard` story with no named `deep` trigger, Main Agent records it in the findings report as deferred with the reason "standard tier, no named trigger" and does not write the test. It is fixed like any other finding when the gap sits on a named trigger, when the reviewer shows an actual failing input, or when the existing test is wrong or false-green (those are not coverage-only). On a `deep` story every `TEST-GAP` is fixed.
+
+Any other finding (nits-and-up) → Main Agent fixes them directly in ONE batch, updates the Step 5 mapping, and reruns focused regression/affected-consumer/guard checks plus required build(s) once for the whole batch — one build gate per review-fix batch, never one per finding or per fix. A fix does not trigger another full suite merely because it came from review; run it when the current checkpoint, strict override or unsafe mapping requires it. Final convergence must cover the last source/test edit. Recheck AC and ship-token preconditions before committing.
 
 **Fresh reviewer, one pass, then done.** Write the review scope (stories, AC, changed files, constraints, evidence locations) to the run's work folder first, and start the reviewer from that persisted scope rather than from conversation history, so it judges the diff independently. The review then follows "One review pass, then done" in the `code-review` skill. The wave's review is done when every finding is fixed (or recorded with a one-line reason), each fix is proven by a test, and the Step 5 checks are green after the last fix. Never send fixes back to a reviewer and never dispatch a second one.
 - For an open-ended classifier (regexes or word lists over free text), do not chase paraphrases. Document the known gaps with one pinned test sentence each, and have the proof record quote the decisive sentences for a person to confirm.

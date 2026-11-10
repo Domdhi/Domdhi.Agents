@@ -4,12 +4,14 @@ Hooks run deterministic Node handlers on supported runtime events. Shared implem
 
 ## Claude handler inventory
 
-Claude registers 16 handlers. `secret-patterns.cjs` is a shared library, not a seventeenth registered hook. Authoritative shared registration is [Claude adapter settings](../../../../.agents/adapters/claude/settings.json); installed settings may add project hooks.
+Claude registers 18 handlers. `secret-patterns.cjs` is a shared library, not a seventeenth registered hook. Authoritative shared registration is [Claude adapter settings](../../../../.agents/adapters/claude/settings.json); installed settings may add project hooks.
 
 | Handler | Claude event/tool | Purpose |
 | --- | --- | --- |
-| `session-start-prime.cjs` | SessionStart | Structured memory context |
+| `session-start-prime.cjs` | SessionStart | Always-on memory core (full title list on Codex) and pending-candidate reminder |
 | `session-end-doc-sync.cjs` | SessionEnd | Advisory legacy/duplicate/misplaced doc check |
+| `memory-session-capture.cjs` | SessionEnd | Opt-in detached capture of the finished session into reviewable memory candidates |
+| `memory-recall.cjs` | UserPromptSubmit | Per-prompt recall of up to three full memories, capped well under the hook-output limit |
 | `secret-scanner.cjs` | Pre Write/Edit/MultiEdit/NotebookEdit | Refuse secret-bearing added text |
 | `path-guardrail.cjs` | Pre Write/Edit/MultiEdit/NotebookEdit | Path tiers and freeze-state rules |
 | `guardrail.cjs` | Pre Bash/PowerShell | Destructive command/path checks |
@@ -25,7 +27,7 @@ Claude registers 16 handlers. `secret-patterns.cjs` is a shared library, not a s
 | `edit-capture.cjs` | Post Edit | Strict-profile canonical-doc edit capture |
 | `worktree.cjs` | WorktreeCreate/WorktreeRemove | Sibling worktree lifecycle and include copies |
 
-Claude registration covers eight event types: SessionStart, SessionEnd, PreToolUse, PostToolUse, PreCompact, Stop, WorktreeCreate and WorktreeRemove. ExitPlanMode is a tool matcher under PostToolUse, not another event.
+Claude registration covers nine event types: SessionStart, UserPromptSubmit, SessionEnd, PreToolUse, PostToolUse, PreCompact, Stop, WorktreeCreate and WorktreeRemove. ExitPlanMode is a tool matcher under PostToolUse, not another event.
 
 PreToolUse can deny before tool execution. Exit 2 is a blocking refusal; exit 1 is a warning. PostToolUse acts after effects occurred: the scrubber emits redacted shell output, while Claude Read-output replacement remains limited by native support. Post-completion handling cannot undo filesystem/network effects.
 

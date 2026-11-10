@@ -285,6 +285,8 @@ Append a `### Risk Map` subsection inside the `code-reviewer` agent's `## Projec
 **Default tier**: MEDIUM (for files not matching any pattern)
 ```
 
+**Fast-iterating product (optional).** When the architecture doc or brief says the product is a game, prototype or other fast-iterating domain, add a `Fast-iterating: yes — {reason}` line to the Risk Map and list its contract surfaces (for a game: seeded RNG and determinism, update ordering, currency, pause and modal state, lifecycle and disposal, persistence). `/todo` keeps `deep` to those surfaces and treats tuning, content, layout and copy as `standard` (`/todo` Release Slices and Risk Tiers, Pin contracts, not tuning). Do not infer it from the stack alone; when the docs do not say, omit the line and note in the report that the owner can add it.
+
 **Placement:** The risk map is appended **within** the `code-reviewer` agent's `## Project Context` section (after `### Conventions`). If the agent has no `## Project Context` yet, create one with just the risk map.
 
 **Idempotency:** If `### Risk Map` already exists within the code-reviewer's Project Context, replace it. Do not duplicate.

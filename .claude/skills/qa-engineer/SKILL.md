@@ -101,6 +101,9 @@ AC: "Given a valid email, When user submits login, Then redirect to dashboard"
 - Third-party library behavior
 - Auto-generated code
 - Configuration files
+- Exact values that are not contracts: tuning numbers, thresholds, seeded card or spawn orders, pixel layout, UI copy, config defaults, case counts. Assert invariants and bounds instead (stays in range, never negative, monotonic, the same seed gives the same result). Pin exact values only on contracts: money, the output a seeded RNG gives for a seed, wire and storage formats, public signatures, access decisions, ordering guarantees (`/todo` Release Slices and Risk Tiers, Pin contracts, not tuning)
+- Pass or fail on balance in soak and survival harnesses: report a balance signal (deaths, win rate, time to clear) and fail only on crashes, hangs and broken invariants
+- Another edge case, input or branch for its own sake: on a `standard` story with no named trigger, extra coverage that no defect asked for is cost, not assurance. A suite that adds many test lines per source line (the `test-cost.js` signal) is a prompt to ask which tests guard a contract
 
 ## Quality Criteria
 

@@ -37,9 +37,11 @@ The reviewer's job is to **diagnose, document, and communicate** — not to rewr
 **Independent review starts from persisted scope.** Before dispatching a reviewer, write the review scope (stories, AC, changed files, constraints and evidence locations) to the run's work folder, and start a fresh reviewer from that file rather than from the implementer's conversation, so it judges the diff independently. 
 
 **One review pass, then done.** A scope gets exactly ONE review pass: one fresh `code-reviewer`, plus `security-auditor` in the same pass when the risk tier calls for it. There is no closure pass, no re-review of fixes and no second reviewer. The review is **done** when all three hold:
-1. every finding is fixed, or is recorded in the review file as not fixed with a one-line reason (the finding is wrong, or it is out of scope and has a named follow-up);
+1. every finding is fixed, or is recorded in the review file as not fixed with a one-line reason (the finding is wrong, it is out of scope and has a named follow-up, or it is a coverage-only `TEST-GAP` on a `standard`-tier scope with no named trigger);
 2. each fix is proven by a test or a command that would fail without it;
 3. the gate is green after the last fix.
+
+**Label coverage-only findings `TEST-GAP`.** A finding whose only demand is another test (a missing edge case, another input, more branch coverage) with no failing input or defect shown is a `TEST-GAP`. On a `standard`-tier scope with no named `deep` trigger it is recorded as deferred, not fixed: more tests there cost more than the unshown defect risks. It is fixed like any other finding on a `deep` scope, when it sits on a named trigger, when the reviewer shows a failing input, or when the existing test is wrong or false-green (those are not coverage-only). Do not demand exact-value pins on tuning, copy, layout or other non-contract values; ask for an invariant or bound.
 
 Then commit. A new problem found while fixing is fixed and tested, never reviewed again. Never dispatch another reviewer to confirm fixes or to look for more. If a fix needs a real design decision, ask the user once and carry on. Record the review in a tracked findings report, not only in scratch.
 

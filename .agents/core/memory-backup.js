@@ -13,13 +13,17 @@
  *   memories-latest/         — full mirror, refreshed each run (fast restore)
  *   memories-YYYY-MM-DD/     — dated snapshot (corruption today can't clobber
  *                              a good copy from a prior day); pruned to --keep.
+ * Each holds memories/ (the engine's JSON source, which includes the synced notes mirror
+ * memory/notes/) and notes/ (this machine's markdown notes dir: Claude's native auto-memory
+ * dir for the repo, or MEMORY_DIR). This is a SAME-MACHINE safety copy. Moving memories
+ * between machines is git (the tracked .memory/) plus `memory-capture.js sync` for the notes.
  *
  * SAFETY: runs PRAGMA integrity_check on the db first. If the live db is
  * CORRUPT, the "latest" mirror is NOT overwritten (preserving the last-good
  * copy); the suspect state is written to memories-SUSPECT-<stamp>/ and the run
  * exits non-zero so a scheduler surfaces it.
  *
- * RESTORE: copy a backup's memories/ back over docs/.output/.memory/, then
+ * RESTORE: copy a backup's notes/ back into the notes dir (see `memory-capture.js status`), and its memories/ back over docs/.output/.memory/, then
  *   node .claude/core/memory-manager-cli.js rebuild-index     (if you kept json)
  *   node .claude/core/memory-manager-cli.js restore-from-db   (if you kept only the db)
  *
@@ -37,6 +41,7 @@ const path = require('path');
 const { resolveProjectRoot } = require('./_lib/project-root');
 const { memoryPaths } = require('./_lib/memory-paths');
 const { resolveSqliteOpener } = require('./_lib/sqlite-backend');
+const { defaultMemoryDir } = require('./_lib/memory-notes');
 
 // Worktree-safe: anchor to the MAIN worktree (git-common-dir), not whichever
 // linked worktree happens to be current — see _lib/project-root.js header.
@@ -185,15 +190,25 @@ function main(argv) {
     process.exit(2);
   }
 
+  // The markdown notes live under ~/.claude (not in the repo), so a repo wipe can't reach them but a profile loss can.
+  const notesDir = defaultMemoryDir(PROJECT_ROOT, process.env);
+  const hasNotes = fs.existsSync(notesDir);
+  const mirrorNotes = (base) => {
+    if (!hasNotes) return;
+    try { mirror(notesDir, path.join(base, 'notes')); } catch (e) { console.error(`  ! notes dir not backed up: ${e.message}`); }
+  };
+
   // 1) latest mirror
   const latestDir = path.join(opts.to, 'memories-latest', 'memories');
   mirror(memoriesDir, latestDir);
-  console.log(`  ✓ latest mirror → ${path.dirname(latestDir)}`);
+  mirrorNotes(path.dirname(latestDir));
+  console.log(`  ✓ latest mirror → ${path.dirname(latestDir)}${hasNotes ? ' (+ notes)' : ''}`);
 
   // 2) dated snapshot + prune
   if (opts.rotate) {
     const snapDir = path.join(opts.to, `memories-${dateStamp(now)}`, 'memories');
     mirror(memoriesDir, snapDir);
+    mirrorNotes(path.dirname(snapDir));
     console.log(`  ✓ dated snapshot → ${path.dirname(snapDir)}`);
 
     const names = fs.readdirSync(opts.to, { withFileTypes: true })

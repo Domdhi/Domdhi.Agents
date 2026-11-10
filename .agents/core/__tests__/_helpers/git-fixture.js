@@ -224,7 +224,14 @@ function copyGitRepo({ source, root } = {}) {
     throw new Error('[git-fixture] copy destination must be unoccupied');
   }
   // mode: 0 requests a normal physical copy, without clone/reflink or hardlink flags.
-  fs.cpSync(sourcePath, repoPath, { recursive: true, force: false, errorOnExist: true, mode: 0 });
+  const copyOptions = { recursive: true, force: false, errorOnExist: true, mode: 0 };
+  if (fs.existsSync(repoPath)) {
+    // The destination may be a pre-made EMPTY directory (checked above). Node 26 rejects cpSync onto an existing destination
+    // directory under errorOnExist (older Node merged into it), so copy the source's entries into it one by one instead.
+    for (const name of fs.readdirSync(sourcePath)) fs.cpSync(path.join(sourcePath, name), path.join(repoPath, name), copyOptions);
+  } else {
+    fs.cpSync(sourcePath, repoPath, copyOptions);
+  }
   return { repoPath };
 }
 

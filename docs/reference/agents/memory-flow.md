@@ -27,6 +27,7 @@ flowchart TD
 | Subagent | Reusable discovery | Ignored inbox draft; main owner decides promotion/discard |
 | Legacy native Claude agent memory | Native memory plus explicit ingest | Native Markdown does not automatically enter the curated store; manual bridge retains compatibility |
 | Historic extraction | Explicit Claude text-only backfill | Daily log to curated candidates; inference failure remains a failure, not completed extraction |
+| Session capture (opt-in) | SessionEnd with `MEMORY_CAPTURE=on` and a provider (API key, or `claude-cli` with no key) | Verbatim-quoted, secret-filtered candidates staged in `.state/memory-notes/candidates/`; a human promotes into the markdown notes store |
 
 Codex optional memory inference is unavailable and automatic Stop extraction is unregistered. Main-owner curated acquisition and explicit helpers remain supported. ADR 0001 (memory unification, kept in the workshop) explains the acquisition boundary.
 
@@ -34,7 +35,7 @@ Codex optional memory inference is unavailable and automatic Stop extraction is 
 
 Tracked JSON belongs to the active source checkout; the ignored index, inbox and daily logs share the main-worktree state root. `AGENT_SHARED_STATE_ROOT` overrides state separately. Neutral/Codex source overrides and the legacy direct-Claude exception follow the linked context contract. A per-worktree source checkout does not imply a separate per-worktree index.
 
-Startup context requires installed trusted runtime hooks and actual observed injection. Explicit recall before domain work follows returned search rank and deduplicates memory already visible/read. Claude's native context envelope and Codex's additionalContext conversion differ; discovery does not prove either execution path.
+Claude's UserPromptSubmit recall hook reads the markdown notes store and the tracked JSON together and attaches up to three full memories per prompt; Codex has no such hook and uses `memory-capture.js recall`. Notes move between machines with `memory-capture.js sync` over the tracked `.memory/notes/` (JSON memories already travel as tracked files). Startup context requires installed trusted runtime hooks and actual observed injection. Explicit recall before domain work follows returned search rank and deduplicates memory already visible/read. Claude's native context envelope and Codex's additionalContext conversion differ; discovery does not prove either execution path.
 
 ## Categories and maintenance
 

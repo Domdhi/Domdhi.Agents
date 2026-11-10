@@ -14,5 +14,21 @@
     "documentation": "https://code.claude.com/docs/en/env-vars",
     "behaviorReference": "https://code.claude.com/docs/en/model-config#ask-before-switching",
     "notes": "For an audit that must retain its selected model, set this variable in the environment that launches Claude Code. The documented control disables automatic safety-classifier model switching for the session, including its subagents; it is not a per-role setting. A flagged request must be reported as refused, without an automatic retry on an older model. The interactive switchModelsOnFlag setting alone does not prevent subagent fallback. This records official documentation, not a live flagged-request probe, and no installed-version measurement. No environment or native settings are changed by this metadata."
+  },
+  "directApi": {
+    "notes": "Pinned Anthropic API model ids for helpers that call the Messages API directly (memory-capture.js). These are not role tiers and do not change subagent routing. Haiku is assigned here ONLY for session memory extraction, on measured evidence: Domdhi.Vault capture test 2026-11-09, 6 real sessions, 8 to 10 of 10 hand-written memories recovered for about $0.003 to 0.014 per session with 0 to 2% invented quotes, every kept candidate validated as a verbatim quote and gated by human promote/discard. The fast subagent tier above stays unassigned. Prices are USD per million tokens, used only for the cost line.",
+    "models": {
+      "haiku": {
+        "id": "claude-haiku-5-5",
+        "inPerM": 0.1,
+        "outPerM": 0.5
+      },
+      "sonnet": {
+        "id": "claude-sonnet-5-5",
+        "inPerM": 2.0,
+        "outPerM": 10.0
+      }
+    },
+    "memoryCaptureDefault": "haiku"
   }
 }

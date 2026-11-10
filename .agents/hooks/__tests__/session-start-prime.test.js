@@ -12,6 +12,8 @@
 
 import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest';
 import { createRequire } from 'node:module';
+import fs from 'node:fs';
+import path from 'node:path';
 
 const require = createRequire(import.meta.url);
 
@@ -44,6 +46,7 @@ const { processEvent, rankConcepts, renderOutput, parseMemory } = require('../..
 const origProjectDir = process.env.CLAUDE_PROJECT_DIR;
 const origMemoryProfile = process.env.MEMORY_PROFILE;
 const origPrimeCount = process.env.MEMORY_PRIME_COUNT;
+const origStartup = process.env.MEMORY_STARTUP;
 
 let tmp;
 
@@ -51,6 +54,9 @@ beforeEach(() => {
     tmp = createTmpDir({ prefix: 'session-start-prime-' });
     process.env.MEMORY_PROFILE = 'standard';
     delete process.env.MEMORY_PRIME_COUNT;
+    // The ranking/index/telemetry tests below exercise the title list. The default for a Claude
+    // session with recall on is the importance>=4 "core" (see 'startup modes'), so pin the title mode here.
+    process.env.MEMORY_STARTUP = 'titles';
 });
 
 afterEach(() => {
@@ -58,6 +64,8 @@ afterEach(() => {
     process.env.MEMORY_PROFILE = origMemoryProfile ?? 'standard';
     if (origPrimeCount === undefined) delete process.env.MEMORY_PRIME_COUNT;
     else process.env.MEMORY_PRIME_COUNT = origPrimeCount;
+    if (origStartup === undefined) delete process.env.MEMORY_STARTUP;
+    else process.env.MEMORY_STARTUP = origStartup;
     // rankConcepts tests spy on the shared memoryDecay module object (necessary
     // because session-start-prime.cjs references it live, not destructured —
     // see that file's import comment) — restore after every test so a spy never
@@ -935,5 +943,126 @@ describe('injection telemetry', () => {
         expect(event.injected_ids).toEqual(['top-mem']);
         expect(result.output).toContain('top-mem');
         expect(result.output).not.toContain('low-mem');
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Startup modes — the title list scored 35% (no memory 16%, per-prompt recall 72%), so where
+// memory-recall.cjs delivers, the startup block is the importance>=4 always-on core.
+// ---------------------------------------------------------------------------
+
+describe('startup modes', () => {
+    const saved = {};
+    const KEYS = ['MEMORY_RECALL', 'AGENTS_RUNTIME', 'AGENT_RUNTIME', 'CODEX_PROJECT_DIR'];
+    beforeEach(() => {
+        for (const k of KEYS) { saved[k] = process.env[k]; delete process.env[k]; }
+        delete process.env.MEMORY_STARTUP;
+        process.env.CLAUDE_PROJECT_DIR = tmp.root;
+        createMemory(tmp, 'constraints', 'always-on-rule', { description: 'Never pkill -f your own pattern', importance: 5 });
+        createMemory(tmp, 'patterns', 'ordinary-note', { description: 'An ordinary lesson', importance: 3 });
+    });
+    afterEach(() => {
+        for (const k of KEYS) { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]; }
+    });
+
+    it('defaults to the core for a Claude session with recall on: only importance >= 4, and says the rest arrives per prompt', () => {
+        const out = processEvent({}).output;
+        expect(out).toContain('always-on-rule');
+        expect(out).not.toContain('ordinary-note');
+        expect(out).toMatch(/Always-on core: 1 of 1/);
+        expect(out).toContain('attached to your prompts');
+    });
+    it('keeps the full title list when recall is off (nothing else would deliver the memories)', () => {
+        process.env.MEMORY_RECALL = 'off';
+        const out = processEvent({}).output;
+        expect(out).toContain('always-on-rule');
+        expect(out).toContain('ordinary-note');
+        expect(out).toMatch(/Top 2 of 2/);
+    });
+    it('keeps the full title list on Codex, which registers no per-prompt recall hook', () => {
+        process.env.AGENTS_RUNTIME = 'codex';
+        expect(processEvent({}).output).toContain('ordinary-note');
+    });
+    it('MEMORY_STARTUP forces a mode: titles, core, or off', () => {
+        process.env.MEMORY_STARTUP = 'titles';
+        expect(processEvent({}).output).toContain('ordinary-note');
+        process.env.MEMORY_STARTUP = 'core';
+        process.env.AGENTS_RUNTIME = 'codex';
+        expect(processEvent({}).output).not.toContain('ordinary-note');
+        process.env.MEMORY_STARTUP = 'off';
+        expect(processEvent({})).toEqual({ output: null });
+    });
+    it('core mode with no importance >= 4 memory injects nothing', () => {
+        fs.rmSync(path.join(tmp.root, 'docs/.output/.memory/constraints/always-on-rule.json'));
+        expect(processEvent({})).toEqual({ output: null });
+    });
+    it('records only what was injected in telemetry', () => {
+        processEvent({});
+        const lines = fs.readFileSync(path.join(tmp.root, 'docs/.output/.state/telemetry/memory-injection.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l));
+        expect(lines.at(-1).injected_ids).toEqual(['always-on-rule']);
+    });
+});
+
+describe('pending capture candidates reminder', () => {
+    beforeEach(() => { process.env.CLAUDE_PROJECT_DIR = tmp.root; delete process.env.AGENTS_RUNTIME; });
+    const stage = n => { for (let i = 0; i < n; i++) tmp.write(`docs/.output/.state/memory-notes/candidates/aaa00${i}-thing.md`, 'x'); };
+
+    it('adds one line naming the review command when candidates wait, even with no memories', () => {
+        stage(2);
+        const out = processEvent({}).output;
+        expect(out).toContain('<memory_candidates>');
+        expect(out).toContain('2 captured memory candidates await review');
+        expect(out).toContain('node .claude/core/memory-capture.js list');
+    });
+    it('uses the singular and the Codex helper path where applicable; ignores dot files and the discarded folder', () => {
+        stage(1);
+        tmp.write('docs/.output/.state/memory-notes/candidates/.hidden.md', 'x');
+        tmp.write('docs/.output/.state/memory-notes/candidates/.discarded/old.md', 'x');
+        process.env.AGENTS_RUNTIME = 'codex';
+        const out = processEvent({}).output;
+        expect(out).toContain('1 captured memory candidate await');
+        expect(out).toContain('node .codex/core/memory-capture.js list');
+    });
+    it('adds nothing when there are none, and nothing under MEMORY_PROFILE=minimal', () => {
+        expect(processEvent({})).toEqual({ output: null });
+        stage(1);
+        process.env.MEMORY_PROFILE = 'minimal';
+        expect(processEvent({})).toEqual({ output: null });
+    });
+});
+
+describe('notes sync at session start (opt-in: MEMORY_SYNC=on)', () => {
+    const note = (dir, file, body) => { fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(path.join(dir, file), `---\nname: ${file.slice(0, -3)}\ndescription: "d"\n---\n\n${body}\n`); };
+    let memDir;
+    beforeEach(() => {
+        process.env.CLAUDE_PROJECT_DIR = tmp.root;
+        memDir = path.join(tmp.root, 'notes-dir');
+        process.env.MEMORY_DIR = memDir;
+    });
+    afterEach(() => { delete process.env.MEMORY_SYNC; delete process.env.MEMORY_DIR; });
+
+    it('pulls notes other machines committed, silently', () => {
+        note(path.join(tmp.root, 'docs/.output/.memory/notes'), 'theirs.md', 'from elsewhere');
+        process.env.MEMORY_SYNC = 'on';
+        expect(processEvent({}).output || '').not.toContain('<memory_sync>');
+        expect(fs.existsSync(path.join(memDir, 'theirs.md'))).toBe(true);
+    });
+    it('does not touch anything while MEMORY_SYNC is off', () => {
+        note(path.join(tmp.root, 'docs/.output/.memory/notes'), 'theirs.md', 'from elsewhere');
+        processEvent({});
+        expect(fs.existsSync(path.join(memDir, 'theirs.md'))).toBe(false);
+    });
+    it('names the resolve command, once, when a note changed on both sides', () => {
+        process.env.MEMORY_SYNC = 'on';
+        const tracked = path.join(tmp.root, 'docs/.output/.memory/notes');
+        note(memDir, 'n.md', 'v1');
+        note(tracked, 'n.md', 'v1');
+        processEvent({});
+        note(memDir, 'n.md', 'mine');
+        note(tracked, 'n.md', 'theirs');
+        const out = processEvent({}).output;
+        expect(out).toContain('<memory_sync>');
+        expect(out).toContain('n.md');
+        expect(out).toContain('sync --prefer local|tracked');
     });
 });

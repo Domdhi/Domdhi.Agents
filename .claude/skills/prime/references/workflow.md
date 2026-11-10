@@ -58,7 +58,7 @@ Both reads depend only on the handoff (Step 1) and not on each other — so fire
 
 Load the relevant content needed to act on step one; listing a path does not count as reading it.
 
-**Forward-looking memory** — when configured and active, `session-start-prime.cjs` injects up to 8 memories by default (configurable), ranked by importance-adjusted decayed confidence × recency; aged usage only breaks ties. Treat injection as observed only if a `<project_memory>` block is actually visible in this session. Add recall that bears on the current task:
+**Forward-looking memory** — when configured and active, `session-start-prime.cjs` injects up to 8 memories by default (configurable; on Claude with per-prompt recall on, only the importance >= 4 core, the rest arriving per prompt), ranked by importance-adjusted decayed confidence × recency; aged usage only breaks ties. Treat injection as observed only if a `<project_memory>` block is actually visible in this session. Add recall that bears on the current task:
 1. Extract 2-4 concrete noun phrases from the current task or still-relevant handoff `## Next Actions` (file names, feature names, technical concepts — skip filler like "decide", "verify").
 2. `node .claude/core/memory-manager.js search "<phrases joined>"`
 3. Select at most 3 directly relevant, non-stale hits using the returned relevance and `decayed_confidence`. Search is distinct from startup ranking: SQLite returns FTS rank order and reports relevance from text rank, confidence, usage and importance; JSON fallback sorts relevance from text matches, recency, confidence, usage and importance. Do not describe `decayed_confidence * relevance` as the engine's search order.

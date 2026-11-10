@@ -49,7 +49,7 @@ Canonical verification remains native gate test and npm run test:coverage. Cover
 
 The runner and toolkit test requirement are not installed into adopters. Their Build/Test/PR gates remain application-only after agent-file changes. Offline fixtures, generated discovery and live service delivery are distinct evidence.
 
-Toolkit contributors need Node 22.12+ for Vitest 5; Node 24 is recommended. Keep Vitest and its V8 coverage provider on matching versions. The optional better-sqlite3 13 driver requires Node 22+; earlier runtimes retain JSON memory search. Coverage artifacts belong under `docs/.output/.state/telemetry/coverage/`.
+Toolkit contributors need Node 22.12+ for Vitest 5; Node 24 is recommended, and the full gate is green on Node 26. Keep Vitest and its V8 coverage provider on matching versions. The optional better-sqlite3 13 driver requires Node 22+; earlier runtimes retain JSON memory search. Coverage artifacts belong under `docs/.output/.state/telemetry/coverage/`.
 
 ### A stub must assert the real subsystem's contract, not just the call
 
@@ -103,6 +103,8 @@ Canonical `.agents/config/version.json` and rendered `.claude/version.json` trav
 
 *Rules:* after any `template-updater`/`fleet:sync` pass — (1) set-diff the target's `skills/` and `commands/` against the source to surface orphans (`fleet:sync` reports them; `--prune-orphans` deletes), (2) verify every agent `skills:` entry resolves to a real dir (`/review:check-templates` checks this).
 
+*Before pruning, check what still points at the fossil.* A fossil skill can still be listed by an adopter-owned agent's `skills:` frontmatter and can still exist in the adopter's canonical `.agents/` tree, where the next render regenerates it. Retiring it means: remove the entry from the canonical role, remove the canonical skill (after confirming any unique content, such as a personal voice profile, exists elsewhere byte for byte), render, `git rm` any generated copy the renderer holds back as edited, and only then let `fleet:sync --prune-orphans` clear the rest. `--prune-orphans` is fleet-wide, so hold back an adopter you have not checked by marking it `exclude` in `tools/fleet.json` for the run. Prove the adopter is stable afterwards: in the adopter, `node .claude/core/render-shared-agents.js --check` must report current (a `RENDER` line for a pruned file means its canonical `.agents/` source still exists), and a `fleet:sync --dry-run` must report it up to date. Compare the adopter's complete canonical skill list against the toolkit's, not a truncated listing.
+
 *Why:* field-proven twice on 2026-06-07 (two adopters: agents carried both `architecture` and `architecture-writer` after `--merge`) and 2026-06-06 (an adopter at v4.46→4.47: `--merge` historically REBUILT frontmatter and silently stripped `/review:specialize`-added skills — the union behavior is the fix, the reconcile pass is its cost). Promoted from memories `template-updater-merge-unions-agent-skills` + `reconcile-agent-skills-after-template-sync` (/sweep 2026-07-02).
 
 ## Shell-instruction conventions (command prose)
@@ -145,6 +147,10 @@ A Windows checkout with `core.autocrlf=true` and no override leaves `\r` on ever
 ### `fileURLToPath(import.meta.url)`, never `new URL(import.meta.url).pathname`
 
 On Windows the latter returns `/C:/Users/<name>/...` (leading slash), which `path.resolve` turns into the bogus `C:\C:\...`. **Rule:** always `import { fileURLToPath } from 'node:url'` and use `fileURLToPath(import.meta.url)`. *Field case:* `guardrail.test.js` failed to load its rules file with `ENOENT C:\C:\...`. (Also documented in `qa-engineer/SKILL.md`.)
+
+### `fs.cpSync` onto an existing destination directory fails on Node 26
+
+With `{ recursive: true, force: false, errorOnExist: true }`, Node 26 throws `EEXIST` when the destination directory itself already exists; older Node merged into it. A helper that accepts a pre-made empty destination (`copyGitRepo` in the test fixtures does) must copy the source's entries into it one by one, or only call `cpSync` when the destination does not exist. *Field case:* this single behavior change caused all 17 test failures on Node 26 (one fixture test plus 16 delivery-commit tests); the gate is green on Node 26 after the helper fix.
 
 ### Prefer built-in `node:sqlite` on Node 24+; PROBE a native backend, don't trust `require()`
 

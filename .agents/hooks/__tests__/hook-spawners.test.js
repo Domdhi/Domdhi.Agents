@@ -93,7 +93,8 @@ describe('background work survives its parent (NA5.12, real processes)', () => {
 
     it.skipIf(!hasSqlite)('sessionStartHook_partialIndex_isRebuiltToTheFullRecordCount', async () => {
         tmp = createTmpDir({ prefix: 'hook-spawners-heal-' });
-        const env = { ...process.env, CLAUDE_PROJECT_DIR: tmp.root, MEMORY_PROFILE: 'standard' };
+        // MEMORY_STARTUP=titles: this test is about index self-heal, not the startup delivery mode (default 'core' = importance >= 4 only).
+        const env = { ...process.env, CLAUDE_PROJECT_DIR: tmp.root, MEMORY_PROFILE: 'standard', MEMORY_STARTUP: 'titles' };
         // Build a store of 12 records whose index holds only 2 (the 22/204 shape).
         const seed = spawnSync(process.execPath, ['-e', `
             const MM = require(${JSON.stringify(MANAGER)});
