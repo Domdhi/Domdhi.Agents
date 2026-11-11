@@ -130,6 +130,42 @@
       ],
       "replacedBy": ".claude/skills/intake/references/workflow.md",
       "until": "7.0"
+    },
+    {
+      "path": ".agents/hooks/memory-guard.cjs",
+      "digests": [
+        "02da40279926cc4e1ce3849f35e36ef4655523645edc9652e5f4b53db7cfee57"
+      ],
+      "replacedBy": ".agents/core/memory-manager.js",
+      "until": "7.0"
+    },
+    {
+      "path": ".claude/hooks/memory-guard.cjs",
+      "digests": [
+        "02da40279926cc4e1ce3849f35e36ef4655523645edc9652e5f4b53db7cfee57",
+        "0bd73534e78f55982bf6cd574d50ca087440eba1db01577fe5f237ecdbc49c31",
+        "169f4c536707fddecde73fc755fd022ad51d43cab5bd8a7e0be5fd4299741445",
+        "1cf26126f5eee1fec19e94d098a29aee186b49ac4bc16cd70cd28ddb734b206e",
+        "469708c08d1a1a53b11af4f5f02f1d6656bb74dfbd7da200be312438635eb8b5",
+        "7a8e1014e933c0ab1aa085dd5d2d1cc028263cbc4dcbb1bdafe79f6732654898",
+        "9cfca8d81554e68fa8935804b0c14e74be038d7095ef5e12ffb93e8b53d3d85b",
+        "a9d4fcb5b08d8e7d928f33eb6dac76ebcf49a3586cacfe980bb92fd2c98c6edc",
+        "cf3c006cdb9e4470bf87a997a43dba8a5b27eb7baf0e0a5429865c19ea00a8aa",
+        "db8d7126b26642fc62b5e99ff3a595c3312e71730f74825ba8915c32a44254a8",
+        "e9fc0a1544a40a5d77f648bed34352ec472cdb2563dfdbe6278e5ef2d5774850"
+      ],
+      "replacedBy": ".agents/core/memory-manager.js",
+      "until": "7.0"
+    },
+    {
+      "path": ".codex/hooks/memory-guard.cjs",
+      "digests": [
+        "6d0827f9491b0c2076a02b2236b8d07a5c794f3abf1a444bcaa42057b3d3aeb3",
+        "9781a06b8c7b63c0434880d7c3b67903ecc9459bb2cb83820ea746d73fb27f3f",
+        "e9fc0a1544a40a5d77f648bed34352ec472cdb2563dfdbe6278e5ef2d5774850"
+      ],
+      "replacedBy": ".agents/core/memory-manager.js",
+      "until": "7.0"
     }
   ]
 }

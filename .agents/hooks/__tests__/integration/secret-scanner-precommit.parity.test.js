@@ -96,14 +96,21 @@ describe('batch scan parity with the per-file scan', () => {
         fs.writeFileSync(path.join(repo, 'bad-utf8.txt'), Buffer.concat([Buffer.from([0xff, 0xfe, 0x0a]), Buffer.from(`const k = "${CG}";\n`)]));
         git('add', 'bad-utf8.txt');
         stage('.env', 'PLAIN=1\n');                                                           // high-risk file name
-        stage('A.js', `const k = "${CG}";\n`);                                               // case-colliding pair
-        stage('a.js', `const k = "${AWS}";\n`);
-        stage('we\nird.js', `const k = "${CG}";\n`);                                         // newline in the name
+        // Windows has case-insensitive file names and forbids a newline in one, so these two cases run on POSIX only.
+        if (process.platform !== 'win32') {
+            stage('A.js', `const k = "${CG}";\n`);                                           // case-colliding pair
+            stage('a.js', `const k = "${AWS}";\n`);
+            stage('we\nird.js', `const k = "${CG}";\n`);                                     // newline in the name
+        }
         stage('zipignored.txt', `PK\u0003\u0004 readme\nconst k = "${CG}";\n`);          // skipped by the engine; its finding is listed in the ignore file
         stage('.gitleaksignore', 'moved.js:domdhi-coingecko-api-key:1\n');                  // never read
         stage('clean.txt', 'clean\n');
-        stageBlob('0:clean.txt', `const k = "${CG}";\n`);                                    // reads as stage 0 of clean.txt
-        stageBlob(':clean.txt', `const k = "${AWS}";\n`);
+        // Git for Windows refuses a ':' in an index path (core.protectNTFS), so these two run on POSIX only.
+        const colonPaths = process.platform !== 'win32';
+        if (colonPaths) {
+            stageBlob('0:clean.txt', `const k = "${CG}";\n`);                                // reads as stage 0 of clean.txt
+            stageBlob(':clean.txt', `const k = "${AWS}";\n`);
+        }
         for (let i = 0; i < 25; i++) stage(`bulk/f${i}.js`, `export const n${i} = ${i};\n`);
 
         const { files, perFile, batch } = both();
@@ -128,15 +135,19 @@ describe('batch scan parity with the per-file scan', () => {
         expect(names('zipignored.txt')).toHaveLength(1);
         expect(names('.gitleaksignore')).toEqual([]);
         expect(names('clean.txt')).toEqual([]);
-        expect(names('0:clean.txt')).toEqual(['CoinGecko API Key@1']);
-        expect(names(':clean.txt')).toEqual(['AWS Access Key@1']);
+        if (colonPaths) {
+            expect(names('0:clean.txt')).toEqual(['CoinGecko API Key@1']);
+            expect(names(':clean.txt')).toEqual(['AWS Access Key@1']);
+        }
         expect(names('pdf.txt')).toHaveLength(1);
         expect(names('crlf.js')).toEqual(['CoinGecko API Key@2']);
         expect(names('bad-utf8.txt')).toHaveLength(1);
         expect(perFile.get('.env').findings.map(f => f.type)).toContain('HIGH_RISK_FILE');
-        expect(names('A.js')).toHaveLength(1);
-        expect(names('a.js')).toHaveLength(1);
-        expect(names('we\nird.js')).toHaveLength(1);
+        if (process.platform !== 'win32') {
+            expect(names('A.js')).toHaveLength(1);
+            expect(names('a.js')).toHaveLength(1);
+            expect(names('we\nird.js')).toHaveLength(1);
+        }
         expect(names('renamed.js')).toEqual(['CoinGecko API Key@5']);
         expect(JSON.stringify([...batch.values()])).not.toContain(CG);
     });

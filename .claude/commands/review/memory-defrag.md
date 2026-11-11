@@ -8,7 +8,7 @@ description: Identify memory store overlap clusters and walk the user through me
 
 Periodic restructuring sweep of the memory store. Dispatches a Sonnet agent to analyze overlap, then walks the user through accepting merge / split / cross-reference proposals one-by-one. Different timing from the `memory-curator.js` Stop hook (which does light dedup on session close): defrag is the heavier, infrequent intervention.
 
-**When to run:** quarterly, OR after a burst of new memory creation, OR when a category approaches its effective cap (`MEMORY_FILTERS.MEMORY_MAX_PER_CATEGORY` in `.agents/core/constants.js`, with the consumer-applied `MEMORY_MAX_PER_CATEGORY` environment override; near-limit warnings/pruning use `MEMORY_FILTERS.MEMORY_NEAR_LIMIT_PCT`). Not every session — the analysis cost (Sonnet dispatch) is real.
+**When to run:** quarterly, OR after a burst of new memory creation, OR when `node .claude/core/memory-manager.js lint` or `analytics` shows a category with heavy overlap (there is no per-category size cap, so size alone is never the trigger). Not every session — the analysis cost (Sonnet dispatch) is real.
 
 ## Telemetry (run first)
 
@@ -197,16 +197,6 @@ For each accepted proposal:
 2. Add `see_also` field to each: `see_also: [{category, id, rationale}]`. If the field already exists, append the new entry rather than overwrite.
 3. Write back via `updateMemory` for both.
 4. Append to review log.
-
-#### Memory limit guard
-
-Before SPLIT or CROSS-REF that would create a new memory, check the target category's count:
-
-```bash
-node .claude/core/memory-manager.js list {category} | grep -c '"id"'
-```
-
-If the category is one below the hard cap (`MEMORY_FILTERS.MEMORY_MAX_PER_CATEGORY` in `.agents/core/constants.js`, including the `MEMORY_MAX_PER_CATEGORY` environment override — read the effective cap, do NOT assume a number), warn the user and suggest pruning before proceeding. Do NOT silently fail at the cap.
 
 ### Step 5: Commit
 

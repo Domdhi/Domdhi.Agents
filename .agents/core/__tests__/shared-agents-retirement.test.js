@@ -496,10 +496,15 @@ describe.skipIf(!hasOldCommit)('an adopter installed from the pre-rename release
     if (process.getuid && process.getuid() === 0) return;
     const { source, target } = adopter();
     const locked = path.join(target, '.codex/core');
-    fs.chmodSync(locked, 0o555);
+    // Windows ignores a directory's read-only mode (and an elevated shell writes past a deny rule), so there the
+    // directory is swapped for a plain file of the same name: every write into it fails the same way, halfway through.
+    const aside = `${locked}.aside`;
+    const lock = () => { if (process.platform === 'win32') { fs.renameSync(locked, aside); fs.writeFileSync(locked, ''); } else fs.chmodSync(locked, 0o555); };
+    const unlock = () => { if (process.platform === 'win32') { fs.rmSync(locked, { force: true }); fs.renameSync(aside, locked); } else fs.chmodSync(locked, 0o755); };
+    lock();
     try {
       expect(() => updatePilot(source, target)).toThrow(/process\.exit/);
-    } finally { fs.chmodSync(locked, 0o755); }
+    } finally { unlock(); }
     const stats = updatePilot(source, target);
     expect(stats.conflicts).toEqual([]);
     expect(gone(target)).toEqual([]);

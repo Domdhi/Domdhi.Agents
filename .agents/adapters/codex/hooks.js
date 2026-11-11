@@ -126,8 +126,8 @@ function run(event) {
     nativeEvent = { ...event, tool_name: 'Bash', tool_response: typeof text === 'string' ? text : response };
   }
   if (script === 'skill-usage-logger.cjs' && event.tool_name === 'spawn_agent') nativeEvent = { ...event, tool_name: 'Agent' };
-  const postToolUse = script === 'memory-guard.cjs' || script === 'edit-capture.cjs';
-  const events = ['secret-scanner.cjs', 'path-guardrail.cjs', 'memory-guard.cjs', 'edit-capture.cjs'].includes(script) ? patchEvents(nativeEvent, { postToolUse }) : [nativeEvent];
+  const postToolUse = script === 'edit-capture.cjs';
+  const events = ['secret-scanner.cjs', 'path-guardrail.cjs', 'edit-capture.cjs'].includes(script) ? patchEvents(nativeEvent, { postToolUse }) : [nativeEvent];
   if (script === 'edit-capture.cjs') for (const input of events) input.tool_name = 'Edit';
   const outputs = [];
   for (const input of events) if (invoke(script, input, outputs) === 2) break;

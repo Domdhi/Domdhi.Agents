@@ -199,6 +199,14 @@ function revParsePath(args, cwd) {
     }
 }
 
+/** core.hooksPath set to the null device by name. Git for Windows resolves /dev/null to a path that does not exist. */
+function isNullDevice(hooksPath, platform = process.platform) {
+    if (typeof hooksPath !== 'string') return false;
+    const p = hooksPath.trim();
+    // NUL is a device only on Windows; on POSIX a relative "nul" is an ordinary directory name.
+    return p === '/dev/null' || (platform === 'win32' && /^(?:\/dev\/null|nul)$/i.test(p));
+}
+
 /** Is the configured hooks "directory" something git cannot run hooks from (/dev/null, a file, a path under a file)? */
 function notADirectory(dir) {
     try {
@@ -235,7 +243,7 @@ function locate(dir, { requireRoot = false } = {}) {
         const hooksPath = gitSafe(['config', '--get', 'core.hooksPath'], { cwd: toplevel }) || null;
         return {
             ok: true, toplevel: realish(toplevel), commonDir, hooksDir, hooksPath,
-            inside: within(commonDir, hooksDir), disabled: notADirectory(hooksDir),
+            inside: within(commonDir, hooksDir), disabled: notADirectory(hooksDir) || isNullDevice(hooksPath),
         };
     } catch (err) {
         return { ok: false, reason: `could not resolve the git hooks directory (${err.message.split('\n')[0]})` };
@@ -545,5 +553,5 @@ if (require.main === module) {
 
 module.exports = {
     HOOK_NAMES, COMMIT_HOOKS, HOOK_VERSION, SCANNER_REL, renderHook, ownerLine, locate, inspectHook, inspectHooks, isActive,
-    isRetiredToolkitHook, scannerStatus, installHooks, removeHooks, ensureHooks, main,
+    isRetiredToolkitHook, scannerStatus, installHooks, removeHooks, ensureHooks, main, isNullDevice,
 };

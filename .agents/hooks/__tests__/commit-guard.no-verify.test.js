@@ -224,6 +224,14 @@ describe('commit-guard: aliases are resolved in the repository and evaluated (SE
   });
   afterEach(() => fs.rmSync(repo, { recursive: true, force: true }));
 
+  // PowerShell writes a Windows path with backslashes and no quotes; the POSIX reading of that text mangles the
+  // directory (each \x is an escape), found no alias there, and once allowed the alias through. Both readings are judged.
+  it('blocks the alias when the -C path is written the Windows way, with backslashes and no quotes', () => {
+    const winPath = repo.split(path.sep).join('\\');
+    // On POSIX a backslash path names no real directory, so there is no alias to find there.
+    expect(isBlocked(`git -C ${winPath} ci -F f`)).toBe(process.platform === 'win32');
+    expect(isBlocked(`git -C ${winPath} st`)).toBe(false);
+  });
   it('blocks an alias whose expansion carries --no-verify (git -C <repo> ci)', () => {
     expect(isBlocked(`git -C ${repo} ci -F f`)).toBe(true);
   });

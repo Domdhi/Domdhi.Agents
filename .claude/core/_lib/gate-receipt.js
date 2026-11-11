@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 'use strict';
-// Generated compatibility entry point from .agents/hooks/memory-guard.cjs.
-const entry = require('path').resolve(__dirname, "../../.agents/hooks/memory-guard.cjs");
+// Generated compatibility entry point from .agents/core/_lib/gate-receipt.js.
+const entry = require('path').resolve(__dirname, "../../../.agents/core/_lib/gate-receipt.js");
 if (require.main === module) {
     const result = require('child_process').spawnSync(process.execPath, [entry, ...process.argv.slice(2)], { stdio: 'inherit', windowsHide: true });
     if (result.error) throw result.error;

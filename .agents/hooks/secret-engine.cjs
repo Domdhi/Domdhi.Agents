@@ -22,7 +22,7 @@
  * capture in intake) catch these two and fall back to the named-provider regex list in
  * secret-patterns.cjs.
  *
- * FOUR THINGS THE ENGINE DOES THAT THIS FILE UNDOES:
+ * FIVE THINGS THE ENGINE DOES THAT THIS FILE UNDOES:
  *  1. It silently skips stdin that sniffs as a binary file (a zip, bzip2, rar, ar, cab, pdf, rtf,
  *     sqlite, tar ... signature at the right offset), so text that merely STARTS with such bytes
  *     was never scanned. The engine logs the number of bytes it scanned; a run that scanned fewer
@@ -37,11 +37,16 @@
  *     project's .betterleaksignore is applied HERE, in Node, from the INDEX (its staged version, falling
  *     back to HEAD) and never from the working tree, so a suppression only counts once it is itself part
  *     of what is reviewed and committed (an untracked or unstaged edit suppresses nothing). It applies to
- *     whole-file scans only (an Edit fragment restarts its line numbers).
+ *     whole-file scans only (an Edit fragment restarts its line numbers). Besides `path:rule:line`
+ *     fingerprints it holds `value-sha256:` entries that pin one reviewed value (parseIgnore).
  *  4. It refuses binary files by signature or content type (an OOXML/zip/pdf/gzip/sqlite/tar file), logging a skip or
  *     nothing at all, and quits reading a refused input early: a big write into its pipe then fails with EPIPE while it
  *     exits 0 and says "scanned ~0 bytes". That EPIPE is recognised as the skip it is (any other early exit is a failure)
  *     and the file is scanned through its text projection (textProjection), in one batch when many were refused.
+ *  5. It reads its input in chunks and cuts a chunk at an arbitrary byte when no blank line is near, so a secret on a
+ *     cut matches in neither half (a JSON manifest of 170 KB lost a token this way; `dir` does it too, past 100 KB).
+ *     Input over STDIN_WHOLE_BYTES, and a file over FILE_WHOLE_BYTES, is scanned by this file in overlapping windows
+ *     that each fit one chunk (see scanWindows); nothing smaller is touched.
  *
  * Per-call cost is one process start (about 30 ms on a clean input). There is deliberately no
  * prefilter in front of it: nothing here can decide that a scan may be skipped.
@@ -50,6 +55,7 @@
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
+const crypto = require('crypto');
 const binLib = require('../core/_lib/secret-engine-bin');
 
 const CONFIG_PATH = path.join(__dirname, '..', 'config', 'secret-engine.toml');
@@ -184,7 +190,8 @@ function spawnEngine(bin, args, input, cwd) {
         env: binLib.scrubbedEnv(),
         cwd,
     });
-    if (r.error && r.error.code === 'EPIPE' && r.status === 0 && !r.signal) {
+    // A write to a pipe the child has closed is EPIPE on POSIX; on Windows libuv reports the same broken pipe as EOF.
+    if (r.error && (r.error.code === 'EPIPE' || r.error.code === 'EOF') && r.status === 0 && !r.signal) {
         // The engine read the start of the input, sniffed it as a binary file (a zip/OOXML/pdf signature), logged
         // "scanned ~0 bytes" and exited 0 before the rest was written; with input larger than the pipe buffer the
         // parent's write then fails with EPIPE. That is the engine SKIPPING the input, not a fault: report what it
@@ -227,14 +234,43 @@ let lastRun = null;
  * The fingerprints of a .betterleaksignore, with the semantics the engine gives a single-input run:
  * lines are trimmed, a blank line or one starting with `#` is skipped, every other line is a fingerprint
  * compared whole against `<repo-relative path>:<RuleID>:<StartLine>` (no trailing comment, no commit prefix).
+ *
+ * A line `value-sha256:<64 hex>` (optionally followed by whitespace and a `# reason`) pins ONE reviewed value
+ * instead of a location: it matches a finding whose matched text, with surrounding quotes removed, has that
+ * SHA-256, at any path, rule and line, and nothing else (see valueAllowKey). It is stored normalized
+ * (`value-sha256:<lowercase hex>`, comment dropped). A `value-sha256:` line that is not exactly 64 hex digits
+ * (a prefix, a typo) allows NOTHING: it is dropped, never widened. A location fingerprint always ends in
+ * `:<line>`, so the two kinds cannot collide.
  */
 function parseIgnore(text) {
     const set = new Set();
-    for (const line of String(text || '').split('\n')) {
+    // A file appended with PowerShell 5.1's `>>` is UTF-16LE; read as UTF-8 its ASCII lines carry NULs and the BOM
+    // becomes replacement characters, so those are dropped before parsing (entries are ASCII).
+    for (const line of String(text || '').replace(/[\u0000\uFEFF\uFFFD]/g, '').split('\n')) {
         const t = line.trim();
-        if (t && !t.startsWith('#')) set.add(t);
+        if (!t || t.startsWith('#')) continue;
+        if (t.toLowerCase().startsWith(VALUE_ALLOW_PREFIX)) {
+            const m = VALUE_ALLOW_LINE.exec(t);
+            if (m) set.add(`${VALUE_ALLOW_PREFIX}${m[1].toLowerCase()}`);
+            continue;
+        }
+        set.add(t);
     }
     return set;
+}
+
+const VALUE_ALLOW_PREFIX = 'value-sha256:';
+const VALUE_ALLOW_LINE = /^value-sha256:([0-9a-f]{64})(?:\s+#.*)?$/i;
+
+/**
+ * The `.betterleaksignore` entry that pins one matched value: `value-sha256:<hex>` of the matched text with
+ * surrounding quotes removed (two rules can report the same value with and without its quotes; see
+ * normalizeRaw). The hash never reveals the value; it is printed in the git hooks' block report for generic
+ * findings so the owner can copy it after reviewing the value.
+ */
+function valueAllowKey(secret) {
+    const value = String(secret == null ? '' : secret).replace(/^["'`]+|["'`]+$/g, '');
+    return `${VALUE_ALLOW_PREFIX}${crypto.createHash('sha256').update(value, 'utf8').digest('hex')}`;
 }
 
 /**
@@ -250,10 +286,15 @@ function projectIgnoreSet(root) {
     return new Set();
 }
 
-/** Is the finding listed? `ignore` is a Set of fingerprints or a predicate (attributedPath, ruleId, line). */
+/**
+ * Is the finding listed? `ignore` is a Set (location fingerprints and `value-sha256:` entries, see parseIgnore)
+ * or a predicate (attributedPath, ruleId, line, rawFinding) that decides both itself.
+ */
 function isIgnored(ignore, attr, f) {
     if (!ignore || !attr) return false;
-    return typeof ignore === 'function' ? Boolean(ignore(attr, f.RuleID, f.StartLine)) : ignore.has(`${attr}:${f.RuleID}:${f.StartLine}`);
+    if (typeof ignore === 'function') return Boolean(ignore(attr, f.RuleID, f.StartLine, f));
+    // A value pin is printed for generic findings only, so it clears only those: a named provider's key is never pinned.
+    return ignore.has(`${attr}:${f.RuleID}:${f.StartLine}`) || (isGenericRule(f.RuleID) && ignore.has(valueAllowKey(f.Secret)));
 }
 
 // ── binary content the engine refuses ─────────────────────────────────────────
@@ -305,6 +346,19 @@ function textProjection(text) {
 }
 
 /**
+ * The findings of a BINARY file the engine skipped (or stopped reading). Nothing is waved through: its printable
+ * runs are scanned as text instead (the raw bytes would only be refused again or scanned as noise). The findings'
+ * lines are run numbers of the projection, and the allow-marker rule reads the projection too (raw.basis); the
+ * ignore list does not apply, as for any rescan.
+ */
+function projectedRaw(content, filePath) {
+    const projection = textProjection(content);
+    const raw = projection ? [...runEngine(projection, filePath, { wholeFile: false, projectBinary: false })] : [];
+    Object.defineProperty(raw, 'basis', { value: projection, enumerable: false });
+    return raw;
+}
+
+/**
  * Raw engine findings for `content`, with the engine's skip of binary-looking input undone.
  * Throws EngineUnavailableError / EngineFailedError.
  * @param {{ wholeFile?: boolean, ignore?: Set<string>|Function }} opts wholeFile: line numbers are whole-file
@@ -319,16 +373,28 @@ function runEngine(content, filePath, { wholeFile = false, ignore = null, projec
     const noIgnore = path.join(cwd, 'no-ignore-file');
     const attr = attributePath(filePath, root);
 
-    let { raw, scanned } = spawnEngine(bin, engineArgs(filePath, root, noIgnore), content, cwd);
     const expected = Buffer.byteLength(content);
+    if (expected > stdinLimit) {
+        // Too big for the engine to read in one chunk, so it would cut the input where it likes (see scanWindows). The
+        // windows are scanned as files and every line number is the whole input's, so the ignore list applies.
+        // A binary that starts with a type the engine refuses goes to its text projection, as a smaller one does when the
+        // engine skips it (windows behind a newline would not be refused, and would scan the raw bytes as noise).
+        const refused = projectBinary && looksBinary(content) && hasSkippedSignature(Buffer.from(content.slice(0, 262), 'utf8'));
+        let raw = refused ? null : scanWindows(content, filePath, root);
+        const skipped = raw === null;
+        if (skipped && projectBinary && looksBinary(content)) raw = projectedRaw(content, filePath);
+        else if (skipped) throw new EngineFailedError('secret engine did not scan the whole input (it looks like a binary file to the engine)', { reason: 'input-skipped', expected });
+        else if (wholeFile && raw.length) {
+            const list = ignore || projectIgnoreSet(root);
+            raw = raw.filter(f => !isIgnored(list, attr, f));
+        }
+        lastRun = { content, filePath, wholeFile, ignore, projectBinary, skipped, raw };
+        return raw;
+    }
+
+    let { raw, scanned } = spawnEngine(bin, engineArgs(filePath, root, noIgnore), content, cwd);
     if (scanned !== expected && projectBinary && looksBinary(content)) {
-        // The engine skipped a BINARY file (or stopped reading it). Nothing is waved through: its printable
-        // runs are scanned as text instead (the raw bytes would only be refused again or scanned as noise). The
-        // findings' lines are run numbers of the projection, and the allow-marker rule reads the projection too
-        // (raw.basis); the ignore list does not apply, as for any rescan.
-        const projection = textProjection(content);
-        raw = projection ? [...runEngine(projection, filePath, { wholeFile: false, projectBinary: false })] : [];
-        Object.defineProperty(raw, 'basis', { value: projection, enumerable: false });
+        raw = projectedRaw(content, filePath);
     } else if (scanned !== expected) {
         // Skipped (or unverifiable). Scan again behind one neutral newline; the ignore list is not
         // honored because every line number is one higher than the file's.
@@ -494,6 +560,7 @@ function buildFindings(filePath, engineList) {
             file: filePath || '<stdin>',
             line: f.raw.StartLine,
             match: redact(f.raw.Secret, f.name),
+            ...(f.generic ? { allowKey: valueAllowKey(f.raw.Secret) } : {}),
         });
     }
     return findings;
@@ -573,6 +640,21 @@ function sweepStaleStages(parent, now = Date.now()) {
     }
 }
 
+// One set of signal handlers serves every staging directory that is live (a scan of many big files stages one per
+// file, back to back in one synchronous run: a handler pair each would pile up listeners until Node warns).
+const liveStages = new Set();
+let stageHandlers = null;
+
+function removeLiveStages() {
+    for (const dir of liveStages) { try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ } } // fs-safe-lint:local — our own staging directories
+}
+
+function dropStageHandlers() {
+    if (!stageHandlers) return;
+    for (const [sig, handler] of stageHandlers) process.removeListener(sig, handler);
+    stageHandlers = null;
+}
+
 /**
  * Create a private staging directory under `parent`, run `fn(dir)` and guarantee the directory is removed: on
  * a normal return, on a throw, and when the process is told to stop (SIGINT, SIGTERM, SIGHUP). The handlers
@@ -584,27 +666,261 @@ function sweepStaleStages(parent, now = Date.now()) {
  * handlers stay installed until that turn has had its chance, then step aside.
  */
 function withStagingDir(parent, fn) {
-    const signals = ['SIGINT', 'SIGTERM', 'SIGHUP'];
+    if (!stageHandlers) {
+        stageHandlers = ['SIGINT', 'SIGTERM', 'SIGHUP'].map(sig => [sig, () => {
+            removeLiveStages();
+            dropStageHandlers();
+            process.kill(process.pid, sig);
+        }]);
+        for (const [sig, handler] of stageHandlers) process.on(sig, handler);
+    }
     let dir = null;
-    const remove = () => { if (dir) { try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ } } }; // fs-safe-lint:local — our own staging directory
-    const handlers = signals.map(sig => [sig, () => {
-        remove();
-        for (const [s2, h2] of handlers) process.removeListener(s2, h2);
-        process.kill(process.pid, sig);
-    }]);
-    for (const [sig, handler] of handlers) process.on(sig, handler);
     try {
         dir = fs.mkdtempSync(path.join(parent, 'scan-'));
+        liveStages.add(dir);
         return fn(dir);
     } finally {
-        remove();
-        setImmediate(() => { for (const [sig, handler] of handlers) process.removeListener(sig, handler); });
+        if (dir) {
+            liveStages.delete(dir);
+            try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ } // fs-safe-lint:local — our own staging directory
+        }
+        setImmediate(() => { if (!liveStages.size) dropStageHandlers(); });
     }
 }
 
 /** Resolves after one turn of the event loop: a signal that arrived during a synchronous scan is delivered (and re-raised) first. */
 function settleSignals() {
     return new Promise(resolve => setImmediate(resolve));
+}
+
+// ── one `betterleaks dir` run over staged files ────────────────────────────────
+
+/** Repo-relative path with forward slashes. */
+const norm = rel => rel.replace(/\\/g, '/');
+
+/** What a `betterleaks dir` run needs: the engine, a neutral working directory and a private cache parent for staging directories. */
+function batchContext() {
+    const { bin } = binLib.resolveEngine();
+    const cwd = neutralCwd();
+    const noIgnore = path.join(cwd, 'no-ignore-file');
+    const parent = path.join(binLib.cacheRoot(), 'betterleaks');
+    fs.mkdirSync(parent, { recursive: true, mode: 0o700 });
+    try { // a parent an older run created 0755 holds plaintext staging dirs below it: tighten it when it is ours
+        const st = fs.statSync(parent);
+        if ((st.mode & 0o077) && typeof process.getuid === 'function' && st.uid === process.getuid()) fs.chmodSync(parent, 0o700);
+    } catch { /* best effort: neutralCwd refuses an unsafe cache */ }
+    sweepStaleStages(parent);
+    return { bin, cwd, noIgnore, parent };
+}
+
+/** One `betterleaks dir` run over `rels`, staged by `writeTo(rel, dest)`; the engine's own account of it is checked. */
+function runDirBatch(ctx, rels, writeTo, ignoreList) {
+    const { bin, cwd, noIgnore, parent } = ctx;
+    const rawBy = new Map();
+    const skipped = new Set();
+    const copyFailed = new Map();
+    const sizes = new Map();
+    const wanted = new Set(rels.map(norm));
+    let batchOk = true;
+    withStagingDir(parent, stage => {
+        // One mkdir syscall per NEW directory: a recursive mkdir per file re-walked every ancestor and cost six seconds
+        // over 19,000 files.
+        const made = new Set([stage]);
+        const ensureDir = dir => {
+            if (made.has(dir)) return;
+            const missing = [];
+            for (let d = dir; !made.has(d); d = path.dirname(d)) missing.push(d);
+            for (const d of missing.reverse()) { try { fs.mkdirSync(d); } catch (err) { if (err.code !== 'EEXIST') throw err; } made.add(d); }
+        };
+        for (const rel of rels) {
+            const dest = path.join(stage, rel);
+            try {
+                ensureDir(path.dirname(dest));
+                writeTo(rel, dest);
+                sizes.set(norm(rel), fs.statSync(dest).size);
+            } catch (err) { copyFailed.set(rel, err.message); }
+        }
+        const r = spawnSync(bin, ['dir', stage, '--no-banner', '--no-color', '--exit-code', '0', '--report-format', 'json', '--report-path', '-',
+            '--log-level', 'debug', '--config', CONFIG_PATH, '--ignore-gitleaks-allow', '--gitleaks-ignore-path', noIgnore, '--max-archive-depth', '0'],
+        { encoding: 'utf8', maxBuffer: Infinity, timeout: pinTables().timeoutMs * 6, windowsHide: true, env: binLib.scrubbedEnv(), cwd });
+        if (r.error || r.signal || r.status !== 0) {
+            // The same fixed wording as a single-input run: neither the engine's stderr nor any input text is echoed.
+            const why = r.error ? (r.error.code === 'ETIMEDOUT' ? `timed out after ${pinTables().timeoutMs * 6} ms` : 'could not run')
+                : r.signal ? `was killed by ${/^SIG[A-Z0-9]+$/.test(r.signal) ? r.signal : 'a signal'}` : `exited with status ${r.status}`;
+            throw new EngineFailedError(`secret engine ${why} during a batch scan`, { reason: 'batch', status: r.status });
+        }
+        let parsed;
+        try { parsed = validateRaw(JSON.parse(String(r.stdout || '').trim() || 'null')); } catch (err) {
+            if (err instanceof EngineFailedError) throw err;
+            throw new EngineFailedError('secret engine produced unreadable output', { reason: 'bad-json' });
+        }
+        const relOf = f => path.relative(stage, path.resolve(cwd, f)).replace(/\\/g, '/');
+        for (const f of parsed) {
+            const rel = relOf(f.File || '');
+            if (!rel || rel.startsWith('..') || !wanted.has(rel)) throw new EngineFailedError('secret engine reported a finding for a file that was not scanned', { reason: 'bad-finding' });
+            if (isIgnored(ignoreList, rel, f)) continue;
+            if (!rawBy.has(rel)) rawBy.set(rel, []);
+            rawBy.get(rel).push(f);
+        }
+        let scannedBytes = null;
+        for (const rawLine of String(r.stderr || '').split('\n')) {
+            const line = rawLine.replace(ANSI, '');
+            if (/\b(?:ERR|FTL)\b/.test(line.slice(0, 20))) throw new EngineFailedError('secret engine logged an error during a batch scan', { reason: 'batch-error' });
+            // "skipping binary file", "skipping empty file" and any other "skipping <kind> file". ("skipping <rule> finding"
+            // lines are the engine choosing between two of its own rules, not a file left unscanned.)
+            if (/\bskipping (?:[\w-]+ )*file\b/.test(line)) {
+                const logged = logPath(line);
+                const rel = logged === null ? null : relOf(logged);
+                if (rel === null || !rel || rel.startsWith('..') || !wanted.has(rel)) {
+                    throw new EngineFailedError('secret engine skipped something that is not a requested file', { reason: 'unmatched-skip' });
+                }
+                skipped.add(rel);
+                continue;
+            }
+            const m = /scanned ~(\d+) bytes?\b/.exec(line);
+            if (m) scannedBytes = Number(m[1]);
+        }
+        let expected = 0;
+        for (const [rel, size] of sizes) if (!skipped.has(rel)) expected += size;
+        if (scannedBytes !== expected) batchOk = false;
+    });
+    return { rawBy, skipped, copyFailed, batchOk };
+}
+
+// ── input too big for the engine to read in one piece ─────────────────────────
+
+// The engine reads its input in chunks and ends a chunk where the read stopped, unless a blank line (two newlines in
+// a row) turns up within the next 25,000 bytes, which it takes as a safe place to cut. Text without blank lines (a
+// JSON manifest, a minified bundle) is cut at an arbitrary byte, and a secret that sits on the cut matches in neither
+// half. Measured on 1.10.0 with back-to-back tokens, no blank lines:
+//   - stdin: the first chunk is the first read (whatever the pipe had: 4 KB to 61 KB) plus that 25,000-byte peek, so
+//     input up to 25,000 bytes is always one chunk (a slow writer made the first miss appear at 28,987); the cuts
+//     after that fall every ~28,700 bytes.
+//   - dir: the first chunk is one 100,000-byte read plus the peek (the first miss was at ~124,968 bytes), then the
+//     same ~28,700 bytes again, so a file up to 100,000 bytes is always one chunk, a bigger one is not.
+// Anything bigger is therefore cut by this file, into overlapping windows that each fit one chunk, staged in a private
+// directory and scanned in one `dir` run.
+// These sizes are measured on the pinned engine; a bump of the engine re-runs secret-engine.stdin-split.test.js first.
+const STDIN_WHOLE_BYTES = 24000;   // stdin input up to this size is one engine chunk
+let stdinLimit = STDIN_WHOLE_BYTES; // a test shrinks or lifts it through setStdinLimitForTests, which only code inside the process can call
+const FILE_WHOLE_BYTES = 100000;   // a staged file up to this size is one engine chunk
+const WINDOW_BYTES = 80000;        // window size: under FILE_WHOLE_BYTES, with room for the leading newline
+const WINDOW_STEP = 48000;         // where the next window starts, before snapping back to a line start
+const WINDOW_SNAP = 8000;          // how far a window start moves back, and its end moves in, to fall on a line boundary
+// A window starts on a line start and ends after a newline when there is one within WINDOW_SNAP bytes (a cut through a
+// line would hand the engine half a value, which can match as something else: half a digest is no longer exempt).
+// Consecutive windows share at least WINDOW_BYTES - 2 * WINDOW_SNAP - WINDOW_STEP = 16,000 bytes, less up to 3 for a
+// character boundary, so a secret with the context its rule needs, up to about 16,000 bytes, lies whole in one window.
+// A line longer than the snap distance is cut anyway; a finding the cut leaves at the edge of its window (it starts
+// where a window starts, or ends where one ends) is dropped there, because the overlap holds it whole.
+
+/** Where each line of `buf` starts. */
+function byteLineStarts(buf) {
+    const starts = [0];
+    for (let i = buf.indexOf(10); i !== -1; i = buf.indexOf(10, i + 1)) starts.push(i + 1);
+    return starts;
+}
+
+/**
+ * The names a window is staged under, in order: the attributed path (so the engine's path rules apply), a neutral name
+ * with the same extension, and last a bare `input` with no extension. The engine reads 0 bytes of a file whose NAME
+ * says archive (`*.gz`, without logging a skip), so the projection of a binary would never be scanned under its own
+ * name. The last name has no extension so neither the code nor the prose exemptions of the config apply to it.
+ */
+function windowNames(attr) {
+    const segments = String(attr || '').split('/').filter(s => s && s !== '.' && s !== '..').map(s => s.replace(/[<>:"|?*\x00-\x1f]/g, '_'));
+    const names = segments.length ? [segments.join('/')] : [];
+    names.push(`input${path.extname(segments[segments.length - 1] || '')}`, 'input');
+    return [...new Set(names)];
+}
+
+/**
+ * The windows of `buf`: start and end byte (never inside a UTF-8 character), the number of lines before the start, and
+ * whether the start / end fall inside a line.
+ */
+function planWindows(buf) {
+    const plan = [];
+    let nominal = 0;
+    let counted = 0;
+    let lineBase = 0;
+    for (;;) {
+        let start = nominal;
+        if (start > 0) {
+            const back = buf.lastIndexOf(10, start - 1) + 1;   // the start of the line `nominal` is in (0 when none)
+            start = back > 0 && nominal - back <= WINDOW_SNAP ? back : nominal;
+            while (start < buf.length && (buf[start] & 0xc0) === 0x80) start++;
+        }
+        let end = Math.min(start + WINDOW_BYTES, buf.length);
+        if (end < buf.length) {
+            const lineEnd = buf.lastIndexOf(10, end - 1) + 1;   // just after the last newline in the window (0 when none)
+            if (lineEnd > start && end - lineEnd <= WINDOW_SNAP) end = lineEnd;
+            while (end > start && (buf[end] & 0xc0) === 0x80) end--;
+        }
+        for (; counted < start; counted++) if (buf[counted] === 10) lineBase++;
+        plan.push({ start, end, lineBase, cutStart: start > 0 && buf[start - 1] !== 10, cutEnd: end < buf.length && buf[end - 1] !== 10 });
+        if (end >= buf.length) return plan;
+        nominal += WINDOW_STEP;
+    }
+}
+
+/**
+ * Raw engine findings for `content` bigger than the engine reads in one chunk, from overlapping windows (see above).
+ * Every window is staged behind one neutral newline, the same trick as the shifted rescan (a file signature the engine
+ * refuses cannot sit at offset 1), and is taken back out of the line numbers. A finding the overlap shows twice is
+ * kept once (same rule, value and place). Returns null when the engine did not account for every window.
+ */
+function scanWindows(content, filePath, root) {
+    const buf = Buffer.from(content, 'utf8');
+    const plan = planWindows(buf);
+    const ctx = batchContext();
+    let run = null;
+    let rels = null;
+    for (const name of windowNames(attributePath(filePath, root))) {
+        rels = plan.map((_, k) => `w${k}/${name}`);
+        run = runDirBatch(ctx, rels, (rel, dest) => {
+            const w = plan[Number(rel.slice(1, rel.indexOf('/')))];
+            fs.writeFileSync(dest, Buffer.concat([Buffer.from('\n'), buf.subarray(w.start, w.end)])); // fs-safe-lint:local — private staging dir in the per-user cache
+        }, null);
+        // Keep the first name whose run the engine fully accounted for; a name that did not fit the file system, or that
+        // the engine did not read every byte of, moves on to the next (more neutral) one.
+        if (run.copyFailed.size === 0 && run.batchOk && !run.skipped.size) break;
+    }
+    if (run.copyFailed.size) throw new EngineFailedError('secret engine could not stage the input', { reason: 'stage' });
+    if (!run.batchOk || run.skipped.size) return null;
+
+    const seen = new Set();
+    const raw = [];
+    plan.forEach((w, k) => {
+        const list = run.rawBy.get(rels[k]) || [];
+        const part = buf.subarray(w.start, w.end);
+        const starts = list.length && plan.length > 1 ? byteLineStarts(part) : null;
+        const nth = new Map();
+        for (const f of list) {
+            const line = f.StartLine - 1;
+            if (line < 1) continue; // on the neutral newline
+            const mapped = { ...f, StartLine: w.lineBase + line, EndLine: Number.isInteger(f.EndLine) ? w.lineBase + f.EndLine - 1 : f.EndLine };
+            if (starts) {
+                // Where in the whole input this finding starts, found by searching for its value from the start of its line
+                // (columns are not trusted); a value that is not there verbatim (a decoded one) is placed by its line.
+                const key = `${f.RuleID}\u0000${line}\u0000${f.Secret}`;
+                const n = (nth.get(key) || 0) + 1;
+                nth.set(key, n);
+                const value = Buffer.from(f.Secret, 'utf8');
+                let at = -1;
+                for (let from = starts[line - 1] ?? 0, i = 0; value.length && i < n; i++) {
+                    at = part.indexOf(value, from);
+                    if (at === -1) break;
+                    from = at + 1;
+                }
+                if (at !== -1 && ((w.cutStart && at === 0) || (w.cutEnd && at + value.length === part.length))) continue; // cut by the window: the overlap holds it whole
+                const place = `${f.RuleID}\u0000${f.Secret}\u0000${at === -1 ? `line ${mapped.StartLine} #${n}` : w.start + at}`;
+                if (seen.has(place)) continue;
+                seen.add(place);
+            }
+            raw.push(mapped);
+        }
+    });
+    return raw;
 }
 
 /**
@@ -642,90 +958,8 @@ function scanFiles(root, relPaths, optionsFor = () => ({}), { ignore = null, con
     let mode = 'batch';
     Object.defineProperty(results, 'batchMode', { get: () => mode });
     if (relPaths.length === 0) return results;
-    const { bin } = binLib.resolveEngine();
-    const cwd = neutralCwd();
-    const noIgnore = path.join(cwd, 'no-ignore-file');
-    const parent = path.join(binLib.cacheRoot(), 'betterleaks');
-    fs.mkdirSync(parent, { recursive: true, mode: 0o700 });
-    try { // a parent an older run created 0755 holds plaintext staging dirs below it: tighten it when it is ours
-        const st = fs.statSync(parent);
-        if ((st.mode & 0o077) && typeof process.getuid === 'function' && st.uid === process.getuid()) fs.chmodSync(parent, 0o700);
-    } catch { /* best effort: neutralCwd refuses an unsafe cache */ }
-    sweepStaleStages(parent);
-    const norm = rel => rel.replace(/\\/g, '/');
-
-    /** One `betterleaks dir` run over `rels`, staged by `writeTo(rel, dest)`; the engine's own account of it is checked. */
-    const batchRun = (rels, writeTo, ignoreList) => {
-        const rawBy = new Map();
-        const skipped = new Set();
-        const copyFailed = new Map();
-        const sizes = new Map();
-        const wanted = new Set(rels.map(norm));
-        let batchOk = true;
-        withStagingDir(parent, stage => {
-            // One mkdir syscall per NEW directory: a recursive mkdir per file re-walked every ancestor and cost six seconds
-            // over 19,000 files.
-            const made = new Set([stage]);
-            const ensureDir = dir => {
-                if (made.has(dir)) return;
-                const missing = [];
-                for (let d = dir; !made.has(d); d = path.dirname(d)) missing.push(d);
-                for (const d of missing.reverse()) { try { fs.mkdirSync(d); } catch (err) { if (err.code !== 'EEXIST') throw err; } made.add(d); }
-            };
-            for (const rel of rels) {
-                const dest = path.join(stage, rel);
-                try {
-                    ensureDir(path.dirname(dest));
-                    writeTo(rel, dest);
-                    sizes.set(norm(rel), fs.statSync(dest).size);
-                } catch (err) { copyFailed.set(rel, err.message); }
-            }
-            const r = spawnSync(bin, ['dir', stage, '--no-banner', '--no-color', '--exit-code', '0', '--report-format', 'json', '--report-path', '-',
-                '--log-level', 'debug', '--config', CONFIG_PATH, '--ignore-gitleaks-allow', '--gitleaks-ignore-path', noIgnore, '--max-archive-depth', '0'],
-            { encoding: 'utf8', maxBuffer: Infinity, timeout: pinTables().timeoutMs * 6, windowsHide: true, env: binLib.scrubbedEnv(), cwd });
-            if (r.error || r.signal || r.status !== 0) {
-                // The same fixed wording as a single-input run: neither the engine's stderr nor any input text is echoed.
-                const why = r.error ? (r.error.code === 'ETIMEDOUT' ? `timed out after ${pinTables().timeoutMs * 6} ms` : 'could not run')
-                    : r.signal ? `was killed by ${/^SIG[A-Z0-9]+$/.test(r.signal) ? r.signal : 'a signal'}` : `exited with status ${r.status}`;
-                throw new EngineFailedError(`secret engine ${why} during a batch scan`, { reason: 'batch', status: r.status });
-            }
-            let parsed;
-            try { parsed = validateRaw(JSON.parse(String(r.stdout || '').trim() || 'null')); } catch (err) {
-                if (err instanceof EngineFailedError) throw err;
-                throw new EngineFailedError('secret engine produced unreadable output', { reason: 'bad-json' });
-            }
-            const relOf = f => path.relative(stage, path.resolve(cwd, f)).replace(/\\/g, '/');
-            for (const f of parsed) {
-                const rel = relOf(f.File || '');
-                if (!rel || rel.startsWith('..') || !wanted.has(rel)) throw new EngineFailedError('secret engine reported a finding for a file that was not scanned', { reason: 'bad-finding' });
-                if (isIgnored(ignoreList, rel, f)) continue;
-                if (!rawBy.has(rel)) rawBy.set(rel, []);
-                rawBy.get(rel).push(f);
-            }
-            let scannedBytes = null;
-            for (const rawLine of String(r.stderr || '').split('\n')) {
-                const line = rawLine.replace(ANSI, '');
-                if (/\b(?:ERR|FTL)\b/.test(line.slice(0, 20))) throw new EngineFailedError('secret engine logged an error during a batch scan', { reason: 'batch-error' });
-                // "skipping binary file", "skipping empty file" and any other "skipping <kind> file". ("skipping <rule> finding"
-                // lines are the engine choosing between two of its own rules, not a file left unscanned.)
-                if (/\bskipping (?:[\w-]+ )*file\b/.test(line)) {
-                    const logged = logPath(line);
-                    const rel = logged === null ? null : relOf(logged);
-                    if (rel === null || !rel || rel.startsWith('..') || !wanted.has(rel)) {
-                        throw new EngineFailedError('secret engine skipped something that is not a requested file', { reason: 'unmatched-skip' });
-                    }
-                    skipped.add(rel);
-                    continue;
-                }
-                const m = /scanned ~(\d+) bytes?\b/.exec(line);
-                if (m) scannedBytes = Number(m[1]);
-            }
-            let expected = 0;
-            for (const [rel, size] of sizes) if (!skipped.has(rel)) expected += size;
-            if (scannedBytes !== expected) batchOk = false;
-        });
-        return { rawBy, skipped, copyFailed, batchOk };
-    };
+    const ctx = batchContext();
+    const batchRun = (rels, writeTo, ignoreList) => runDirBatch(ctx, rels, writeTo, ignoreList);
 
     // A binary that starts with a signature the engine refuses never goes into the batch: its text projection does.
     const preRouted = new Set();
@@ -735,7 +969,16 @@ function scanFiles(root, relPaths, optionsFor = () => ({}), { ignore = null, con
             if (hasSkippedSignature(bytes) && looksBinary(Buffer.from(bytes.subarray(0, 8192)).toString('utf8'))) preRouted.add(rel);
         }
     }
-    const batchRels = preRouted.size ? relPaths.filter(rel => !preRouted.has(rel)) : relPaths;
+    // A file the engine cannot read in one chunk would be cut where it likes (see scanWindows), so it is not staged for the
+    // batch: it is scanned by itself, in windows, exactly like a file the engine skipped.
+    const large = new Set();
+    for (const rel of relPaths) {
+        if (preRouted.has(rel)) continue;
+        let size = 0;
+        try { size = contentFor ? Buffer.byteLength(contentFor(rel)) : fs.statSync(path.resolve(root, rel)).size; } catch { /* a file that cannot be read is reported by the batch */ }
+        if (size > FILE_WHOLE_BYTES) large.add(rel);
+    }
+    const batchRels = preRouted.size || large.size ? relPaths.filter(rel => !preRouted.has(rel) && !large.has(rel)) : relPaths;
     const first = batchRels.length
         ? batchRun(batchRels, (rel, dest) => {
             if (contentFor) fs.writeFileSync(dest, contentFor(rel)); // fs-safe-lint:local — private staging dir in the per-user cache
@@ -743,7 +986,7 @@ function scanFiles(root, relPaths, optionsFor = () => ({}), { ignore = null, con
         }, ignore)
         : { rawBy: new Map(), skipped: new Set(), copyFailed: new Map(), batchOk: true };
     const { rawBy, copyFailed } = first;
-    let skipped = first.skipped;
+    let skipped = large.size ? new Set([...first.skipped, ...[...large].map(norm)]) : first.skipped;
 
     // The engine's account of itself does not add up: do not trust the batch for any file.
     if (!first.batchOk) {
@@ -775,7 +1018,9 @@ function scanFiles(root, relPaths, optionsFor = () => ({}), { ignore = null, con
         }
     }
     let second = null;
-    const toBatch = [...projected].filter(([, text]) => text).map(([rel]) => rel);
+    // A projection too big for one chunk is not staged either: it is scanned on its own, in windows, below.
+    const toBatch = [...projected].filter(([, text]) => text && Buffer.byteLength(text) + 1 <= FILE_WHOLE_BYTES).map(([rel]) => rel);
+    const inSecond = new Set(toBatch);
     if (toBatch.length) {
         // Each projection is staged behind one neutral newline: a PDF's first printable run is `%PDF-1.4`, exactly the
         // signature the engine refuses, and every projection would otherwise be refused again. The newline is taken
@@ -800,7 +1045,7 @@ function scanFiles(root, relPaths, optionsFor = () => ({}), { ignore = null, con
                 // An empty projection (no printable run) holds nothing to find; a projection the engine refused or
                 // that the batch could not account for is scanned on its own (shifted rescan).
                 if (!text) { results.set(rel, { findings: buildFindings(rel, []) }); continue; }
-                if (!second.batchOk || second.skipped.has(key) || second.copyFailed.has(rel)) {
+                if (!inSecond.has(rel) || !second.batchOk || second.skipped.has(key) || second.copyFailed.has(rel)) {
                     results.set(rel, { findings: scanContent(text, rel, { ...options, wholeFile: false }) });
                     continue;
                 }
@@ -866,8 +1111,12 @@ function redactSecretsInText(content, filePath, options) {
         const limit = lineEnd(lastLine);
         let hits = 0;
         if (Secret.length) {
-            for (let at = content.indexOf(Secret, from); at !== -1 && at <= limit; at = content.indexOf(Secret, at + 1)) {
-                spans.push({ start: at, end: at + Secret.length, name: f.name, generic: f.generic });
+            // Search the finding's own lines only (a copy may start at any offset up to `limit`). Searching the whole rest of
+            // the input for a "next copy" that a unique value never has made every finding cost the input's size: 20,000
+            // findings in 650 KB took seconds, growing with the square of the input.
+            const region = content.slice(from, Math.min(content.length, limit + Secret.length));
+            for (let at = region.indexOf(Secret); at !== -1; at = region.indexOf(Secret, at + 1)) {
+                spans.push({ start: from + at, end: from + at + Secret.length, name: f.name, generic: f.generic });
                 hits++;
             }
         }
@@ -912,6 +1161,7 @@ module.exports = {
     goUnquote,
     logPath,
     parseIgnore,
+    valueAllowKey,
     hasSkippedSignature,
     utf8Bytes,
     looksBinary,
@@ -928,5 +1178,7 @@ module.exports = {
     engineStatus: binLib.engineStatus,
     installHint: binLib.installHint,
     setTimeoutForTests(ms) { timeoutOverride = ms; tables = null; },
+    /** Test seam for the stdin transport tests: input up to `n` bytes goes to the engine on stdin (default 24,000). resetForTests does not touch it; restore it with no argument. */
+    setStdinLimitForTests(n = STDIN_WHOLE_BYTES) { stdinLimit = n; },
     resetForTests,
 };

@@ -37,7 +37,7 @@ Confidence records evidence strength. Decay uses active work days rather than ca
 
 Importance is an intrinsic retention score from 1 to 5. Creation accepts `content.importance`, normalizes it and stores `importance` at the top level; legacy content-level values remain readable. Defaults come from `MEMORY_FILTERS.IMPORTANCE_DEFAULT` and its call-site override. Importance scales the confidence decay curve: higher-importance foundational rules resist decay, while low-value records can enter the stale queue sooner. See ADR 0007 (memory value system) in the workshop's architecture records.
 
-Category capacity and near-limit behavior use `MEMORY_FILTERS.MEMORY_MAX_PER_CATEGORY` and `MEMORY_FILTERS.MEMORY_NEAR_LIMIT_PCT`; the `MEMORY_MAX_PER_CATEGORY` environment override is applied by consumers. Near-limit creation attempts prune eligible stale records; writes at the effective cap refuse. Read these constants rather than duplicate literal caps in guidance. `analytics`, lint and decay reports show distinct capacity/quality/age signals.
+There is no per-category size cap: a write is never refused, and never triggers a prune, because of how many memories a category holds. Ranking, decay and the review queues manage relevance, and `pruneStaleMemories` remains a manual command. The retired `MEMORY_MAX_PER_CATEGORY` environment variable is ignored. `analytics`, lint and decay reports show distinct quality/age signals; `analytics` lists per-category counts without a limit.
 
 ## Recall and supersession
 

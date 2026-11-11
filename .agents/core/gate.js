@@ -10,6 +10,10 @@
  *   node .claude/core/gate.js                    # Build only
  *   node .claude/core/gate.js build              # Build only (explicit)
  *   node .claude/core/gate.js test               # Build + test
+ *   node .claude/core/gate.js full test          # Build + test, never change-scoped (receipt mode "full")
+ *   node .claude/core/gate.js verify-receipt     # Does the latest receipt cover THIS exact tree? (--mode full, --json)
+ *   node .claude/core/gate.js stop               # Ask a running gate to stop, cooperatively
+ *   node .claude/core/gate.js --help             # Usage (exit 0); an unknown argument prints it and exits 2
  *
  * Output:
  *   docs/.output/.state/telemetry/logs/gate-{timestamp}.log    — Full output
@@ -19,6 +23,8 @@
  *   docs/.output/.state/telemetry/_latest-e2e.json             — Parsed e2e results (e2e mode)
  *   docs/.output/.state/telemetry/_latest-visual.json          — Parsed visual results (if configured)
  *   docs/.output/.state/telemetry/_latest-summary.json         — Combined summary
+ *   docs/.output/.state/telemetry/gate-receipt.json            — What the latest test run proved (test/full modes)
+ *   docs/.output/.state/telemetry/gate-receipts/               — Per-project history that reuse decisions read
  *
  * `test` mode also runs a `lint` leg (same condition as test) — a project with
  * no lint script configured (and no explicit config override) skips it
@@ -52,11 +58,12 @@
  * limit is reported as TIMED OUT, not as a bare failure.
  */
 
-const { spawnSync } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const { getTelemetryDir } = require('./_lib/telemetry-paths');
 const { writeSummary } = require('./_lib/gate-summary');
+const receipt = require('./_lib/gate-receipt');
 
 const PROJECT_ROOT = process.env.CLAUDE_PROJECT_DIR || path.resolve(__dirname, '..', '..');
 const GATE_DIR = getTelemetryDir(PROJECT_ROOT);
@@ -96,17 +103,21 @@ const POSIX_LOCK_PROTOCOL = 'domdhi-gate/uncontained-posix-v1';
 
 // ── Args ────────────────────────────────────────────────────────────
 
-const args = process.argv.slice(2);
-const skipBuild = args.includes('--no-build');
-const changedOnly = args.includes('--changed');
+// Parsed at load without exiting: tests `require` this module under a foreign argv. main() acts on
+// the result: `--help` prints usage (exit 0), an unknown argument prints it (exit 2), neither
+// takes the lock or builds.
+const PARSED = receipt.parseGateArgs(process.argv.slice(2));
+const skipBuild = PARSED.ok && PARSED.skipBuild;
+const changedOnly = PARSED.ok && PARSED.changedOnly;
 // e2e mode: a focused behavior/contract gate that runs the project's separate
 // E2E/integration suite. The build+unit gate (`gate.js test`) runs only the
 // unit subset, so a wave that changes a CONTRACT an E2E suite covers — without
 // touching that suite — passes green and the regression only surfaces in manual
 // testing (the R1 class of failure). `/run-todo` runs this on contract changes.
-const runE2e = args.includes('--e2e') || args.includes('e2e');
+const runE2e = PARSED.ok && PARSED.runE2e;
 // --no-build implies --test (build-skip without testing is meaningless)
-const runTests = !runE2e && (skipBuild || args.includes('--test') || args.includes('test'));
+const runTests = PARSED.ok && PARSED.runTests;
+const STOP_MARKER = path.join(GATE_DIR, '.gate.stop');
 
 // ── Lock ────────────────────────────────────────────────────────────
 
@@ -319,6 +330,7 @@ function setOwnedLeasePhase(phase, processTree) {
             delete lock.treeInProgress;
             delete lock.terminationUnconfirmed;
             delete lock.processTree;
+            delete lock.stopRequestPath;
         } else {
             lock.treeInProgress = true;
             if (phase === 'unconfirmed') lock.terminationUnconfirmed = true;
@@ -329,6 +341,27 @@ function setOwnedLeasePhase(phase, processTree) {
         fs.ftruncateSync(fd, bytes.length);
         fs.fsyncSync(fd);
     } finally { fs.closeSync(fd); }
+}
+
+/**
+ * Set or clear one advisory field on the lock THIS process owns: the Windows stage's stop-request
+ * path (`stopRequestPath`), or the POSIX stage's child PID (`childPid`, which also keeps a
+ * crashed gate's lock held while its orphaned stage is still alive). Never throws: a gate that
+ * cannot record it still runs; `stop` then falls back to the marker file and signals.
+ */
+function setOwnLockField(key, value) {
+    if (ownLockStarted === null) return;
+    let fd;
+    try { fd = fs.openSync(LOCK_FILE, 'r+'); } catch { return; }
+    try {
+        const lock = JSON.parse(fs.readFileSync(fd, 'utf8'));
+        if (lock.pid !== process.pid || lock.started !== ownLockStarted) return;
+        if (value === null) delete lock[key]; else lock[key] = value;
+        const bytes = Buffer.from(JSON.stringify(lock));
+        fs.writeSync(fd, bytes, 0, bytes.length, 0);
+        fs.ftruncateSync(fd, bytes.length);
+        fs.fsyncSync(fd);
+    } catch { /* advisory only */ } finally { fs.closeSync(fd); }
 }
 
 // ── Config / Auto-Detection ─────────────────────────────────────────
@@ -555,6 +588,9 @@ function runCommand(cmd, cwd, timeoutMs) {
             result = require('./_lib/owned-process-tree').runOwnedCommandSync(command, argv, {
                 cwd, timeoutMs, maxBytes: 64 * 1024 * 1024, ownerPid: process.pid,
                 windowsVerbatimArguments: !isArgvMode,
+                // `gate.js stop` drops a request file here; the async bridge sees it and cancels the
+                // supervisor, which kills the job and writes the nonce-matched tree proof.
+                onEvidenceRoot: (_root, stopRequestPath) => setOwnLockField('stopRequestPath', stopRequestPath),
             });
             if (result.treeConfirmed === true && result.error?.code !== 'ETREEUNCONFIRMED') {
                 setOwnedLeasePhase('idle');
@@ -571,6 +607,8 @@ function runCommand(cmd, cwd, timeoutMs) {
             exitCode: ownTreeUnconfirmed || result.error || result.status === null || result.status === undefined ? 1 : result.status,
             output: result.stdout || '', stderr: result.stderr || '', timedOut: result.timedOut === true,
             treeConfirmed: result.treeConfirmed === true, error: result.error || null, processTree: result.processTree || null,
+            // Only ever true when the supervisor's nonce-matched proof confirmed the tree is gone.
+            stopped: result.stopped === true && result.treeConfirmed === true,
         };
     }
     const result = isArgvMode
@@ -607,6 +645,113 @@ function runCommand(cmd, cwd, timeoutMs) {
         signal: result.signal || null,
     };
 }
+
+// ── Stage execution that can be stopped (POSIX) ────────────────────
+//
+// runCommand() blocks the event loop in spawnSync for the whole stage, so a SIGTERM sent to the gate
+// is not handled until the stage ends: a stop request could not interrupt anything. On POSIX the
+// stage therefore runs through spawn() with the event loop free, in its own process group, so the
+// signal handler (and `gate.js stop`) can end the whole stage and the run can record `interrupted`.
+// Windows keeps the owned Job Object bridge, which watches for the stop-request file itself.
+
+let currentStage = null;      // { pid } of the stage running now (POSIX)
+let interruptSignal = null;   // the signal (or 'STOP') that asked this run to end
+
+function killStageGroup(pid, signal) {
+    try { process.kill(-pid, signal); } catch {
+        try { process.kill(pid, signal); } catch { /* already gone */ }
+    }
+}
+
+/** Same result shape as runCommand(): { exitCode, output, stderr, timedOut, signal }. */
+async function runCommandAsync(cmd, cwd, timeoutMs) {
+    if (cmd && typeof cmd === 'object' && Array.isArray(cmd.legs)) {
+        let output = ''; let stderr = ''; let exitCode = 0; let timedOut = false; let lastResult;
+        for (const subCmd of cmd.legs) {
+            const sub = await runCommandAsync(subCmd, cwd, timeoutMs);
+            lastResult = sub;
+            output += sub.output; stderr += sub.stderr; exitCode = sub.exitCode; timedOut = sub.timedOut;
+            if (exitCode !== 0 || interruptSignal) break;
+        }
+        return { ...lastResult, exitCode, output, stderr, timedOut };
+    }
+    const maxBuffer = 64 * 1024 * 1024; // 64MB — verbose suites can exceed the 1MB default
+    const isArgvMode = cmd && typeof cmd === 'object' && Array.isArray(cmd.argv);
+    return new Promise((resolve) => {
+        const out = []; const err = [];
+        let outSize = 0; let errSize = 0; let timedOut = false; let spawnError = null; let settled = false;
+        let timer; let escalate;
+        const options = { cwd, shell: !isArgvMode, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, detached: true };
+        let child;
+        try { child = isArgvMode ? spawn(cmd.argv[0], cmd.argv.slice(1), options) : spawn(cmd, options); } catch (error) {
+            resolve({ exitCode: 1, output: '', stderr: String(error.message), timedOut: false, signal: null, error });
+            return;
+        }
+        currentStage = { pid: child.pid };
+        if (child.pid) setOwnLockField('childPid', child.pid);
+        const stopGroup = (signal) => { if (child.pid) killStageGroup(child.pid, signal); };
+        const settle = (code, signal) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer); clearTimeout(escalate);
+            currentStage = null;
+            setOwnLockField('childPid', null);
+            resolve({
+                exitCode: code === null || code === undefined ? 1 : code,
+                output: Buffer.concat(out).toString('utf8'), stderr: Buffer.concat(err).toString('utf8'),
+                // The gate's own limit, reported as such rather than as an ordinary failure.
+                timedOut,
+                signal: signal || null,
+                ...(spawnError ? { error: spawnError } : {}),
+            });
+        };
+        const take = (chunks, size, chunk) => {
+            if (size + chunk.length > maxBuffer) {
+                spawnError = spawnError || Object.assign(new Error('maxBuffer exceeded'), { code: 'ENOBUFS' });
+                stopGroup('SIGTERM');
+                return size;
+            }
+            chunks.push(chunk);
+            return size + chunk.length;
+        };
+        child.stdout.on('data', (chunk) => { outSize = take(out, outSize, chunk); });
+        child.stderr.on('data', (chunk) => { errSize = take(err, errSize, chunk); });
+        child.once('error', (error) => { spawnError = error; if (!child.pid) settle(1, null); });
+        child.once('close', (code, signal) => settle(code, signal));
+        if (timeoutMs) {
+            timer = setTimeout(() => {
+                timedOut = true;
+                stopGroup('SIGTERM');
+                escalate = setTimeout(() => stopGroup('SIGKILL'), 5000);
+            }, timeoutMs);
+        }
+    });
+}
+
+/** Run one stage so that a stop request can end it. */
+function runStage(cmd, cwd, timeoutMs) {
+    return process.platform === 'win32' ? Promise.resolve(runCommand(cmd, cwd, timeoutMs)) : runCommandAsync(cmd, cwd, timeoutMs);
+}
+
+/** The signal (or 'STOP') that asked this run to end, or null. */
+function interruptRequested() {
+    if (interruptSignal) return interruptSignal;
+    try { if (fs.existsSync(STOP_MARKER)) interruptSignal = 'STOP'; } catch { /* absent */ }
+    return interruptSignal;
+}
+
+function handleInterruptSignal(signal) {
+    if (interruptSignal) return;
+    interruptSignal = signal;
+    if (currentStage) {
+        killStageGroup(currentStage.pid, 'SIGTERM');
+        // A stage that ignores SIGTERM must not hold the lock forever.
+        setTimeout(() => { if (currentStage) killStageGroup(currentStage.pid, 'SIGKILL'); }, 10000).unref();
+    } else if (typeof interruptFinisher === 'function') {
+        interruptFinisher();
+    }
+}
+let interruptFinisher = null;
 
 // Shell convention: a child killed by signal N makes `sh -c` exit 128+N. These four are the
 // ones a gate run actually meets: Ctrl-C, a Node heap abort, the OOM killer, a CI cancel.
@@ -1068,7 +1213,302 @@ function testPassed(test, testCmd) {
 
 // ── Main ────────────────────────────────────────────────────────────
 
+// ── Receipts and project reuse ──────────────────────────────────────
+//
+// A test run leaves a receipt: what ran, against which exact tree, with what result. `verify-receipt`
+// and the PR helper read it. Per-project results are also kept in a history that decides whether a
+// later run may reuse a project's last passing result. Every rule is in _lib/gate-receipt.js; this
+// is the shell around it (clock, git, files, console).
+
+const receiptRel = () => path.relative(PROJECT_ROOT, receipt.receiptPath(PROJECT_ROOT)).split(path.sep).join('/');
+const readProjectText = (rel) => { try { return fs.readFileSync(path.join(PROJECT_ROOT, rel), 'utf8'); } catch { return null; } };
+
+function safeWriteReceipt(r) {
+    try { receipt.writeReceipt(PROJECT_ROOT, r); } catch (error) {
+        console.log(`[GATE] Warning: could not write the gate receipt: ${error.message}`);
+    }
+}
+
+/** Create the `running` receipt (after the lock is held, before the build). */
+function startReceipt(run, { filter, commands, changedHonored, now }) {
+    const snapshot = receipt.treeSnapshot(PROJECT_ROOT);
+    const configFile = receipt.readGateConfigFile(PROJECT_ROOT);
+    const head = receipt.headSha(PROJECT_ROOT);
+    const startedAt = new Date(now).toISOString();
+    run.startSnapshot = snapshot;
+    run.engine = receipt.engineIdentity(PROJECT_ROOT);
+    run.configHash = configFile.hash;
+    run.rel = receiptRel();
+    run.receipt = {
+        schema: receipt.RECEIPT_SCHEMA,
+        id: require('crypto').createHash('sha256').update(`${startedAt}\0${process.pid}\0${head}`).digest('hex').slice(0, 12),
+        status: 'running', exitCode: null,
+        mode: PARSED.full ? 'full' : 'normal', changedOnly: changedHonored,
+        head, treeHashStart: snapshot.ok ? snapshot.hash : null, treeHashEnd: null,
+        engine: run.engine, configHash: run.configHash, filter,
+        commands, startedAt, endedAt: null,
+        build: { status: 'pending', reused: false }, projects: [],
+    };
+    safeWriteReceipt(run.receipt);
+    return snapshot;
+}
+
+/**
+ * Close the receipt: re-hash the tree (a run during which it changed is `invalid` and proves nothing),
+ * save the buffered per-project history with that verdict, and write the final receipt.
+ *
+ * @returns {{overall:boolean, invalid:boolean}} `overall` is false for an invalid run when receipts are active
+ */
+function settleReceipt(run, { overall, interrupted = false, exitCode, by }) {
+    const r = run.receipt;
+    if (!r) return { overall, invalid: false };
+    const start = run.startSnapshot;
+    const end = start && start.ok ? receipt.treeSnapshot(PROJECT_ROOT) : { ok: false, reason: 'no start hash' };
+    r.treeHashEnd = end.ok ? end.hash : null;
+    let invalid = false;
+    if (start && start.ok) {
+        if (!end.ok) {
+            invalid = true;
+            console.log(`[GATE] the tree hash could not be computed at the end of the run (${end.reason}); this run proves nothing`);
+        } else if (start.hash !== end.hash) {
+            invalid = true;
+            console.log(`[GATE] the tree changed during the run (${receipt.short(start.hash)} → ${receipt.short(end.hash)}); this run proves nothing`);
+        }
+    }
+    const finalOverall = overall && !(invalid && run.active);
+    for (const entry of r.projects) if (entry.status === 'pending') entry.status = 'not-run';
+    if (r.build && r.build.status === 'pending') r.build.status = 'not-run';
+    const byName = new Map();
+    for (const record of run.records) byName.set(record.name, [...(byName.get(record.name) || []), record]);
+    for (const [name, records] of byName) {
+        try {
+            let history = receipt.readHistory(PROJECT_ROOT, name);
+            for (const record of records) history = receipt.appendRecord(history, invalid ? { ...record, status: 'invalid' } : record);
+            receipt.writeHistory(PROJECT_ROOT, name, history);
+        } catch (error) { console.log(`[GATE] Warning: could not save receipt history for ${name}: ${error.message}`); }
+    }
+    r.status = interrupted ? 'interrupted' : (invalid ? 'invalid' : (finalOverall ? 'passed' : 'failed'));
+    if (interrupted && by) r.interruptedBy = by;
+    r.exitCode = exitCode !== undefined ? exitCode : (finalOverall ? 0 : 1);
+    r.endedAt = new Date().toISOString();
+    safeWriteReceipt(r);
+    return { overall: finalOverall, invalid };
+}
+
+/** The project source files the static scan reads: the project's own directory, minus bin/obj. */
+function projectSourceFiles(project, snapshot) {
+    if (!project.path || !/\.(?:cs|fs|vb)proj$/i.test(project.path)) return [];
+    const dir = project.path.includes('/') ? project.path.slice(0, project.path.lastIndexOf('/')) : '';
+    const prefix = dir === '' ? '' : `${dir}/`;
+    const files = [];
+    for (const rel of snapshot.entries.keys()) {
+        if (!rel.startsWith(prefix) || !/\.(?:cs|fs|vb)$/i.test(rel)) continue;
+        const rest = rel.slice(prefix.length);
+        if (rest.startsWith('bin/') || rest.startsWith('obj/')) continue;
+        const text = readProjectText(rel);
+        if (text !== null) files.push({ path: rel, text });
+    }
+    return files;
+}
+
+/**
+ * Decide, for every configured project and for the build, run or reuse. Nothing here runs anything.
+ * `now` is read once by the caller; an unknown anywhere means RUN.
+ */
+function planReuse({ projects, snapshot, filter, mode, now, settings, engine, configHash, buildDisplay, skipBuild, ci }) {
+    const plans = new Map();
+    const meta = { engine, configHash, filter, mode };
+    for (const project of projects) {
+        let closure; let hits = [];
+        if (!snapshot.ok) closure = { known: false, reason: `tree hash unavailable: ${snapshot.reason}` };
+        else if (!engine) closure = { known: false, reason: 'the gate engine identity could not be computed' };
+        else {
+            closure = receipt.projectClosure({ project, snapshot, readText: readProjectText, meta });
+            if (closure.known && project.reuse) hits = receipt.scanStaticReads(projectSourceFiles(project, snapshot));
+        }
+        // CI runs everything: a result from an earlier run is never a substitute there.
+        const decision = ci ? { reuse: false, reason: 'CI runs everything' } : receipt.decideReuse({
+            project, command: project.display, closureHash: closure.known ? closure.hash : null, closureReason: closure.reason,
+            filter, mode, now, history: closure.known ? receipt.readHistory(PROJECT_ROOT, project.name) : [], staticScan: hits, config: settings,
+        });
+        plans.set(project.name, { closure, decision });
+    }
+    let build = { closure: { known: false, reason: 'no projects' }, decision: { reuse: false, reason: 'not computed' } };
+    if (projects.length && snapshot.ok && engine) {
+        const closure = receipt.buildClosure({
+            projectClosures: projects.map(p => plans.get(p.name).closure), snapshot, readText: readProjectText, meta, buildDisplay,
+        });
+        const allReused = projects.every(p => plans.get(p.name).decision.reuse);
+        let decision;
+        if (skipBuild) decision = { reuse: false, reason: '--no-build was given' };
+        else if (ci) decision = { reuse: false, reason: 'CI runs everything' };
+        else if (!allReused) decision = { reuse: false, reason: 'a project has to run, so the build has to run' };
+        else {
+            decision = receipt.decideReuse({
+                project: { name: receipt.BUILD_HISTORY, reuse: true, inputs: [] }, command: buildDisplay,
+                closureHash: closure.known ? closure.hash : null, closureReason: closure.reason, filter: null, mode, now,
+                history: closure.known ? receipt.readHistory(PROJECT_ROOT, receipt.BUILD_HISTORY) : [], staticScan: [], config: settings,
+            });
+        }
+        build = { closure, decision };
+    }
+    return { plans, build };
+}
+
+/**
+ * The per-project test leg: every configured project runs for real or is validly reused. A failed
+ * project does not stop the others (their passes stay reusable); a stop request does.
+ *
+ * @returns {Promise<{test:object, log:string}>} `test` has the same shape as the single-command leg
+ */
+async function runProjectTests({ projects, plans, run, mode, filter, limit, interrupted }) {
+    let log = '';
+    const r = run.receipt;
+    const results = [];
+    const total = { passed: 0, failed: 0, skipped: 0, total: 0, failures: [], deadProjects: 0, errorCount: 0 };
+    let killedBy = null; let timedOut = false; let zeroCollected = false; let firstBadExit = 0;
+    const entryOf = (name) => (r ? r.projects.find(e => e.name === name) : null);
+    for (const project of projects) {
+        if (interrupted()) break;
+        const plan = plans.get(project.name);
+        const entry = entryOf(project.name);
+        const decision = plan.decision;
+        if (decision.reuse) {
+            const from = decision.from;
+            const line = `[GATE] ${project.name}: reused from receipt ${receipt.short(from.id)} (${from.passed} passed, ${from.skipped} skipped, ran ${from.ranAt})`;
+            console.log(line); log += `${line}\n`;
+            try { receipt.writeHistory(PROJECT_ROOT, project.name, receipt.bumpReuse(receipt.readHistory(PROJECT_ROOT, project.name), from.id)); } catch { /* the count is a refresh guard only */ }
+            Object.assign(entry || {}, { status: 'passed', reused: true, fromReceipt: from.id, closureHash: plan.closure.hash, passed: from.passed, failed: 0, skipped: from.skipped, total: from.total, ranAt: from.ranAt });
+            total.passed += from.passed; total.skipped += from.skipped; total.total += from.total;
+            results.push({ name: project.name, status: 'passed', reused: true, passed: from.passed, failed: 0, skipped: from.skipped, total: from.total });
+            continue;
+        }
+        const reasonLine = `[GATE] ${project.name}: running (${decision.reason})`;
+        console.log(reasonLine); log += `${reasonLine}\n`;
+        console.log(`[GATE] Testing ${project.name}... (${project.display})`);
+        log += `\n--- Tests: ${project.name} ---\n`;
+        const ranAt = new Date().toISOString();
+        const result = await runStage(project.argv ? { argv: project.argv } : project.command, PROJECT_ROOT, project.timeout || limit.timeoutMs);
+        const combined = `${result.output}\n${result.stderr}`;
+        log += `${combined}\n`;
+        const parsed = parseTestOutput(combined, result.exitCode);
+        parsed.zeroCollected = isZeroCollected(project.display, result.exitCode, parsed.total);
+        parsed.succeeded = testPassed({ succeeded: parsed.succeeded, total: parsed.total, exitCode: result.exitCode }, project.display);
+        const killed = parsed.succeeded ? null : killSignal(result);
+        const stopped = Boolean(result.stopped) || (interrupted() && !parsed.succeeded);
+        const status = parsed.succeeded ? 'passed' : (stopped || killed ? 'interrupted' : 'failed');
+        const word = parsed.succeeded ? 'PASSED' : stopped ? 'INTERRUPTED (stop requested)' : killed ? `KILLED (${killed})`
+            : result.timedOut ? `TIMED OUT after ${formatTimeout(project.timeout || limit.timeoutMs)}` : parsed.zeroCollected ? 'FAILED (0 tests collected)' : 'FAILED';
+        const doneLine = `[GATE] ${project.name}: ${word} (${parsed.passed} passed, ${parsed.failed} failed, ${parsed.skipped} skipped)`;
+        console.log(doneLine); log += `${doneLine}\n`;
+        if (killed && !stopped) { console.log(killNote(project.name, killed)); log += `${killNote(project.name, killed)}\n`; }
+        if (!parsed.succeeded && firstBadExit === 0) firstBadExit = result.exitCode || 1;
+        if (killed && !killedBy) killedBy = killed;
+        if (result.timedOut) timedOut = true;
+        if (parsed.zeroCollected) zeroCollected = true;
+        for (const key of ['passed', 'failed', 'skipped', 'total', 'deadProjects', 'errorCount']) total[key] += parsed[key];
+        for (const failure of parsed.failures) total.failures.push({ name: `${project.name}: ${failure.name}` });
+        if (result.stopped) interruptSignal = interruptSignal || 'STOP';
+        const record = { name: project.name, status, closureHash: plan.closure.known ? plan.closure.hash : null, passed: parsed.passed, failed: parsed.failed, skipped: parsed.skipped, total: parsed.total, ranAt };
+        Object.assign(entry || {}, { status, reused: false, closureHash: record.closureHash, passed: parsed.passed, failed: parsed.failed, skipped: parsed.skipped, total: parsed.total, ranAt });
+        if (record.closureHash && r) run.records.push({ id: r.id, ...record, filter, mode, command: project.display, exitCode: result.exitCode });
+        results.push({ name: project.name, status, reused: false, passed: parsed.passed, failed: parsed.failed, skipped: parsed.skipped, total: parsed.total });
+        if (result.stopped) break;
+    }
+    const allPassed = results.length === projects.length && results.every(x => x.status === 'passed');
+    const test = {
+        ...total, succeeded: allPassed && total.deadProjects === 0 && total.errorCount === 0,
+        exitCode: allPassed ? 0 : (firstBadExit || 1), command: projects.map(p => `${p.name}: ${p.display}`).join(' ; '),
+        timestamp: new Date().toISOString(), zeroCollected, projects: results,
+        ...(timedOut ? { timedOut: true, timeoutMs: limit.timeoutMs, timeoutMessage: `TIMED OUT after ${formatTimeout(limit.timeoutMs)}` } : {}),
+        ...(killedBy ? { killedBy } : {}),
+    };
+    return { test, log };
+}
+
+/** `gate.js verify-receipt [--mode full] [--json]` — never takes the lock, never builds. */
+function runVerifyReceipt() {
+    const mode = PARSED.mode;
+    const verdict = receipt.verifyReceiptForRoot({ root: PROJECT_ROOT, mode });
+    if (PARSED.json) {
+        console.log(JSON.stringify({ ok: verdict.ok, reasons: verdict.reasons, receipt: verdict.receipt }, null, 2));
+    } else if (verdict.ok) {
+        const r = verdict.receipt;
+        const reused = (r.projects || []).filter(p => p.reused).length;
+        console.log(`[GATE] verify-receipt (mode ${mode}): OK — receipt ${r.id || '(no id)'} covers HEAD ${receipt.short(r.head)} and tree ${receipt.short(r.treeHashStart)}` +
+            ` (${(r.projects || []).length} project(s), ${reused} reused; receipt mode ${r.mode}).`);
+    } else {
+        console.log(`[GATE] verify-receipt (mode ${mode}): NOT VERIFIED`);
+        for (const reason of verdict.reasons) console.log(`  - ${reason.message}`);
+        console.log(`Fix: run: ${receipt.fixCommand()}`);
+    }
+    process.exit(verdict.ok ? 0 : 1);
+}
+
+function sleepMs(ms) { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); }
+
+/**
+ * `gate.js stop` — ask the running gate to stop and report whether the lock went away.
+ * Windows: a stop-request file the owned-process bridge watches (the supervisor kills the job and
+ * writes its tree proof; nothing here claims a stopped tree without that proof). POSIX: SIGTERM to
+ * the recorded gate PID, then to the recorded stage if the gate has not let go.
+ */
+function runStop() {
+    let text;
+    try { text = fs.readFileSync(LOCK_FILE, 'utf-8'); } catch (error) {
+        if (error.code === 'ENOENT') { console.log('[GATE] stop: no gate is running (no lock file).'); process.exit(0); }
+        console.log(`[GATE] stop: still held: the lock file is unreadable (${error.code || error.message}).`);
+        process.exit(1);
+    }
+    let lock;
+    try { lock = JSON.parse(text); } catch { lock = null; }
+    const heldReason = () => {
+        try { const info = require('./build-lock-recovery').inspectGateLock({ projectRoot: PROJECT_ROOT }); return `${info.status} / ${info.reason || 'ok'}`; } catch { return 'unknown'; }
+    };
+    if (!lock || typeof lock !== 'object' || !Number.isInteger(lock.pid) || lock.pid <= 0) {
+        console.log(`[GATE] stop: still held: the lock has no owner I can signal (${heldReason()}).`);
+        process.exit(1);
+    }
+    if (!isProcessAlive(lock.pid)) {
+        console.log(`[GATE] stop: the gate that held the lock (PID ${lock.pid}) is not running. still held: ${heldReason()}. ` +
+            'Use the lock recovery helper (build-lock-recovery.js) once its evidence is verified; this command never removes a lock.');
+        process.exit(1);
+    }
+    const lockGone = () => {
+        try { return fs.readFileSync(LOCK_FILE, 'utf-8') !== text; } catch (error) { return error.code === 'ENOENT'; }
+    };
+    try { fs.writeFileSync(STOP_MARKER, JSON.stringify({ requestedBy: process.pid, pid: lock.pid })); } catch { /* the signal / request file still work */ }
+    if (process.platform === 'win32') {
+        if (typeof lock.stopRequestPath === 'string' && lock.stopRequestPath) {
+            try { fs.writeFileSync(lock.stopRequestPath, JSON.stringify({ requestedBy: process.pid })); } catch (error) {
+                console.log(`[GATE] stop: could not write the stop request (${error.code || error.message}); the gate will stop at its next stage boundary.`);
+            }
+        }
+    } else {
+        try { process.kill(lock.pid, 'SIGTERM'); } catch { /* checked below */ }
+    }
+    let escalated = false;
+    for (let waited = 0; waited < 30000; waited += 250) {
+        if (lockGone()) { try { fs.rmSync(STOP_MARKER, { force: true }); } catch { /* best effort */ } console.log('[GATE] stop: stopped (the gate released its lock).'); process.exit(0); }
+        if (!escalated && waited >= 10000 && process.platform !== 'win32' && Number.isInteger(lock.childPid) && lock.childPid > 0) {
+            escalated = true;
+            killStageGroup(lock.childPid, 'SIGTERM');
+        }
+        sleepMs(250);
+    }
+    console.log(`[GATE] stop: still held: ${heldReason()}. The stop request stays in place; the gate will stop at its next stage boundary.`);
+    process.exit(1);
+}
+
 async function main() {
+    if (!PARSED.ok) {
+        console.error(`[GATE] ${PARSED.error}\n\n${receipt.USAGE}`);
+        process.exit(2);
+    }
+    if (PARSED.help) { console.log(receipt.USAGE); process.exit(0); }
+    if (PARSED.command === 'verify-receipt') return runVerifyReceipt();
+    if (PARSED.command === 'stop') return runStop();
+
     const startedAt = Date.now();
     ensureDirs();
 
@@ -1076,10 +1516,12 @@ async function main() {
         console.error('[GATE] Another gate is already running. Wait for it to finish.');
         process.exit(3);
     }
+    // A stop request from before this run was for a run that has ended.
+    try { fs.rmSync(STOP_MARKER, { force: true }); } catch { /* best effort */ }
 
     // A gate that is itself killed never reaches its final summary, and readers (the telemetry
     // logger, status) would then report the PREVIOUS run's verdict. Mark the run as in progress
-    // up front, and as killed from the signal handlers; SIGKILL leaves the in-progress marker.
+    // up front, and as killed from the interrupt path; SIGKILL leaves the in-progress marker.
     const runMarker = (extra) => {
         try {
             writeSummary(PROJECT_ROOT, {
@@ -1090,9 +1532,30 @@ async function main() {
     };
     runMarker({ inProgress: true, pid: process.pid });
 
-    process.on('exit', releaseLock);
-    process.on('SIGINT', () => { runMarker({ killed: 'SIGINT' }); releaseLock(); process.exit(130); });
-    process.on('SIGTERM', () => { runMarker({ killed: 'SIGTERM' }); releaseLock(); process.exit(143); });
+    // The receipt context of this run (test/full runs only); see startReceipt().
+    const run = { receipt: null, startSnapshot: null, records: [], active: false, rel: null };
+
+    // Ends the run as interrupted: the receipt says so (and is never a pass), finished projects keep
+    // their results, and the lock is released only if its lease is clean.
+    const finishInterrupted = () => {
+        const signal = interruptSignal === 'STOP' ? 'SIGTERM' : interruptSignal;
+        const code = signal === 'SIGINT' ? 130 : 143;
+        settleReceipt(run, { overall: false, interrupted: true, exitCode: code, by: interruptSignal });
+        runMarker({ killed: signal, ...(run.rel ? { receipt: run.rel } : {}) });
+        try { fs.rmSync(STOP_MARKER, { force: true }); } catch { /* best effort */ }
+        releaseLock();
+        process.exit(code);
+    };
+    interruptFinisher = finishInterrupted;
+    // Killing the gate must not orphan its stage, and a stage must not outlive the lock that guarded it.
+    process.on('exit', () => { if (currentStage) killStageGroup(currentStage.pid, 'SIGKILL'); releaseLock(); });
+    process.on('SIGINT', () => handleInterruptSignal('SIGINT'));
+    process.on('SIGTERM', () => handleInterruptSignal('SIGTERM'));
+    /** After each stage: honor a stop request, whichever way it arrived. */
+    const stopIfRequested = (result) => {
+        if (result && result.stopped) interruptSignal = interruptSignal || 'STOP';
+        if (interruptRequested()) finishInterrupted();
+    };
 
     const config = loadConfig();
     console.log(`[GATE] Detected stack: ${config.stack || 'configured'}`);
@@ -1117,7 +1580,8 @@ async function main() {
         const e2eDisplay = describeLeg(e2e);
         console.log(`[GATE] E2E... (${e2eDisplay})`);
         let e2eLog = `E2E gate started at ${new Date().toISOString()}\nStack: ${config.stack || 'configured'}\n${'='.repeat(60)}\n--- E2E ---\n`;
-        const e2eResult = runCommand(legRunnable(e2e), PROJECT_ROOT, legTimeout(e2e));
+        const e2eResult = await runStage(legRunnable(e2e), PROJECT_ROOT, legTimeout(e2e));
+        stopIfRequested(e2eResult);
         e2eLog += e2eResult.output + '\n' + e2eResult.stderr + '\n';
         const parsed = parseTestOutput(e2eResult.output + '\n' + e2eResult.stderr, e2eResult.exitCode);
         // Same false-green teeth as the unit leg: a runner that exits 0 having
@@ -1147,14 +1611,60 @@ async function main() {
         process.exit(succeeded ? 0 : 1);
     }
 
+    // ── Test-leg shape, receipts and reuse planning ─────────────────
+    const settings = receipt.receiptsConfig(config);
+    for (const warning of settings.warnings) console.log(`[GATE] Warning: ${warning}`);
+    const testFilter = config.test && typeof config.test.filter === 'string' && config.test.filter !== '' ? config.test.filter : null;
+    const projectSet = runTests ? receipt.normalizeProjects(config.test, testFilter) : { projects: [], errors: [] };
+    if (projectSet.errors.length) {
+        for (const error of projectSet.errors) console.error(`[GATE] Config error: ${error}`);
+        runMarker({ error: 'invalid test.projects configuration' });
+        process.exit(2);
+    }
+    const projects = projectSet.projects;
+    const projectsMode = projects.length > 0;
+    const legMode = Boolean(config.test && config.test.argv) || Boolean(config.test && Array.isArray(config.test.legs));
+    // `--changed` only means something for a vitest-style string command; anywhere else it is said so
+    // and the whole suite runs, and the run is labelled for what it did.
+    const changedHonored = runTests && changedOnly && !legMode && !projectsMode;
+    if (runTests && changedOnly && !changedHonored) {
+        console.log('[GATE] --changed is not supported for this test leg (vitest string commands only); running the whole suite');
+    }
+    if (projectsMode && (config.test.command || config.test.argv || config.test.legs)) {
+        console.log('[GATE] Warning: test.projects is set, so test.command / test.argv / test.legs are ignored');
+    }
     const mode = skipBuild
-        ? (changedOnly ? 'TEST (changed only)' : 'TEST ONLY')
+        ? (changedHonored ? 'TEST (changed only)' : 'TEST ONLY')
         : (runTests ? 'BUILD + TEST' : 'BUILD');
+    run.active = runTests && (projectsMode || PARSED.full || (config.receipts !== undefined && typeof config.receipts === 'object' && config.receipts !== null));
     let fullLog = `${mode} gate started at ${new Date().toISOString()}\nStack: ${config.stack || 'configured'}\n${'='.repeat(60)}\n`;
+
+    // The clock is read once here; every reuse decision below takes it as a parameter.
+    const nowMs = Date.now();
+    const runMode = PARSED.full ? 'full' : 'normal';
+    let reusePlan = { plans: new Map(), build: { closure: { known: false }, decision: { reuse: false, reason: 'not planned' } } };
+    if (runTests) {
+        const snapshot = startReceipt(run, {
+            filter: testFilter, changedHonored, now: nowMs,
+            commands: { build: describeLeg(config.build), test: projectsMode ? projects.map(p => `${p.name}: ${p.display}`) : (legMode ? describeLeg(config.test) : config.test.command) },
+        });
+        run.receipt.projects = projects.map(p => ({ name: p.name, status: 'pending' }));
+        if (!snapshot.ok && run.active) {
+            console.log(`[GATE] Receipt: the tree hash is unavailable (${snapshot.reason}); reuse is off and this run cannot be verified`);
+        }
+        if (projectsMode) {
+            reusePlan = planReuse({
+                projects, snapshot, filter: testFilter, mode: runMode, now: nowMs, settings, engine: run.engine, configHash: run.configHash,
+                buildDisplay: describeLeg(config.build), skipBuild, ci: runningInCi(),
+            });
+        }
+        safeWriteReceipt(run.receipt);
+    }
 
     // ── Step 1: Build ───────────────────────────────────────────────
 
     let build;
+    const buildReuse = reusePlan.build.decision;
     if (skipBuild) {
         console.log('[GATE] Build: SKIPPED (--no-build)');
         fullLog += '\n--- Build SKIPPED (--no-build) ---\n';
@@ -1171,12 +1681,25 @@ async function main() {
             path.join(GATE_DIR, '_latest-build.json'),
             JSON.stringify(build, null, 2)
         );
+        if (run.receipt) run.receipt.build = { status: 'skipped', reused: false };
+    } else if (buildReuse.reuse) {
+        const from = buildReuse.from;
+        const line = `[GATE] Build: SKIPPED — every project is reused and the build inputs are unchanged since receipt ${receipt.short(from.id)} (ran ${from.ranAt})`;
+        console.log(line);
+        fullLog += `\n--- Build SKIPPED (reused) ---\n${line}\n`;
+        build = {
+            succeeded: true, errors: [], warnings: [], exitCode: 0, command: '(reused)', timestamp: new Date().toISOString(), skipped: true, reused: true,
+        };
+        fs.writeFileSync(path.join(GATE_DIR, '_latest-build.json'), JSON.stringify(build, null, 2));
+        try { receipt.writeHistory(PROJECT_ROOT, receipt.BUILD_HISTORY, receipt.bumpReuse(receipt.readHistory(PROJECT_ROOT, receipt.BUILD_HISTORY), from.id)); } catch { /* refresh guard only */ }
+        run.receipt.build = { status: 'passed', reused: true, fromReceipt: from.id, closureHash: reusePlan.build.closure.hash, ranAt: from.ranAt };
     } else {
         const buildDisplay = describeLeg(config.build);
         console.log(`[GATE] Building... (${buildDisplay})`);
         fullLog += '\n--- Build ---\n';
 
-        const buildResult = runCommand(legRunnable(config.build), PROJECT_ROOT, legTimeout(config.build));
+        const buildResult = await runStage(legRunnable(config.build), PROJECT_ROOT, legTimeout(config.build));
+        stopIfRequested(buildResult);
         const buildCombined = buildResult.output + '\n' + buildResult.stderr;
         fullLog += buildCombined + '\n';
 
@@ -1193,6 +1716,13 @@ async function main() {
             JSON.stringify(build, null, 2)
         );
 
+        if (run.receipt) {
+            const buildStatus0 = build.succeeded ? 'passed' : (buildKilled ? 'interrupted' : 'failed');
+            run.receipt.build = { status: buildStatus0, reused: false, closureHash: reusePlan.build.closure.known ? reusePlan.build.closure.hash : null };
+            if (reusePlan.build.closure.known) {
+                run.records.push({ id: run.receipt.id, name: receipt.BUILD_HISTORY, status: buildStatus0, closureHash: reusePlan.build.closure.hash, filter: null, mode: runMode, command: buildDisplay, ranAt: new Date().toISOString(), exitCode: buildResult.exitCode });
+            }
+        }
         const buildStatus = build.succeeded ? 'PASSED'
             : (buildKilled ? `KILLED (${buildKilled})` : (build.timedOut ? `TIMED OUT after ${formatTimeout(legTimeout(config.build))}` : 'FAILED'));
         console.log(`[GATE] Build: ${buildStatus} (${build.errors.length} errors, ${build.warnings.length} warnings)`);
@@ -1214,11 +1744,12 @@ async function main() {
             // --passWithNoTests prevents false-failure when --changed matches zero files (e.g., docs-only wave).
             // Argv-mode legs (e.g. dotnet, F31) don't support this string-append
             // transform — it's vitest-specific — so they run as-is.
-            const legMode = Boolean(config.test.argv) || Array.isArray(config.test.legs);
-            const testCmd = legMode
-                ? describeLeg(config.test)
-                : (changedOnly ? `${config.test.command} -- --changed --passWithNoTests` : config.test.command);
-            console.log(`[GATE] Testing... (${testCmd})`);
+            const testCmd = projectsMode
+                ? projects.map(p => p.display).join(' ; ')
+                : legMode
+                    ? describeLeg(config.test)
+                    : (changedHonored ? `${config.test.command} -- --changed --passWithNoTests` : config.test.command);
+            if (!projectsMode) console.log(`[GATE] Testing... (${testCmd})`);
             const limit = resolveTestTimeout(config.test, configFileSetsTestTimeout());
             if (limit.warning) {
                 console.log(`[GATE] Warning: ${limit.warning}`);
@@ -1228,18 +1759,30 @@ async function main() {
             console.log(limitLine);
             fullLog += `\n--- Tests ---\n${limitLine}\n`;
 
-            const testRunnable = legMode ? legRunnable(config.test) : testCmd;
-            const testResult = runCommand(testRunnable, PROJECT_ROOT, limit.timeoutMs);
-            const testCombined = testResult.output + '\n' + testResult.stderr;
-            fullLog += testCombined + '\n';
-
-            test = parseTestOutput(testCombined, testResult.exitCode);
+            let testResult;
+            if (projectsMode) {
+                const projectRun = await runProjectTests({
+                    projects, plans: reusePlan.plans, run, mode: runMode, filter: testFilter, limit,
+                    interrupted: () => Boolean(interruptRequested()),
+                });
+                fullLog += projectRun.log;
+                testResult = { exitCode: projectRun.test.exitCode, output: '', stderr: '', timedOut: Boolean(projectRun.test.timedOut), signal: null };
+                test = projectRun.test;
+            } else {
+                const testRunnable = legMode ? legRunnable(config.test) : testCmd;
+                testResult = await runStage(testRunnable, PROJECT_ROOT, limit.timeoutMs);
+                stopIfRequested(testResult);
+                const testCombined = testResult.output + '\n' + testResult.stderr;
+                fullLog += testCombined + '\n';
+                test = parseTestOutput(testCombined, testResult.exitCode);
+            }
+            if (projectsMode) stopIfRequested(null);
             test.exitCode = testResult.exitCode;
             test.command = testCmd;
             test.timestamp = new Date().toISOString();
 
             // F1: false-green guard — see isZeroCollected().
-            test.zeroCollected = isZeroCollected(testCmd, testResult.exitCode, test.total);
+            if (!projectsMode) test.zeroCollected = isZeroCollected(testCmd, testResult.exitCode, test.total);
             // C11/F1 teeth: 0-collected is a FAIL, not a warn. Override the parsed
             // verdict so `overall` (build && test.succeeded) goes RED.
             test.succeeded = testPassed({ succeeded: test.succeeded, total: test.total, exitCode: testResult.exitCode }, testCmd);
@@ -1273,7 +1816,7 @@ async function main() {
                 fullLog += `\n${warn}\n`;
             }
 
-            const testKilled = test.succeeded ? null : killSignal(testResult);
+            const testKilled = test.succeeded ? null : (projectsMode ? (test.killedBy || null) : killSignal(testResult));
             if (testKilled) {
                 test.killedBy = testKilled;
                 fs.writeFileSync(path.join(GATE_DIR, '_latest-test.json'), JSON.stringify(test, null, 2));
@@ -1286,6 +1829,12 @@ async function main() {
                         ? 'FAILED (a project collected no tests / reported errors)'
                         : 'FAILED'));
             console.log(`[GATE] Tests: ${testStatus} (${test.passed} passed, ${test.failed} failed, ${test.skipped} skipped)`);
+            if (projectsMode) {
+                const reused = test.projects.filter(x => x.reused).length;
+                const ran = test.projects.length - reused;
+                console.log(`[GATE] Projects: ${ran} ran, ${reused} reused, ${projects.length - test.projects.length} not run`);
+            }
+            if (run.receipt) run.receipt.test = { status: test.succeeded ? 'passed' : (testKilled ? 'interrupted' : 'failed'), passed: test.passed, failed: test.failed, skipped: test.skipped, total: test.total };
             if (testKilled) {
                 console.log(killNote('Tests', testKilled));
                 fullLog += `\n${killNote('Tests', testKilled)}\n`;
@@ -1337,7 +1886,8 @@ async function main() {
             console.log(`[GATE] Linting... (${lintDisplay})`);
             fullLog += '\n--- Lint ---\n';
 
-            const lintResult = runCommand(legRunnable(lintConfig), PROJECT_ROOT, legTimeout(lintConfig));
+            const lintResult = await runStage(legRunnable(lintConfig), PROJECT_ROOT, legTimeout(lintConfig));
+            stopIfRequested(lintResult);
             const lintCombined = lintResult.output + '\n' + lintResult.stderr;
             fullLog += lintCombined + '\n';
 
@@ -1406,7 +1956,8 @@ async function main() {
             console.log(`[GATE] Visual... (${visualDisplay})`);
             fullLog += '\n--- Visual ---\n';
 
-            const visualResult = runCommand(legRunnable(visualConfig), PROJECT_ROOT, legTimeout(visualConfig));
+            const visualResult = await runStage(legRunnable(visualConfig), PROJECT_ROOT, legTimeout(visualConfig));
+            stopIfRequested(visualResult);
             const visualCombined = visualResult.output + '\n' + visualResult.stderr;
             fullLog += visualCombined + '\n';
 
@@ -1452,7 +2003,15 @@ async function main() {
 
     // ── Summary ─────────────────────────────────────────────────────
 
-    const overall = build.succeeded && (!runTests || (test && test.succeeded)) && (!lint || lint.succeeded) && (!visual || visual.succeeded);
+    const overallBeforeReceipt = build.succeeded && (!runTests || (test && test.succeeded)) && (!lint || lint.succeeded) && (!visual || visual.succeeded);
+    if (run.receipt) {
+        if (lint) run.receipt.lint = { status: lint.skipped ? 'skipped' : (lint.succeeded ? 'passed' : 'failed') };
+        if (visual) run.receipt.visual = { status: visual.skippedLeg ? 'skipped' : (visual.succeeded ? 'passed' : 'failed') };
+    }
+    // Closes the receipt: a run during which the tree changed is invalid, and fails the gate when
+    // receipts are in use (a `full` run, configured projects, or a `receipts` block).
+    const settled = settleReceipt(run, { overall: overallBeforeReceipt });
+    const overall = settled.overall;
 
     const summary = {
         timestamp: new Date().toISOString(),
@@ -1463,6 +2022,7 @@ async function main() {
         // to populate gate_run telemetry's duration_ms (the PostToolUse:Bash hook
         // has no timing of its own — see that hook's gate_run branch).
         durationMs: Date.now() - startedAt,
+        ...(run.rel ? { receipt: run.rel } : {}),
         build: {
             succeeded: build.succeeded,
             errorCount: build.errors.length,
@@ -1485,6 +2045,7 @@ async function main() {
             timedOut: !!test.timedOut,
             ...(test.timedOut ? { timeoutMs: test.timeoutMs, timeoutMessage: test.timeoutMessage } : {}),
             ...(test.killedBy ? { killedBy: test.killedBy } : {}),
+            ...(test.projects ? { projects: test.projects, reused: test.projects.filter(x => x.reused).length } : {}),
             failureNames: test.failures.map(f => f.name)
         };
     }
@@ -1519,6 +2080,7 @@ async function main() {
     fs.writeFileSync(logPath, fullLog);
 
     console.log(`[GATE] Log: ${logPath}`);
+    if (run.receipt) console.log(`[GATE] Receipt: ${run.receipt.status} (${run.receipt.mode}, id ${run.receipt.id}) → ${run.rel}`);
     console.log(`[GATE] Overall: ${overall ? 'PASSED' : (summary.killed ? `KILLED (${summary.killed}) — re-run; this is not a verdict on the code` : 'FAILED')}`);
 
     process.exit(overall ? 0 : 1);
@@ -1531,4 +2093,4 @@ if (require.main === module) {
     });
 }
 
-module.exports = { killSignal, killNote, SIGNAL_EXIT_CODES, legTimeout, formatTimeout, DEFAULT_LEG_TIMEOUT_MS, loadConfig, parseBuildOutput, parseTestOutput, isZeroCollected, testPassed, runCommand, describeLeg, legRunnable, resolveTestTimeout, acquireLock, releaseLock, isProcessAlive, STALE_LOCK_MS, DEFAULT_TEST_TIMEOUT_MS, TEST_TIMEOUT_ENV };
+module.exports = { runCommandAsync, runStage, PARSED, killSignal, killNote, SIGNAL_EXIT_CODES, legTimeout, formatTimeout, DEFAULT_LEG_TIMEOUT_MS, loadConfig, parseBuildOutput, parseTestOutput, isZeroCollected, testPassed, runCommand, describeLeg, legRunnable, resolveTestTimeout, acquireLock, releaseLock, isProcessAlive, STALE_LOCK_MS, DEFAULT_TEST_TIMEOUT_MS, TEST_TIMEOUT_ENV };

@@ -2,7 +2,7 @@
 
 Run the memory health pipeline (optional Sonnet extraction, lint, decay report). Suitable for headless automation via `claude -p "/review:memory-health" --model sonnet --allowedTools Bash`.
 
-> **Complementary view:** this command covers *hygiene* (lint + decay). For the *performance/usage* view — cap utilization, usage distribution, prune list, and injection hit-rate — run `node .claude/core/memory-manager.js analytics`.
+> **Complementary view:** this command covers *hygiene* (lint + decay). For the *performance/usage* view — per-category counts, usage distribution, prune list, and injection hit-rate — run `node .claude/core/memory-manager.js analytics`.
 
 ## Telemetry (run first)
 
@@ -41,7 +41,7 @@ node .claude/core/memory-manager.js lint
 Capture the full output. The result is a JSON object. Parse:
 
 - `score`: integer 0–70
-- `checks`: object of 10 check results keyed by name, each `{ count, severity, findings[] }` (a check passes at `count: 0`). `corrected_in_place` flags bodies edited to say CORRECTED/OBSOLETE instead of being superseded; `id_drift` flags ids whose words no longer appear in the body; `schema_drift` flags a memory with neither `description` nor `summary` (startup and recall then show only its id) or an importance off the 1-5 scale; `broken_refs` covers `[[wiki-links]]`, `references[]` and `see_also[]`.
+- `checks`: object of 9 check results keyed by name, each `{ count, severity, findings[] }` (a check passes at `count: 0`). `corrected_in_place` flags bodies edited to say CORRECTED/OBSOLETE instead of being superseded; `id_drift` flags ids whose words no longer appear in the body; `schema_drift` flags a memory with neither `description` nor `summary` (startup and recall then show only its id) or an importance off the 1-5 scale; `broken_refs` covers `[[wiki-links]]`, `references[]` and `see_also[]`.
 
 Track `lint_score` = `score` value.
 
@@ -90,7 +90,7 @@ If any condition above is not met, **persist before reporting:** Write the full 
 | Archive candidates (< 0.1) | {archive_count} |
 
 ### Lint Issues
-{If lint_score is 70, write: "No issues — all 10 checks passed."}
+{If lint_score is 70, write: "No issues — all 9 checks passed."}
 {If lint_score < 70, list each failing check with its description and the points deducted.}
 
 ### Stale Memories

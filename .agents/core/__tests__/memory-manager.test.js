@@ -15,9 +15,6 @@ const require = createRequire(import.meta.url);
 
 const MemoryManager = require('../../../.agents/core/memory-manager');
 const CONSTANTS = require('../../../.agents/core/constants');
-// Constant-relative so a change to the cap OR the near-limit fraction doesn't re-break these tests.
-const CAP = CONSTANTS.MEMORY_FILTERS.MEMORY_MAX_PER_CATEGORY;
-const NEAR_PCT = CONSTANTS.MEMORY_FILTERS.MEMORY_NEAR_LIMIT_PCT;
 const { createTmpDir } = require('./_helpers/tmp-dir');
 const { createGitRepo } = require('./_helpers/git-fixture');
 
@@ -981,7 +978,8 @@ describe('memory-manager', () => {
       writeFixtureMemory('patterns', 'has_broken_ref', {
         updated: new Date().toISOString(),
         usage_count: 1,
-        content: { description: 'Has a dangling ref.', note: 'related: ghost-concept' },
+        // A description keeps the missing_description check quiet, so only broken_refs fires.
+        content: { description: 'Points at a ghost.', note: 'related: ghost-concept' },
         metadata: { confidence: 1.0 }
       });
       const manager = makeManager();
@@ -1161,10 +1159,9 @@ describe('memory-manager', () => {
       expect(result.checks.decay_validation.severity).toBe('info');
     });
 
-    it('lintMemories_categoryBalance_flagsAt80Percent', async () => {
-      // Arrange — fill to exactly the near-limit threshold (matches memory-lint's Math.floor)
-      const threshold = Math.floor(CAP * NEAR_PCT);
-      for (let i = 0; i < threshold; i++) {
+    it('lintMemories_largeCategory_hasNoCategoryBalanceCheck', async () => {
+      // Arrange — a category far past the old 150 cap
+      for (let i = 0; i < 200; i++) {
         writeFixtureMemory('patterns', `pat_${i}`, { content: { x: i } });
       }
       const manager = makeManager();
@@ -1172,12 +1169,9 @@ describe('memory-manager', () => {
       // Act
       const result = await manager.lintMemories();
 
-      // Assert
-      expect(result.checks.category_balance.count).toBe(1);
-      const finding = result.checks.category_balance.findings[0];
-      expect(finding.count).toBe(threshold);
-      expect(finding.threshold).toBe(threshold);
-      expect(finding.limit).toBe(CAP);
+      // Assert — size alone is never a finding: the check no longer exists
+      expect(result.checks).not.toHaveProperty('category_balance');
+      expect(result.total_memories).toBe(200);
     });
 
   }); // lintMemories
@@ -1468,44 +1462,69 @@ describe('memory-manager', () => {
 
   }); // rebuildIndex
 
-  // ── category limits ─────────────────────────────────────────────────────────
+  // ── no per-category cap ─────────────────────────────────────────────────────
 
-  describe('category limits', () => {
+  describe('no per-category cap', () => {
 
-    it('createMemory_atCapPlusOne_returnsNullAndKeepsCountAtCap', async () => {
-      // Arrange — suppress console noise
+    // Writes a memory JSON straight into the tmp store (200 of them through createMemory would be slow and prove less).
+    function seedMemory(category, id, { updated = '2020-01-01T00:00:00.000Z', confidence = 1.0, content = { description: 'seed' } } = {}) {
+      tmp.write(`docs/.output/.memory/${category}/${id.replace(/_/g, '-')}.json`, JSON.stringify({
+        id, type: category.slice(0, -1), category, created: '2020-01-01T00:00:00.000Z', updated,
+        usage_count: 0, content, metadata: { confidence },
+      }, null, 2));
+    }
+
+    it('createMemory_categoryFarPastTheOldCap_stillAcceptsWrites', async () => {
+      // Arrange — 200 live memories in one category (the removed cap was 150), written straight to disk
+      for (let i = 0; i < 200; i++) {
+        seedMemory('patterns', `pat_seed_${i}`, { content: { n: i } });
+      }
+      const manager = makeManager();
       const origLog = console.log;
       console.log = () => {};
 
       try {
-        const manager = makeManager();
+        // Act
+        const created = await manager.createMemory('patterns', 'pat_past_the_old_cap', { n: 200 });
 
-        // Fill exactly to the cap with fresh memories (so pruneStale won't remove any)
-        for (let i = 0; i < CAP; i++) {
-          const result = await manager.createMemory('patterns', `pat_fresh_${i}`, { n: i });
-          expect(result).not.toBeNull();
-        }
-
-        // Act — the cap+1 write
-        const overflow = await manager.createMemory('patterns', 'pat_overflow', { n: CAP });
-
-        // Assert
-        expect(overflow).toBeNull();
-        const count = await manager.getMemoryCount('patterns');
-        expect(count).toBe(CAP);
+        // Assert — written, and none of the seeded memories was pruned to make room
+        expect(created).not.toBeNull();
+        expect(fs.readdirSync(path.join(manager.memoriesDir, 'patterns')).filter(f => f.endsWith('.json'))).toHaveLength(201);
       } finally {
         console.log = origLog;
       }
-    // Writes the full category cap of real memories: 11-12 s alone, 30.18 s under full-suite load; global 30 s unchanged.
-    }, 120_000);
+    }, 60_000);
 
-    it('capEnvOverride_lowersEffectiveCap', async () => {
-      // MP-2.1: MEMORY_MAX_PER_CATEGORY env override changes the effective cap.
-      // The cap is a module-load-time const, so reload the module with the env set.
+    it('createMemory_largeCategoryOfStaleMemories_isNeverAutoPruned', async () => {
+      // Arrange — 200 old, low-confidence memories: exactly what the removed cap-driven auto-prune would have deleted
+      for (let i = 0; i < 200; i++) {
+        seedMemory('patterns', `pat_old_${i}`, { confidence: 0.1, content: { n: i } });
+      }
+      const manager = makeManager();
+      const prune = vi.spyOn(manager, 'pruneStaleMemories');
+      const origLog = console.log;
+      console.log = () => {};
+
+      try {
+        // Act
+        const created = await manager.createMemory('patterns', 'pat_fresh', { n: 1 });
+
+        // Assert — a write never triggers a prune; pruneStaleMemories stays a manual command
+        expect(created).not.toBeNull();
+        expect(prune).not.toHaveBeenCalled();
+        expect(fs.readdirSync(path.join(manager.memoriesDir, 'patterns')).filter(f => f.endsWith('.json'))).toHaveLength(201);
+      } finally {
+        console.log = origLog;
+      }
+    }, 60_000);
+
+    it('createMemory_ignoresTheRetiredCapEnvVar', async () => {
+      // An adopter that raised MEMORY_MAX_PER_CATEGORY (or lowered it) keeps working: the variable is no longer read.
+      // It was a module-load-time constant, so reload the module with the variable set.
       const origLog = console.log;
       console.log = () => {};
       const modPath = require.resolve('../../../.agents/core/memory-manager');
-      const origCap = process.env.MEMORY_MAX_PER_CATEGORY;
+      const orig = process.env.MEMORY_MAX_PER_CATEGORY;
       let reloaded;
       try {
         process.env.MEMORY_MAX_PER_CATEGORY = '2';
@@ -1513,27 +1532,37 @@ describe('memory-manager', () => {
         const ReloadedMM = require('../../../.agents/core/memory-manager');
         // CLAUDE_PROJECT_DIR is already tmp.root (beforeEach)
         reloaded = new ReloadedMM();
-
-        expect(await reloaded.createMemory('patterns', 'cap_a', { n: 1 })).not.toBeNull();
-        expect(await reloaded.createMemory('patterns', 'cap_b', { n: 2 })).not.toBeNull();
-        // 3rd write exceeds the env-lowered cap of 2 → blocked
-        expect(await reloaded.createMemory('patterns', 'cap_c', { n: 3 })).toBeNull();
-        expect(await reloaded.getMemoryCount('patterns')).toBe(2);
+        for (let i = 0; i < 4; i++) {
+          expect(await reloaded.createMemory('patterns', `env_cap_${i}`, { n: i })).not.toBeNull();
+        }
       } finally {
         if (reloaded && reloaded.db) {
           try { reloaded.db.close(); } catch { /* non-fatal */ }
           reloaded.db = null;
         }
-        // Restore env + module cache so later tests see the default-cap module
-        if (origCap === undefined) delete process.env.MEMORY_MAX_PER_CATEGORY;
-        else process.env.MEMORY_MAX_PER_CATEGORY = origCap;
+        if (orig === undefined) delete process.env.MEMORY_MAX_PER_CATEGORY;
+        else process.env.MEMORY_MAX_PER_CATEGORY = orig;
         delete require.cache[modPath];
         require('../../../.agents/core/memory-manager');
         console.log = origLog;
       }
     });
 
-  }); // category limits
+    it('createMemory_existingId_isStillRefusedWithoutOverwrite', async () => {
+      // The collision guard is not a size cap and stays.
+      const origLog = console.log;
+      console.log = () => {};
+      try {
+        const manager = makeManager();
+        expect(await manager.createMemory('patterns', 'dup_id', { n: 1 })).not.toBeNull();
+        expect(await manager.createMemory('patterns', 'dup_id', { n: 2 })).toBeNull();
+        expect(await manager.createMemory('patterns', 'dup_id', { n: 3 }, { overwrite: true })).not.toBeNull();
+      } finally {
+        console.log = origLog;
+      }
+    });
+
+  }); // no per-category cap
 
   // ── generateAnalytics (MP-3.1) ──────────────────────────────────────────────
 
@@ -1546,7 +1575,7 @@ describe('memory-manager', () => {
       );
     }
 
-    it('generateAnalytics_seededStore_returnsCapDecayUsageSections', async () => {
+    it('generateAnalytics_seededStore_returnsCategoryDecayUsageSections', async () => {
       // Arrange — 3 fresh memories (usage_count 0, recent → not stale)
       const manager = makeManager();
       await manager.createMemory('patterns', 'an_a', { description: 'alpha' });
@@ -1556,12 +1585,13 @@ describe('memory-manager', () => {
       // Act
       const a = await manager.generateAnalytics();
 
-      // Assert — (a) cap utilization
-      expect(a.cap).toBe(CAP);
-      expect(a.cap_utilization.patterns.count).toBe(2);
-      expect(a.cap_utilization.patterns.cap).toBe(CAP);
-      expect(a.cap_utilization.patterns.near_limit).toBe(false);
-      expect(a.cap_utilization.constraints.count).toBe(1);
+      // Assert — (a) per-category sizes; there is no cap to report against
+      expect(a.categories.patterns.count).toBe(2);
+      expect(a.categories.patterns.never_used).toBe(2);
+      expect(a.categories.constraints.count).toBe(1);
+      expect(a).not.toHaveProperty('cap');
+      expect(a).not.toHaveProperty('cap_utilization');
+      expect(a.categories.patterns).not.toHaveProperty('near_limit');
       // (b) decay distribution — fresh memories are not stale
       expect(a.decay.total_stale).toBe(0);
       expect(a.decay.total_archive_candidates).toBe(0);
@@ -2193,85 +2223,6 @@ describe('memory-manager', () => {
       expect(res.superseded).toBe(true);
       expect(res.indexStale).toBeUndefined();
       expect(res.warning).toBeUndefined();
-    });
-
-    // ── MEM-6: getMemoryCount counts live memories only ──────────────────────────
-    it('MEM-6_getMemoryCount_excludesSupersededHistory', async () => {
-      const manager = makeManager();
-      await manager.createMemory('patterns', 'mem6_live', { description: 'alpha' });
-      await manager.createMemory('patterns', 'mem6_dead', { description: 'beta' });
-      await manager.createMemory('patterns', 'mem6_repl', { description: 'gamma' });
-
-      expect(await manager.getMemoryCount('patterns')).toBe(3);
-
-      const res = await manager.supersede('patterns', 'mem6_dead', 'mem6_repl');
-      expect(res.superseded).toBe(true);
-
-      // The tombstone file still exists on disk, but the LIVE count drops to 2 —
-      // dead history must not eat into the per-category cap.
-      expect(await manager.getMemoryCount('patterns')).toBe(2);
-      const deadFile = path.join(manager.memoriesDir, 'patterns', 'mem6-dead.json');
-      expect(fs.existsSync(deadFile)).toBe(true); // history preserved
-    });
-
-    // The cheap path skips JSON.parse for a file that never mentions the key. The JSON
-    // files stay the authority, so every shape of `invalid_at` must still count correctly.
-    it('MEM-6_getMemoryCount_invalidAtShapes_countOnlyTombstones', async () => {
-      const manager = makeManager();
-      const dir = path.join(manager.memoriesDir, 'patterns');
-      fs.mkdirSync(dir, { recursive: true });
-      const write = (name, body) => fs.writeFileSync(path.join(dir, name), JSON.stringify(body));
-      write('live-plain.json', { id: 'live-plain', description: 'no tombstone key at all' });
-      write('live-prose.json', { id: 'live-prose', description: 'mentions invalid_at in prose only' });
-      write('live-null.json', { id: 'live-null', invalid_at: null });
-      write('dead-set.json', { id: 'dead-set', invalid_at: '2026-01-01T00:00:00.000Z' });
-      fs.writeFileSync(path.join(dir, 'broken.json'), '{ not json "invalid_at"');
-      fs.writeFileSync(path.join(dir, 'notes.txt'), 'ignored: not a .json file');
-
-      // plain + prose + explicit null are live; the set one is dead; the malformed file is skipped
-      expect(await manager.getMemoryCount('patterns')).toBe(3);
-    });
-
-    it('MEM-6_getMemoryCount_missingCategory_isZero', async () => {
-      expect(await makeManager().getMemoryCount('patterns')).toBe(0);
-    });
-
-    it('MEM-6_createMemory_noPrune_scansTheCategoryOnce', async () => {
-      const manager = makeManager();
-      await manager.createMemory('patterns', 'scan_seed', { description: 'seed' });
-      const spy = vi.spyOn(manager, 'getMemoryCount');
-
-      await manager.createMemory('patterns', 'scan_second', { description: 'second' });
-
-      // Below the prune threshold nothing is deleted, so the first count is still exact.
-      expect(spy).toHaveBeenCalledTimes(1);
-    });
-
-    it('MEM-6_createMemory_overThresholdAndPruneRan_recountsBeforeDecidingTheCap', async () => {
-      const manager = makeManager();
-      vi.spyOn(manager, 'getMemoryCount').mockResolvedValueOnce(500).mockResolvedValueOnce(10);
-      const prune = vi.spyOn(manager, 'pruneStaleMemories').mockResolvedValue(3);
-      vi.spyOn(console, 'log').mockImplementation(() => {});
-
-      const created = await manager.createMemory('patterns', 'scan_after_prune', { description: 'fits now' });
-
-      // The prune freed room, so the fresh count (not the stale 500) decides the cap.
-      expect(prune).toHaveBeenCalledTimes(1);
-      expect(manager.getMemoryCount).toHaveBeenCalledTimes(2);
-      expect(created).not.toBeNull();
-    });
-
-    it('MEM-6_createMemory_overCapAndNothingPruned_refusesWithoutASecondScan', async () => {
-      const manager = makeManager();
-      vi.spyOn(manager, 'getMemoryCount').mockResolvedValue(500);
-      vi.spyOn(manager, 'pruneStaleMemories').mockResolvedValue(0);
-      vi.spyOn(console, 'log').mockImplementation(() => {});
-
-      const created = await manager.createMemory('patterns', 'scan_refused', { description: 'no room' });
-
-      // Nothing was deleted, so the store is unchanged since the first scan.
-      expect(created).toBeNull();
-      expect(manager.getMemoryCount).toHaveBeenCalledTimes(1);
     });
 
     // ── MEM-8: supersede refuses a non-existent successor ─────────────────────────

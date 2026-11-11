@@ -57,10 +57,10 @@ function bootstrap(requestFile) {
   } catch (error) { finish(null, null, error); }
 }
 
-function runOwnedNativeCli(command, args, { cwd, env, input, timeoutMs = 600000, maxBytes = 64 * 1024 * 1024, ownerPid = process.pid, windowsVerbatimArguments = false, evidenceRoot = os.tmpdir() } = {}) {
+function runOwnedNativeCli(command, args, { cwd, env, input, timeoutMs = 600000, maxBytes = 64 * 1024 * 1024, ownerPid = process.pid, windowsVerbatimArguments = false, evidenceRoot = os.tmpdir(), stopRequestPath = null } = {}) {
   return new Promise(resolve => {
-    let directory; let child; let timer; let cleanupTimer;
-    let finished = false; let timedOut = false; let error = null; let cancelled = false;
+    let directory; let child; let timer; let cleanupTimer; let stopTimer;
+    let finished = false; let timedOut = false; let error = null; let cancelled = false; let stopRequested = false;
     let size = 0; let errSize = 0;
     const out = []; const err = [];
     const nonce = randomUUID();
@@ -69,7 +69,7 @@ function runOwnedNativeCli(command, args, { cwd, env, input, timeoutMs = 600000,
     const finish = (status, signal, terminal) => {
       if (finished) return;
       finished = true;
-      clearTimeout(timer); clearTimeout(cleanupTimer);
+      clearTimeout(timer); clearTimeout(cleanupTimer); clearTimeout(stopTimer);
       process.removeListener('exit', onOwnerExit);
       let proof = null; let result = null; let stageAbsent = false;
       if (terminal) {
@@ -99,6 +99,9 @@ function runOwnedNativeCli(command, args, { cwd, env, input, timeoutMs = 600000,
         status, signal: acceptedTimeout ? null : signal,
         stdout: Buffer.concat(out).toString('utf8'), stderr: Buffer.concat(err).toString('utf8'),
         error: acceptedTimeout ? null : error, timedOut: acceptedTimeout, treeConfirmed: Boolean(confirmed),
+        // A requested stop is reported only with the supervisor's nonce-matched tree proof; without it the
+        // existing unconfirmed handling applies and nothing claims the tree is gone.
+        stopped: Boolean(stopRequested && confirmed && expectedCancellation),
         processTree: { nonce, treeConfirmed: confirmed, stageValidated, supervisorClosed: Boolean(terminal), evidenceDirectory: discardEvidence ? null : directory || null },
       };
       if (discardEvidence) {
@@ -143,6 +146,20 @@ function runOwnedNativeCli(command, args, { cwd, env, input, timeoutMs = 600000,
       ], { cwd, env: supervisorEnv, windowsHide: true, shell: false, detached: false });
       process.once('exit', onOwnerExit);
       timer = setTimeout(() => { timedOut = true; cancel(); }, timeoutMs);
+      // Cooperative stop: `gate.js stop` creates this file. The gate that called us is blocked in a
+      // synchronous wait, so this async process is the one that notices it and uses the same cancel()
+      // a timeout uses — the supervisor kills the job and writes the tree proof.
+      if (stopRequestPath) {
+        const pollStop = () => {
+          stopTimer = setTimeout(() => {
+            if (cancelled || finished) return;
+            let present = false;
+            try { present = fs.existsSync(stopRequestPath); } catch { /* treated as absent */ }
+            if (present) { stopRequested = true; cancel(); } else pollStop();
+          }, 250);
+        };
+        pollStop();
+      }
       child.stdout.on('data', data => {
         size += data.length;
         if (size > maxBytes) {
@@ -179,13 +196,19 @@ function runOwnedCommandSync(command, args, options = {}) {
   // The caller knows this evidence root even if the bridge dies before it can
   // return the supervisor's invocation directory. Only empty roots are removed.
   const evidenceRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'native-command-bridge-'));
+  // The path a cooperative stop request is written to. The caller learns it before the bridge
+  // starts, so it can record it where `gate.js stop` will look.
+  const stopRequestPath = path.join(evidenceRoot, 'stop-request.json');
+  if (typeof options.onEvidenceRoot === 'function') {
+    try { options.onEvidenceRoot(evidenceRoot, stopRequestPath); } catch { /* recording the path is advisory */ }
+  }
   // JSON is control data on this private pipe; command output is nested inside
   // it, never interpreted as a control record. No request/credentials on disk.
   let bridge;
   try { bridge = spawnSync(process.execPath, [__filename, '--sync-bridge'], {
     cwd: options.cwd, env: options.env || process.env, windowsHide: true,
     encoding: 'utf8', shell: false,
-    input: JSON.stringify({ command, args, options: { ...options, env: undefined, ownerPid: options.ownerPid || process.pid, evidenceRoot } }),
+    input: JSON.stringify({ command, args, options: { ...options, env: undefined, onEvidenceRoot: undefined, ownerPid: options.ownerPid || process.pid, evidenceRoot, stopRequestPath } }),
     maxBuffer: maxBytes * 12 + 65536,
     // The supervisor has its own stage deadline and cleanup bound. An outer
     // timeout would kill its bridge before it could preserve the tree receipt.

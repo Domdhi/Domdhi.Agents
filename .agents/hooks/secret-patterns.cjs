@@ -386,10 +386,20 @@ function bypassAdvice(findings) {
     }
     return 'If these are generic matches that the USER has reviewed and confirmed are not real secrets, the user (not the agent) may add\n' +
         'betterleaks:allow in a trailing comment on the SAME line (it covers that one secret, never the next line).\n' +
-        'A .betterleaksignore entry is path:rule:line, applies to whole-file scans only, and one token can fire two rules.\n';
+        'A .betterleaksignore entry is path:rule:line, applies to whole-file scans only, and one token can fire two rules.\n' +
+        'For a reviewed value already committed in history (a push blocked by an older commit), the user may instead add the\n' +
+        '"Allow:" line shown above (value-sha256:<hash>, optionally followed by "# reason") to .betterleaksignore in a new commit.\n' +
+        'It pins that one exact value for generic rules anywhere in the push, older commits included, never a location or any other\n' +
+        'value. Write it as UTF-8 (in PowerShell, Add-Content -Encoding utf8). The owner decides; never for a real key.\n';
 }
 
-function formatFindings(findings) {
+/**
+ * @param {object[]} findings
+ * @param {{ valueKeys?: boolean }} [options] valueKeys: print each generic finding's `value-sha256:` entry (its
+ *   `allowKey`, a hash that never reveals the value) as an "Allow:" line. Only the git hooks' block report asks
+ *   for it, where the owner reviews the value; the Write/Edit feedback the agent reads never carries it.
+ */
+function formatFindings(findings, { valueKeys = false } = {}) {
     if (findings.length === 0) return null;
 
     const lines = [
@@ -405,6 +415,7 @@ function formatFindings(findings) {
         lines.push(`  [${f.type}] ${f.name}`);
         lines.push(`    File:  ${f.file}${loc}`);
         lines.push(`    Match: ${f.match}`);
+        if (valueKeys && f.allowKey) lines.push(`    Allow: ${f.allowKey}`);
         lines.push('');
     }
 
@@ -443,7 +454,7 @@ function formatFindings(findings) {
 // two hooks scan whole file contents, which can be larger than a typical
 // hook payload. Env override exists ONLY so tests can shrink the wait for a
 // real spawned-process timeout test without changing production behavior —
-// same pattern as MEMORY_MAX_PER_CATEGORY (static-constants-env-override-at-callsite).
+// same pattern as MEMORY_EXPOSURE_MIN_DAYS (static-constants-env-override-at-callsite).
 const DEFAULT_STDIN_TIMEOUT_MS = parseInt(process.env.SECRET_SCANNER_STDIN_TIMEOUT_MS, 10) || 10000;
 function readStdin({ failClosedOnTimeout = false, timeoutMs = DEFAULT_STDIN_TIMEOUT_MS } = {}) {
     return new Promise((resolve, reject) => {

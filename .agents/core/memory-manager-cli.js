@@ -47,7 +47,7 @@ async function main() {
             const overwrite = args.includes('--overwrite');
             const created = await manager.createMemory(category, id, content, { overwrite });
             if (!created) {
-                console.error(`❌ Create failed: ${category}/${id} already exists (pass --overwrite to replace) or the category is full`);
+                console.error(`❌ Create failed: ${category}/${id} already exists (pass --overwrite to replace)`);
                 process.exit(1);
             }
             break;
@@ -232,11 +232,10 @@ async function main() {
             lines.push('================');
             lines.push('');
 
-            // (a) cap utilization
-            lines.push(`Cap utilization (max ${a.cap}/category):`);
-            for (const [cat, c] of Object.entries(a.cap_utilization)) {
-                const flag = c.near_limit ? '  ⚠ near limit' : '';
-                lines.push(`  ${cat.padEnd(20)} ${String(c.count).padStart(3)}/${a.cap}  (${pct(c.pct_full)})${flag}`);
+            // (a) category sizes (there is no per-category cap)
+            lines.push('Memories per category:');
+            for (const [cat, c] of Object.entries(a.categories)) {
+                lines.push(`  ${cat.padEnd(20)} ${String(c.count).padStart(4)}  (${c.stale_count} stale, ${c.never_used} never surfaced)`);
             }
             lines.push('');
 

@@ -8,7 +8,7 @@
  *
  * Both hand blobs to the engine in as few runs as the size allows (secret-engine.cjs scanFiles: one
  * `betterleaks dir` over a private 0700 staging directory), with the rules of a one-file scan: test files
- * scan named providers only, the allow-marker rule, `.betterleaksignore` fingerprints, archive-signature
+ * scan named providers only, the allow-marker rule, `.betterleaksignore` fingerprints and value-sha256 entries, archive-signature
  * skips failing closed. A file that cannot be staged faithfully is scanned on its own.
  *
  * BLOBS ARE ADDRESSED BY ID, NEVER BY PATH. `git show :<path>` reads `:0:README` as "stage 0 of README", so
@@ -307,6 +307,25 @@ function remoteAdvertised(root, url) {
     return r.stdout.split('\n').map(l => l.split('\t')[0].trim()).filter(x => OBJECT_NAME.test(x));
 }
 
+/**
+ * The `value-sha256:` entries listed by the `.betterleaksignore` of EVERY pushed tip (`<tip>:.betterleaksignore`,
+ * a tag peeled to its commit). A tip whose tree has no such file, or that is not a commit or tag of one, lists
+ * nothing, so the result is empty. Location fingerprints are never taken from here.
+ */
+function tipValueAllows(root, tips) {
+    const unique = [...new Set(tips)];
+    if (!unique.length) return new Set();
+    let common = null;
+    catBatch(root, unique.map(t => `${t}:.betterleaksignore`)).forEach(obj => {
+        const values = new Set();
+        if (obj && !obj.missing && obj.type === 'blob') {
+            for (const entry of engine.parseIgnore(obj.content.toString('utf8'))) if (entry.startsWith('value-sha256:')) values.add(entry);
+        }
+        common = common === null ? values : new Set([...common].filter(v => values.has(v)));
+    });
+    return common || new Set();
+}
+
 /** The body of a tag object: everything after the header's blank line. */
 function tagMessage(content) {
     const text = content.toString('utf8');
@@ -330,7 +349,16 @@ function tagMessage(content) {
  *
  * The ignore list for a blob is the `.betterleaksignore` of the commit that introduced it, and a blob
  * introduced by several commits is ignored only where every one of them lists it. A blob no pushed commit
- * introduces (a tag on a blob, a tree) has no list.
+ * introduces (a tag on a blob, a tree) has no list. That holds for location fingerprints (path:rule:line) and
+ * for `value-sha256:` entries alike.
+ *
+ * REVIEWED VALUES ALREADY IN HISTORY. A `value-sha256:<hex>` entry (one exact value, never a location; see
+ * secret-engine parseIgnore) in the `.betterleaksignore` of the pushed TIP also covers that value in every
+ * blob the push publishes, whichever commit introduced it: the tip is what is being published now, so an
+ * owner who reviews a non-secret that sits in older unpushed commits can pin it without rewriting history.
+ * Several pushed refs: only an entry EVERY tip lists counts (a tip with no list, or a tip that is not a commit
+ * or tag of one, lists nothing). Location fingerprints in the tip list still do not reach older commits, and
+ * nothing ignores a finding in a commit or tag message.
  *
  * @param {string} remote   pre-push's first argument (remote name or URL)
  * @param {string} url      pre-push's second argument (where the push goes); what `ls-remote` is asked
@@ -433,11 +461,21 @@ function scanPush(root, remote, url, updates, { batch = true } = {}) {
         addMessage('tag', tags[i], tagMessage(obj.content));
     });
 
-    // Ignored only where every introducing commit lists it; an object with no introducing commit has no list
-    // (Array.every on an empty list is true, so that case is spelled out).
-    const ignore = (attr, ruleId, line) => {
+    // The reviewed values every pushed tip pins (value-sha256 entries only; see the doc comment).
+    const tipValues = tipValueAllows(root, tips);
+
+    // Ignored only where every introducing commit lists it (its location or its value), or where every pushed tip
+    // pins its value; an object with no introducing commit has no per-commit list (Array.every on an empty list is
+    // true, so that case is spelled out). Messages are never ignored.
+    const ignore = (attr, ruleId, line, f) => {
         const e = info.get(attr);
-        return Boolean(e && !e.message && e.commits.length > 0 && e.commits.every(c => ignoreByCommit.get(c).has(`${e.path}:${ruleId}:${line}`)));
+        if (!e || e.message) return false;
+        const valueKey = f && typeof f.Secret === 'string' && engine.isGenericRule(ruleId) ? engine.valueAllowKey(f.Secret) : null;
+        if (valueKey && tipValues.has(valueKey)) return true;
+        return e.commits.length > 0 && e.commits.every(c => {
+            const list = ignoreByCommit.get(c);
+            return list.has(`${e.path}:${ruleId}:${line}`) || Boolean(valueKey && list.has(valueKey));
+        });
     };
     const results = scanEntries(root, entries, { ignore, batch });
     const label = rel => {
@@ -451,5 +489,5 @@ function scanPush(root, remote, url, updates, { batch = true } = {}) {
 
 module.exports = {
     GitScanError, toplevel, parseRaw, listStaged, catBatch, checkBlobs, readBlobs, scanEntries, scanStaged,
-    parsePushLines, scanPush, remoteAdvertised, typesOf, stagingUnsafe, CHUNK_BYTES,
+    parsePushLines, scanPush, tipValueAllows, remoteAdvertised, typesOf, stagingUnsafe, CHUNK_BYTES,
 };

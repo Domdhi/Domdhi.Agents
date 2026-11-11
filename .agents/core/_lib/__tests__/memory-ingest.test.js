@@ -58,24 +58,24 @@ describe('ingestAgentMemory', () => {
         }
     });
 
-    it('createMemoryReturnsNull_recordsCategoryFullError_andContinuesBatch', async () => {
+    it('createMemoryReturnsNull_recordsAlreadyExistsError_andContinuesBatch', async () => {
         const tmp = createTmpDir({ prefix: 'memory-ingest-' });
         try {
-            tmp.write('full-cat.md', agentMemoryMd({ name: 'full-cat' }));
+            tmp.write('taken.md', agentMemoryMd({ name: 'taken' }));
             tmp.write('other.md', agentMemoryMd({ name: 'other' }));
 
             const created = [];
             const report = await ingestAgentMemory(tmp.root, {
                 readMemory: async () => null,
                 createMemory: async (category, id) => {
-                    if (id === 'full-cat') return null;
+                    if (id === 'taken') return null;
                     created.push(id);
                     return { category, id };
                 },
             });
 
             expect(report.errors).toEqual([
-                { file: expect.stringContaining('full-cat.md'), reason: 'category full (per-category cap reached)' },
+                { file: expect.stringContaining('taken.md'), reason: 'memory already exists (written by another process since the check)' },
             ]);
             expect(created).toEqual(['other']);
             expect(report.ingested).toBe(1);

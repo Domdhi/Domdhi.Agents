@@ -13,6 +13,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 
 const require = createRequire(import.meta.url);
+const crypto = require('node:crypto');
 const engine = require('../../../.agents/hooks/secret-engine.cjs');
 const patterns = require('../../../.agents/hooks/secret-patterns.cjs');
 const binLib = require('../../../.agents/core/_lib/secret-engine-bin');
@@ -420,6 +421,94 @@ describe('ignore file: .betterleaksignore, whole-file scans only', () => {
         expect(names(engine.scanContent(text, rel, { wholeFile: true, ignore: set }))).toEqual([]);
         expect(names(engine.scanContent(text, rel, { wholeFile: true, ignore: () => false }))).toHaveLength(1);
         expect(names(engine.scanContent(text, file, { wholeFile: true, ignore: set }))).toEqual([]);
+    });
+});
+
+describe('ignore file: value-sha256 entries pin one reviewed value, not a location', () => {
+    // A generic match (no provider prefix) built from parts: the shape of a reviewed public key.
+    const VALUE = j('Zk3', 'pQ9xL2mN7vB4cR8tY1wE6', 'uI0oP5aS3dF9gH2jK7lZ4x=');
+    const OTHER = j('Qw8', 'rT5yU2iO9pA4sD7fG1hJ3', 'kL6zX0cV8bN5mQ2wE9rT4y=');
+    const sha = v => crypto.createHash('sha256').update(v, 'utf8').digest('hex');
+    const names = list => list.filter(f => f.type === 'SECRET_PATTERN').map(f => f.name);
+    let root;
+    beforeEach(() => {
+        root = fs.mkdtempSync(path.join(tmp, 'proj-'));
+        gitRepo(root);
+        process.env.CLAUDE_PROJECT_DIR = root;
+        engine.resetForTests();
+    });
+
+    it('valueAllowKey hashes the value with its surrounding quotes removed, and never contains the value', () => {
+        expect(engine.valueAllowKey(VALUE)).toBe(`value-sha256:${sha(VALUE)}`);
+        expect(engine.valueAllowKey(`"${VALUE}"`)).toBe(engine.valueAllowKey(VALUE));
+        expect(engine.valueAllowKey(VALUE)).not.toContain(VALUE);
+    });
+
+    it('parseIgnore keeps a full 64-hex entry (any case, optional "# reason"), normalized, and drops malformed ones', () => {
+        const h = sha(VALUE);
+        const set = engine.parseIgnore([
+            `value-sha256:${h}  # reviewed: RustDesk server public key`,
+            `VALUE-SHA256:${sha(OTHER).toUpperCase()}`,
+            `value-sha256:${h.slice(0, 63)}`,          // a prefix: allows nothing
+            `value-sha256:${h}0`,                       // 65 digits
+            `value-sha256:${h.slice(0, 60)}zzzz`,       // not hex
+            `value-sha256:${h}# glued comment`,          // the reason needs whitespace before it
+            'value-sha256:',
+            'src/a.js:generic-api-key:3',
+        ].join('\n'));
+        expect([...set].sort()).toEqual([
+            'src/a.js:generic-api-key:3',
+            `value-sha256:${h}`,
+            `value-sha256:${sha(OTHER)}`,
+        ].sort());
+    });
+
+    it('suppresses that value at any path and line in a whole-file scan, and no other value', () => {
+        stageIgnore(root, `value-sha256:${sha(VALUE)} # reviewed\n`);
+        expect(names(engine.scanContent(`key = "${VALUE}"\n`, path.join(root, 'a', 'one.ps1'), { wholeFile: true }))).toEqual([]);
+        expect(names(engine.scanContent(`x\ny\nTOKEN=${VALUE}\n`, path.join(root, 'b', 'two.sh'), { wholeFile: true }))).toEqual([]);
+        expect(names(engine.scanContent(`key = "${OTHER}"\n`, path.join(root, 'a', 'one.ps1'), { wholeFile: true }))).toHaveLength(1);
+    });
+
+    it('a value pin clears generic matches only: a named provider key with a pinned value is still reported', () => {
+        const named = engine.scanContent(`const k = "${STRIPE}";\n`, 'src/a.js').filter(f => f.type === 'SECRET_PATTERN');
+        expect(named.length).toBeGreaterThan(0);
+        stageIgnore(root, `value-sha256:${sha(STRIPE)}\n`);
+        expect(names(engine.scanContent(`const k = "${STRIPE}";\n`, path.join(root, 'src', 'a.js'), { wholeFile: true })).length).toBeGreaterThan(0);
+    });
+
+    it('parseIgnore reads a file PowerShell 5.1 appended as UTF-16LE', () => {
+        const h = sha(VALUE);
+        const utf16 = Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(`value-sha256:${h} # reviewed\r\n`, 'utf16le')]);
+        expect([...engine.parseIgnore(utf16.toString('utf8'))]).toEqual([`value-sha256:${h}`]);
+    });
+
+    it('a prefix of the hash allows nothing', () => {
+        stageIgnore(root, `value-sha256:${sha(VALUE).slice(0, 32)}\n`);
+        expect(names(engine.scanContent(`key = "${VALUE}"\n`, path.join(root, 'one.ps1'), { wholeFile: true }))).toHaveLength(1);
+    });
+
+    it('like every ignore entry, it does not apply to an Edit fragment', () => {
+        stageIgnore(root, `value-sha256:${sha(VALUE)}\n`);
+        expect(names(engine.scanContent(`key = "${VALUE}"\n`, path.join(root, 'one.ps1')))).toHaveLength(1);
+    });
+
+    it('findings of a generic match carry the allowKey; named-provider findings do not', () => {
+        const generic = engine.scanContent(`key = "${VALUE}"\n`, 'one.ps1').filter(f => f.type === 'SECRET_PATTERN');
+        expect(generic.map(f => f.allowKey)).toEqual([`value-sha256:${sha(VALUE)}`]);
+        const named = engine.scanContent(`const k = "${STRIPE}";\n`, 'src/a.js').filter(f => f.type === 'SECRET_PATTERN');
+        expect(named.length).toBeGreaterThan(0);
+        expect(named.every(f => f.allowKey === undefined)).toBe(true);
+    });
+
+    it('formatFindings prints the Allow line only when asked (the git hooks), never the value', () => {
+        const found = engine.scanContent(`key = "${VALUE}"\n`, 'one.ps1');
+        expect(patterns.formatFindings(found)).not.toMatch(/value-sha256/);
+        const report = patterns.formatFindings(found, { valueKeys: true });
+        expect(report).toContain(`Allow: value-sha256:${sha(VALUE)}`);
+        expect(report).not.toContain(VALUE);
+        expect(patterns.bypassAdvice(found)).toMatch(/value-sha256/);
+        expect(patterns.bypassAdvice(engine.scanContent(`const k = "${STRIPE}";\n`, 'src/a.js'))).not.toMatch(/value-sha256/);
     });
 });
 
@@ -949,11 +1038,11 @@ describe('scanFiles: files that start with a signature are scanned, whatever the
         'ünï/ö.txt': 'non-ASCII without a space',
         'q/we=ird.txt': 'an equals sign',
         "q/it's.txt": 'an apostrophe',
-        'q/qu"ote.txt': 'a double quote',
-        'q/sp "both" =x.txt': 'space, quotes and equals',
+        'q/sp =x.txt': 'space and equals',
         '日本 語/ファイル.txt': 'CJK with a space',
     };
-    const POSIX_ONLY = { 'q/back\\slash.txt': 'a backslash', 'q/new\nline.txt': 'a newline', 'q/tab\tname.txt': 'a tab' };
+    // Windows forbids " \ and control characters in file names, so those cases run on POSIX only.
+    const POSIX_ONLY = { 'q/qu"ote.txt': 'a double quote', 'q/sp "both" =x.txt': 'space, quotes and equals', 'q/back\\slash.txt': 'a backslash', 'q/new\nline.txt': 'a newline', 'q/tab\tname.txt': 'a tab' };
     const keyFor = i => j('sk_', 'live_', 'aB3xK9mP2qR7tY1wZ5nC8vD', String(i % 10));
 
     function makeTree(extra = {}) {
@@ -1120,7 +1209,8 @@ describe('scanFiles: files that start with a signature are scanned, whatever the
             useFake(scanning(`
               if (args[0] === 'dir') {
                 const stage = args[1];
-                process.stderr.write('DBG skipping binary file mime_type=application/zip path="' + (stage + '/two.txt') + '"\\n');
+                // Go-quoted like the real engine's log, so a Windows path's backslashes arrive escaped
+                process.stderr.write('DBG skipping binary file mime_type=application/zip path=' + JSON.stringify(stage + '/two.txt') + '\\n');
                 process.stderr.write('INF scanned ~${'k = NEEDLE\n'.length} bytes (11 B) in 1ms\\n');
                 console.log(JSON.stringify([{ RuleID: 'domdhi-stripe-key', Secret: 'NEEDLE', Match: 'm', StartLine: 1, EndLine: 1, File: stage + '/one.txt' }]));
               } else { console.log('[]'); }`));

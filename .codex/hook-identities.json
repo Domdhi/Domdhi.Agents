@@ -82,23 +82,13 @@
       }
     },
     {
-      "id": "codex-hook:aab098d431b2bedd37693d1942b18a391016ec3cbba38c94b6898e7e7899c294",
-      "fingerprint": "sha256:9e0de92794be0e5249726ce7a62ca47fbfea4cd7db36e24977317ad21e54043c",
-      "event": "PostToolUse",
-      "matcher": "^apply_patch$",
-      "position": {
-        "group": 1,
-        "handler": 0
-      }
-    },
-    {
       "id": "codex-hook:76a1558d2097a75e9e22d11f7658da51e800488981c11ed90c906c9e9344e6b9",
       "fingerprint": "sha256:2775413082779f901c5c01bc922bae1c9cda5677aa7de36504ed7a62277a93ad",
       "event": "PostToolUse",
       "matcher": "^apply_patch$",
       "position": {
         "group": 1,
-        "handler": 1
+        "handler": 0
       }
     },
     {

@@ -29,7 +29,7 @@ node .claude/core/telemetry-log.js sweep
 
 **Defrag runs last on purpose.** Steps 2–5 spawn a pile of new memories. Defragging *before* that pile lands gets invalidated the moment the new memories are written — you'd have to defrag twice. Defrag is the *final cleanup pass* over the grown store, not the opener.
 
-**The cap is handled by staging, not by defragging early.** Each category has a hard cap of `MEMORY_MAX_PER_CATEGORY` (in `constants.js` — **read it for the current value; never trust a number cited in this doc, it has gone 50→60→100→150**); `createMemory` refuses writes at the cap and auto-prunes stale entries at the `MEMORY_NEAR_LIMIT_PCT` (~80%) threshold. Steps 2–3 do NOT force-write into a near-cap category — new memories **stage into the inbox** (`memory-manager.js create` when the category is below ~80%; otherwise queue a draft via the inbox). The step-6 defrag then processes the inbox (`inbox-promote`) *and* merges overlaps in one pass, so everything lands under the cap. This is what makes "defrag at the end" actually work instead of hitting a wall at step 3.
+**Defrag is not a cap workaround.** A category has no size cap, so `createMemory` never refuses a write for the size of a category and Steps 2–3 write new memories straight in. Use the inbox only when a draft needs review before it enters the store; the step-6 defrag processes the inbox (`inbox-promote`) *and* merges overlaps in one pass.
 
 ## Autonomy Contract (read this — it overrides the sub-commands)
 
@@ -47,7 +47,7 @@ node .claude/core/telemetry-log.js sweep
 - **CWD discipline.** The Bash tool persists working directory across calls — a single `cd` into a subdir silently breaks later `node .claude/core/*` and `git` calls (module-not-found / pathspec). Run every phase command from the repo root: use **absolute or repo-root-relative script paths** and `git -C <repo-root>`, and never leave the shell parked in a subdir.
 - **`doc-writer` and review agents have NO Bash.** Gather all per-epic git stats (commit count, files, +/-, date range) in the main agent and pass them INLINE in the Phase 2 dispatch prompt. The orchestrator (main agent) owns all git/gate/node calls.
 - **Promote (Phase 4): cohesive-cluster-first.** When the auto-threshold matches many candidates, promote the largest *cohesive* cluster (same skill/home) as one block; defer *scattered singletons* — especially ones already represented in ADRs/CLAUDE.md — to manual review. Don't scatter single-line edits across many files unattended.
-- **Defrag (Phase 6) relieves the hard cap, not necessarily the soft warning.** `memory-guard.cjs` warns at ≥`MEMORY_NEAR_LIMIT_PCT` (~80%) of the cap. A handful of merges clears the *hard cap* (writes work again) but may not clear the warning — that needs a deeper consolidation pass. Phase 7 success = "hard cap relieved + new memories landed," NOT "lint score fully restored."
+- **Defrag (Phase 6) removes overlap, not size.** There is no per-category cap and no near-limit warning, so Phase 7 success = "overlaps merged + new memories landed," NOT "every category is small."
 - **Squash-merge branch check.** `git merge-base --is-ancestor` is fooled by squash-merges (a content-merged commit looks unique by hash). Use `git cherry -v origin/main HEAD` to detect already-upstream commits before branching or cherry-picking.
 - **Generated/vendored code.** Tell every reviewer to skip generated artifacts (lockfiles, `dist/`, `*.min.*`, migration scaffolding, snapshots) — sanity-check *intent* only, don't review generated line volume.
 - **Idle-without-delivery is expected, not anomalous — nudge immediately.** Background reviewer/drift agents recurringly go idle without sending their report (confirmed in the field twice: 3/4 agents in one epic retro, 3/8 in a sweep). When an agent's idle notification arrives with no findings message and no delivered summary, immediately `SendMessage` it a "deliver your full findings now to main" nudge — do not wait, do not re-dispatch a fresh agent first (the work is done; only the delivery hop failed). Budget for one nudge round in every phase that fans out background agents.
@@ -110,13 +110,12 @@ Reuses `/retro` — **as if invoked with `--skip-review`**, because Phase 1 alre
 Auto-apply the retro's concrete outputs. This is the step that turns a retro from a document into changes.
 
 1. **Memory extraction** — for every reusable pattern the retro surfaced and every learning in the code-review findings worth keeping:
-   - If the target category is **below ~80% of cap**: `node .claude/core/memory-manager.js create <category> <id> '<content-json>'`. Assign an `importance` (1–5) in the content per the `session-handoff` skill.
-   - If the target category is **at/near cap (≥ `MEMORY_NEAR_LIMIT_PCT` of `MEMORY_MAX_PER_CATEGORY` — read `constants.js`)**: **stage a draft to the inbox** (`docs/.output/.state/memory-inbox/`) instead — do NOT force the write. The Phase 6 defrag frees room and promotes from the inbox. Record the staged item in the Phase Log.
+   - `node .claude/core/memory-manager.js create <category> <id> '<content-json>'`. Assign an `importance` (1–5) in the content per the `session-handoff` skill. A category has no size cap, so the write is never refused for size.
 2. **System Improvements** — for each row in the retro's `## System Improvements` table:
    - `Agent: …` → edit the named canonical `.agents/roles/*.md` (legacy native source only when no canonical counterpart exists) (surgical fix from the retro; broad re-alignment is Phase 5's job — don't duplicate).
    - `Skill: …` → edit the named canonical `.agents/skills/*/SKILL.md`. **In an adopter** (not the workshop), project-specific additions to a *template* skill MUST use a project-additions sentinel (create if absent) — a new section at the end → `<!-- @@project-additions -->`; a bullet inserted into an existing section → an anchored `<!-- @@project-additions:start -->`/`:end` fence. A plain edit to template prose is clobbered on the next sync. See `skill-authoring`.
    - `Command: …` → edit the named `.agents/skills/*/references/workflow.md` and its existing registry metadata; render the generated command.
-   - `Memory: …` → create/boost the memory (cap rule above).
+   - `Memory: …` → create/boost the memory.
 3. **Code-review fixes — every finding, nits-and-up.** Fix each finding CRITICAL down to NIT in-pass (the operating standard: `verification-before-completion` → "Autonomous & batch commands"; no "MINOR/NIT logged not fixed" tier). Dispatch a `general-purpose` agent for anything beyond a trivial edit (batch related small fixes to keep dispatches efficient), then **the orchestrator runs the gate** (`node .claude/core/gate.js test` — auto-detects the stack). Agents never build/test. If the gate fails → **stop the sweep, report.** The only carve-out is SCOPE, not severity: don't expand scope to churn unrelated code the sweep isn't examining, and skip generated/vendored artifacts.
 4. Commit: `feat: /sweep p3 — applied {N} retro recs, {M} memories staged, {K} fixes`.
 
@@ -159,8 +158,8 @@ Reuses `/review:evolve-skills --auto`. Runs *after* Phase 5 (so it sees freshly-
 
 Reuses `/review:memory-defrag` in **auto-approve** mode — now operating on the GROWN store (new memories from Phases 2–3 included).
 
-1. **Process the inbox first**: `node .claude/core/memory-manager.js inbox-list`. For each staged item, decide its final category and `inbox-promote <id> [--category <cat>]`. If a target category is at cap, that item is resolved by the merges below.
-2. Dispatch a `general-purpose` analysis agent (read-only) to produce MERGE / SPLIT / CROSS-REF proposals over `docs/.output/.memory/{decisions,patterns,constraints,workflows,rejected-approaches}/`. Prioritize MERGEs within near-cap categories. **If a prior defrag-analysis from this session already exists, reuse it** rather than re-dispatching.
+1. **Process the inbox first**: `node .claude/core/memory-manager.js inbox-list`. For each staged item, decide its final category and `inbox-promote <id> [--category <cat>]`.
+2. Dispatch a `general-purpose` analysis agent (read-only) to produce MERGE / SPLIT / CROSS-REF proposals over `docs/.output/.memory/{decisions,patterns,constraints,workflows,rejected-approaches}/`. Prioritize MERGEs within the largest categories. **If a prior defrag-analysis from this session already exists, reuse it** rather than re-dispatching.
 3. **Auto-apply every proposal** that preserves all evidence anchors (story IDs, commit hashes, file paths). Skip + log any merge that would drop an anchor.
    - MERGE → `memory-manager.js update` primary (fold in duplicate's load-bearing fields) + `memory-manager.js delete <cat> <duplicate_id>`.
    - SPLIT/MOVE → `create` new + `delete`/reduce source.
@@ -173,7 +172,7 @@ Reuses `/review:memory-defrag` in **auto-approve** mode — now operating on the
 Reuses `/review:memory-health`, `/review:check-templates`, and `/review:timeline`. The memory + template checks are read-only verification of the sweep's own edits; the timeline refresh is the one write (committed).
 
 ### 7a — Memory health (read-only)
-1. `node .claude/core/memory-manager.js lint` → confirm the **hard cap is relieved** (every category < `MEMORY_MAX_PER_CATEGORY` so writes work). NOTE: the category-balance warning persists while a category is ≥`MEMORY_NEAR_LIMIT_PCT` (~80%) of the cap, so the lint score may stay below max — that is expected and is NOT a failure. Only flag it if a category is still AT the hard cap or a deeper consolidation is warranted.
+1. `node .claude/core/memory-manager.js lint` → confirm the score did not drop and the overlaps Phase 6 targeted are gone (duplicates, contradictions). Size alone is never a finding.
 2. `node .claude/core/memory-manager.js decay-report` → confirm no `decayed_confidence < 0.3` left unaddressed.
 3. If lint is below target or stale entries exist, note them in the report as residual follow-ups.
 
@@ -242,7 +241,6 @@ Everything this sweep could resolve, it resolved in-pass (the Autonomy Contract 
 ## What NOT to Do
 
 - Do NOT defrag before Phases 2–5 run — the new memories must land first.
-- Do NOT force-write into a near-cap category — stage to inbox, let Phase 6 resolve.
 - Fix EVERY in-scope finding, NIT-level and up, in-pass — no "logged for the user" tier (the operating standard; `verification-before-completion` → "Autonomous & batch commands"). The report is forks-only: findings aren't surfaced-and-left, they're resolved. The only limit is SCOPE — don't expand beyond what the sweep is examining to churn unrelated already-merged code, and skip generated/vendored artifacts. A genuinely unrelated pre-existing issue outside scope may be a residual follow-up.
 - Do NOT push to remote — the user decides when to push.
 - Agents never build/test — only the orchestrator runs `gate.js`.

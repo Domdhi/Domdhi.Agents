@@ -187,19 +187,42 @@ describe('intake-store AC4.1 contracts and disabled initialization', () => {
     expect(child.status).toBe(0); expect(child.stdout.trim()).toBe('invalid-input');
   });
 
+  // Windows cannot flush a directory handle; there the published record itself is flushed through a writable handle
+  // (on NTFS that commits the metadata log holding its new link). Each platform's guarantee is asserted on its own arm.
+  const WINDOWS = process.platform === 'win32';
+  const trackOpens = () => {
+    const opened = new Map(); const open = fs.openSync;
+    vi.spyOn(fs, 'openSync').mockImplementation((...args) => { const fd = open(...args); opened.set(fd, { file: path.resolve(String(args[0])), flags: args[1] }); return fd; });
+    return opened;
+  };
+  const isPublishedFlush = (opened, fd) => {
+    const o = opened.get(fd);
+    return !!o && !o.file.endsWith('.tmp') && typeof o.flags === 'number' && (o.flags & fs.constants.O_RDWR) === fs.constants.O_RDWR;
+  };
+
   it('immutable publication syncs file and directory entries before acknowledgement', async () => {
     const kinds = [];
+    const opened = trackOpens();
     const original = fs.fsyncSync;
-    vi.spyOn(fs, 'fsyncSync').mockImplementation(fd => { kinds.push(fs.fstatSync(fd).isDirectory() ? 'directory' : 'file'); return original(fd); });
+    vi.spyOn(fs, 'fsyncSync').mockImplementation(fd => {
+      kinds.push(fs.fstatSync(fd).isDirectory() ? 'directory' : isPublishedFlush(opened, fd) ? 'published' : 'file');
+      return original(fd);
+    });
     await store().initializeProject(options());
     expect(kinds.filter(kind => kind === 'file').length).toBeGreaterThanOrEqual(2);
-    expect(kinds.filter(kind => kind === 'directory').length).toBeGreaterThanOrEqual(2);
+    if (WINDOWS) {
+      expect(kinds.filter(kind => kind === 'published').length).toBeGreaterThanOrEqual(2);
+      expect(kinds).not.toContain('directory');
+    } else {
+      expect(kinds.filter(kind => kind === 'directory').length).toBeGreaterThanOrEqual(2);
+    }
   });
 
   it('directory sync failure is a persistence refusal with retained bytes', async () => {
+    const opened = trackOpens();
     const original = fs.fsyncSync;
     vi.spyOn(fs, 'fsyncSync').mockImplementation(fd => {
-      if (fs.fstatSync(fd).isDirectory()) throw Object.assign(new Error('fixture sync failed'), {code:'EIO'});
+      if (fs.fstatSync(fd).isDirectory() || (WINDOWS && isPublishedFlush(opened, fd))) throw Object.assign(new Error('fixture sync failed'), {code:'EIO'});
       return original(fd);
     });
     await errorOf(() => store().initializeProject(options()), 'persistence-failed');
@@ -211,11 +234,20 @@ describe('intake-store AC4.1 contracts and disabled initialization', () => {
     const opened = new Map(); const flushed = [];
     const open = fs.openSync; const sync = fs.fsyncSync;
     vi.spyOn(fs, 'openSync').mockImplementation((...args) => { const fd = open(...args); opened.set(fd, String(args[0])); return fd; });
+    const flushedFiles = [];
     vi.spyOn(fs, 'fsyncSync').mockImplementation(fd => {
       if (fs.fstatSync(fd).isDirectory()) flushed.push(path.resolve(opened.get(fd)));
+      else if (opened.has(fd)) flushedFiles.push(path.resolve(opened.get(fd)));
       return sync(fd);
     });
     await store().publishRequest(request(), options());
+    if (WINDOWS) {
+      // The record under the new month directory is flushed through its own writable handle (NTFS log commit).
+      // Paths are read when each flush happens (descriptor numbers are reused once a file is closed).
+      const record = /learning-requests[\\/]2026-10[\\/][^\\/]+\.json$/;
+      expect(flushedFiles.some(file => record.test(file))).toBe(true);
+      return;
+    }
     for (const relative of ['', 'docs', 'docs/.output', 'docs/.output/evolution', 'docs/.output/evolution/learning-requests', 'docs/.output/evolution/learning-requests/2026-10']) {
       expect(flushed).toContain(path.resolve(tmp.root, relative));
     }

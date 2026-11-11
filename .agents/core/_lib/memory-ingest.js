@@ -172,7 +172,7 @@ async function ingestAgentMemory(sourcePath, { dryRun = false, readMemory, creat
         try {
             const created = await createMemory(category, id, content);
             if (created === null) {
-                report.errors.push({ file, reason: 'category full (per-category cap reached)' });
+                report.errors.push({ file, reason: 'memory already exists (written by another process since the check)' });
             } else {
                 report.ingested++;
             }

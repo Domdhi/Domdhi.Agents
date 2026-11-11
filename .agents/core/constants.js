@@ -47,16 +47,6 @@ module.exports = {
         DEFAULT_LIMIT: 10,                // Default maximum memories to load
         HIGH_USAGE_THRESHOLD: 5,          // Threshold for "frequently used"
         HIGH_CONFIDENCE_THRESHOLD: 0.8,   // Threshold for "high confidence"
-        // Per-category memory cap. Static here (no process.env read — keeps
-        // require('./constants') deterministic). The env override
-        // (MEMORY_MAX_PER_CATEGORY) is applied at the two call sites
-        // (memory-manager.js, memory-guard.cjs) with an identical expression.
-        MEMORY_MAX_PER_CATEGORY: 150,
-        // Fraction of the cap at which a category counts as "near limit" — the
-        // single source for the prune trigger, the guard warning, the analytics
-        // near_limit flag, and the lint category-balance check (memory-manager,
-        // memory-guard, memory-lint all read this; never re-hardcode 0.8).
-        MEMORY_NEAR_LIMIT_PCT: 0.8,
         // Min active-work-days since `created` for a never-recalled memory to
         // appear in the dead-weight review queue (decay-independent flagger).
         // Static here; env override (MEMORY_EXPOSURE_MIN_DAYS) applied at the

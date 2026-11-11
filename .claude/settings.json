@@ -222,15 +222,6 @@
         ]
       },
       {
-        "matcher": "Write",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/memory-guard.cjs\""
-          }
-        ]
-      },
-      {
         "matcher": "Edit",
         "hooks": [
           {

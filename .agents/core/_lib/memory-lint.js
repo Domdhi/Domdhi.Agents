@@ -1,5 +1,5 @@
 /**
- * Memory Lint — 10-check health audit over a pre-assembled list of memories.
+ * Memory Lint — 9-check health audit over a pre-assembled list of memories.
  *
  * Extracted from memory-manager.js:740-911 (lintMemories). Pure function of its
  * inputs — no `this.*` coupling in the body. Caller is responsible for:
@@ -12,13 +12,6 @@
  */
 
 const { jaccardFromSets, tokenizeText } = require('./jaccard');
-
-// Single source of truth — no local duplicate of the cap value or the near-limit
-// fraction (constants.js is zero-dep, so this stays portable). Callers may still
-// override the cap via opts.maxPerCategory.
-const { MEMORY_FILTERS } = require('../constants');
-const DEFAULT_MAX_PER_CATEGORY = MEMORY_FILTERS.MEMORY_MAX_PER_CATEGORY;
-const NEAR_LIMIT_PCT = MEMORY_FILTERS.MEMORY_NEAR_LIMIT_PCT;
 
 const POSITIVE_SIGNALS = ['always', 'must', 'should', 'require', 'use', 'do'];
 const NEGATIVE_SIGNALS = ["don't", 'never', 'avoid', 'skip', 'stop', 'remove'];
@@ -52,7 +45,7 @@ function idDrift(id, lowerText) {
 }
 
 /**
- * Run the 10 lint checks and return a structured health report.
+ * Run the 9 lint checks and return a structured health report.
  *
  * @param {Array<{category: string, summary: object, full: object}>} allMemories
  *        Pre-assembled memory list. `full` must have id, updated, usage_count,
@@ -61,15 +54,13 @@ function idDrift(id, lowerText) {
  * @param {(memory: object) => number} opts.calculateDecayedConfidence
  *        Returns decayed confidence in [0, 1]. Typically a closure over
  *        MemoryManager.calculateDecayedConfidence to preserve per-instance cache.
- * @param {string[]} opts.categories  Iteration order for category_balance check
- * @param {number}   [opts.maxPerCategory]  Category cap for category_balance
- *                                          check (default: 50 — matches MemoryManager)
+ * @param {string[]} opts.categories  Categories the store defines (reported as categories_checked)
  * @param {string[]} [opts.retiredIds]  Ids of retired (invalid_at) memories. They are
  *        history, not nonexistent ids: a reference to one is not a broken ref. They
  *        join no other check and are not in allMemories or the total.
  * @returns {{ score: number, checks: object, total_memories: number, categories_checked: number }}
  */
-function lintMemories(allMemories, { calculateDecayedConfidence, categories, maxPerCategory = DEFAULT_MAX_PER_CATEGORY, retiredIds = [] }) {
+function lintMemories(allMemories, { calculateDecayedConfidence, categories, retiredIds = [] }) {
     const findings = {
         broken_refs:      { count: 0, severity: 'error',   findings: [] },
         orphaned:         { count: 0, severity: 'warning', findings: [] },
@@ -77,7 +68,6 @@ function lintMemories(allMemories, { calculateDecayedConfidence, categories, max
         stale:            { count: 0, severity: 'warning', findings: [] },
         duplicates:       { count: 0, severity: 'warning', findings: [] },
         decay_validation: { count: 0, severity: 'info',    findings: [] },
-        category_balance: { count: 0, severity: 'warning', findings: [] },
         corrected_in_place: { count: 0, severity: 'warning', findings: [] },
         id_drift:         { count: 0, severity: 'info',    findings: [] },
         schema_drift:     { count: 0, severity: 'info',    findings: [] },
@@ -263,23 +253,7 @@ function lintMemories(allMemories, { calculateDecayedConfidence, categories, max
     }
     findings.decay_validation.count = findings.decay_validation.findings.length;
 
-    // Check 7 — Category balance (any category >= 80% of max)
-    const balanceThreshold = Math.floor(maxPerCategory * NEAR_LIMIT_PCT);
-    for (const category of categories) {
-        const count = (byCategory[category] || []).length;
-        if (count >= balanceThreshold) {
-            findings.category_balance.findings.push({
-                category,
-                count,
-                limit: maxPerCategory,
-                threshold: balanceThreshold,
-                detail: `${count} memories in "${category}" is >= ${balanceThreshold} (80% of ${maxPerCategory} limit)`,
-            });
-        }
-    }
-    findings.category_balance.count = findings.category_balance.findings.length;
-
-    // Check 8 — Corrected in place. A memory found wrong gets its body edited ("CORRECTED: ...")
+    // Check 7 — Corrected in place. A memory found wrong gets its body edited ("CORRECTED: ...")
     // instead of a new memory plus `supersede`, so the stale claim stays live in recall and the
     // id keeps naming it. Seen at scale: 35 of 1,401 live memories in the largest store, against
     // 16 ever superseded. Upper-case markers only: lower-case "obsolete" is ordinary content.
@@ -301,7 +275,7 @@ function lintMemories(allMemories, { calculateDecayedConfidence, categories, max
     }
     findings.corrected_in_place.count = findings.corrected_in_place.findings.length;
 
-    // Check 9 — Id drift. The id is what startup and recall show first; when most of its words
+    // Check 8 — Id drift. The id is what startup and recall show first; when most of its words
     // no longer appear anywhere in the content, the body was rewritten under an id that now
     // states something else (or the opposite).
     for (const m of allMemories) {
@@ -317,7 +291,7 @@ function lintMemories(allMemories, { calculateDecayedConfidence, categories, max
     }
     findings.id_drift.count = findings.id_drift.findings.length;
 
-    // Check 10 — Schema drift: a memory with no description shows only its id in startup and
+    // Check 9 — Schema drift: a memory with no description shows only its id in startup and
     // recall, and an importance off the 1-5 scale skews ranking. A missing importance is not
     // flagged: it falls back to the default.
     for (const { category, full } of allMemories) {

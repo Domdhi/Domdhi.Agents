@@ -16,7 +16,7 @@
 //   - in a batch, skipped binaries (logged skips AND silent archive drops) cost ONE more engine run, never a process
 //     per file
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
 import { createRequire } from 'node:module';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -156,6 +156,10 @@ describe('the real engine on a binary it refuses (the OOXML spreadsheet that fai
 });
 
 describe('an early exit that is not a binary skip still fails closed', () => {
+    // Input this big no longer goes to the engine on stdin (it goes to a dir run of windows, covered in
+    // secret-engine.stdin-split.test.js); these tests are about the stdin transport, so it is lifted for them.
+    beforeAll(() => engine.setStdinLimitForTests(Infinity));
+    afterAll(() => engine.setStdinLimitForTests());
     const big = `PK\x03\x04${'x'.repeat(400000)}`;   // far bigger than a pipe, so the engine is gone before the write ends
 
     it('exits non-zero before reading: engine failure', () => {

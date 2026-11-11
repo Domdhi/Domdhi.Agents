@@ -299,11 +299,29 @@ function publish(root, relative, value, collisionCode = 'corrupt-history') {
     }
     if (!failure) {
         // Flush the new record link and every potentially newly created parent
-        // link before acknowledging a durable intent. Unsupported filesystems
-        // refuse publication rather than authorizing a remote write on weak proof.
+        // link before acknowledging a durable intent. A failed flush refuses
+        // publication rather than authorizing a remote write on weak proof.
         try {
             guarded(root, relative);
-            for (let directory = path.dirname(target); ; directory = path.dirname(directory)) {
+            if (process.platform === 'win32') {
+                // Windows cannot flush a directory handle (Node's fsync on one is EPERM). On NTFS every
+                // directory-entry change is a logged metadata operation, and FlushFileBuffers on a file
+                // commits the volume's log through that point, so flushing the published record (it needs a
+                // writable handle) makes its new link and the parents created before it durable: the same
+                // guarantee SQLite relies on for its journal there. Any failure still refuses publication.
+                // Off NTFS (FAT, exFAT, some network shares) the file flush succeeds without that proof
+                // for the directory entry; intake stores are expected on the project's NTFS volume.
+                // O_NOFOLLOW does not exist on Windows, so the opened file must be the one lstat saw.
+                let fileFd;
+                try {
+                    const seen = fs.lstatSync(target);
+                    check(seen.isFile() && !seen.isSymbolicLink(), 'persistence-failed');
+                    fileFd = fs.openSync(target, fs.constants.O_RDWR | (fs.constants.O_NOFOLLOW || 0));
+                    const opened = fs.fstatSync(fileFd);
+                    check(opened.isFile() && opened.dev === seen.dev && opened.ino === seen.ino, 'persistence-failed');
+                    fs.fsyncSync(fileFd);
+                } finally { if (fileFd !== undefined) fs.closeSync(fileFd); }
+            } else for (let directory = path.dirname(target); ; directory = path.dirname(directory)) {
                 let dirFd;
                 try {
                     guarded(root, relative);

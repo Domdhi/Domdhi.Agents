@@ -199,6 +199,17 @@ function buildCreatePlan({ host, branch, base, title, bodyFile, draft, project, 
 // ── git seams ────────────────────────────────────────────────────────────────
 
 const { git } = require('./_lib/git');
+const { checkReceiptForPr, fixCommand } = require('./_lib/gate-receipt');
+
+/** The project root the gate wrote its receipt for (same anchor as gate.js). */
+function projectRoot() {
+  return process.env.CLAUDE_PROJECT_DIR || path.resolve(__dirname, '..', '..');
+}
+
+/** Short, single-line reasons for the refusal message. */
+function receiptReasons(check) {
+  return check.reasons.map((r) => r.message).join('; ');
+}
 
 /** Resolve the remote default branch (origin/HEAD), falling back to 'main'. */
 function defaultBranch() {
@@ -239,6 +250,15 @@ function preflight({ force } = {}) {
     console.error(`[pr] could not verify up-to-date with origin/${base}: ${e.message}`);
     if (!force) process.exit(1);
     console.error('[pr] --force given — proceeding despite the unverified base.');
+  }
+
+  // 3. A valid full-gate receipt for this exact tree, when the project declares the rule
+  //    (gate config receipts.requireFullForPr). --force never bypasses it: it only downgrades the
+  //    best-effort base check above.
+  const receiptCheck = checkReceiptForPr({ root: projectRoot() });
+  if (receiptCheck.required && !receiptCheck.ok) {
+    console.error(`[pr] refusing: no valid full-gate receipt for this exact tree — ${receiptReasons(receiptCheck)}. Fix: ${fixCommand()}, then retry.`);
+    process.exit(1);
   }
 
   return { branch, base };
@@ -286,6 +306,10 @@ function runCreate(opts, remote) {
 
   if (dryRun) {
     console.log(`[pr] --dry-run — host: ${remote.host}, branch: ${branch} → ${base}. Would run:\n`);
+    const receiptCheck = checkReceiptForPr({ root: projectRoot() });
+    if (!receiptCheck.required) console.log('[pr] gate receipt check: not required (receipts.requireFullForPr is not true)\n');
+    else if (receiptCheck.ok) console.log('[pr] gate receipt check: would pass (a valid full-gate receipt covers this exact tree)\n');
+    else console.log(`[pr] gate receipt check: WOULD REFUSE — ${receiptReasons(receiptCheck)}. Fix: ${fixCommand()}\n`);
     for (const step of plan) {
       console.log(`  # ${step.label}`);
       console.log(`  ${step.bin} ${step.args.join(' ')}`);

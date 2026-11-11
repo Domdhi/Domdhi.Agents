@@ -20,16 +20,11 @@ describe('constants', () => {
     }
   });
 
-  it('memoryFilters_maxPerCategory_is150', () => {
-    // Arrange / Act / Assert — the single source of truth for the per-category
-    // cap (env-overridden at call sites). Static 150 keeps require() deterministic.
-    expect(constants.MEMORY_FILTERS.MEMORY_MAX_PER_CATEGORY).toBe(150);
-  });
-
-  it('memoryFilters_nearLimitPct_is080', () => {
-    // Single source for the prune/warn/near-limit threshold — read by
-    // memory-manager, memory-guard, and memory-lint (never re-hardcode 0.8).
-    expect(constants.MEMORY_FILTERS.MEMORY_NEAR_LIMIT_PCT).toBe(0.8);
+  it('memoryFilters_definesNoPerCategoryCap', () => {
+    // The per-category cap and its near-limit fraction were removed: a write is never refused for the size of its
+    // category, so nothing may read either constant.
+    expect(constants.MEMORY_FILTERS).not.toHaveProperty('MEMORY_MAX_PER_CATEGORY');
+    expect(constants.MEMORY_FILTERS).not.toHaveProperty('MEMORY_NEAR_LIMIT_PCT');
   });
 
   it('memoryCategories_values_matchExpectedStrings', () => {

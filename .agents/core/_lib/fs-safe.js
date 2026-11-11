@@ -170,4 +170,14 @@ function safeDelete(dstPath, containRoot) {
     fs.rmSync(dstPath, { force: true });
 }
 
-module.exports = { safeWrite, safeCopy, safeDelete, assertNoSymlinkedAncestor };
+/**
+ * Do two paths name the same directory? Git reports a directory's long form, and Node's JavaScript
+ * realpath keeps 8.3 short names (a TEMP under the profile often has one), so both sides
+ * are resolved natively; Windows paths compare case-insensitively. Throws when either path cannot be resolved.
+ */
+function sameRealDir(a, b) {
+    const norm = p => { const r = fs.realpathSync.native(p); return process.platform === 'win32' ? r.toLowerCase() : r; };
+    return norm(a) === norm(b);
+}
+
+module.exports = { safeWrite, safeCopy, safeDelete, assertNoSymlinkedAncestor, sameRealDir };

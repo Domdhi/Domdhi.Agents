@@ -226,7 +226,7 @@ describe('memory-manager inbox', () => {
     it('inboxPromote_idCollision_returnsDistinctErrorAndKeepsOriginal', async () => {
       // F10: promoting into an id that already holds a real memory must not
       // silently clobber it — and the error must name the collision, not
-      // read as a generic "category full" failure.
+      // read as a generic failure.
       const m = makeManager();
       await m.createMemory('constraints', 'already-taken', { description: 'pre-existing memory' });
       writeInboxFile('2026-05-11-1800-w', makeDraft({

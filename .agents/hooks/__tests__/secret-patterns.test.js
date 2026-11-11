@@ -915,13 +915,28 @@ describe('scanContent', () => {
             });
         });
 
-        it('redactSecretsInText_manyGenericMatches_staysLinear', () => {
-            const text = Array.from({ length: 20000 }, (_, i) => `db_password=Winter${i}Pass${i}x`).join('\n');
+        // How the time grows, not how long it takes: a fixed wall-clock cap flakes on a busy machine (8 s was hit at 9 s
+        // under a full suite once big input is windowed) and a raised one stops guarding. Four times the matches must take
+        // well under the sixteen times a quadratic redactor would; the engine's fixed start-up cost only pulls the ratio down.
+        const timeOf = fn => { const started = process.hrtime.bigint(); fn(); return Number(process.hrtime.bigint() - started) / 1e6; };
+        // Best of two runs each; the small run's time is floored so a few milliseconds of it cannot turn noise into a ratio.
+        const growth = (run, small, large, floorMs = 25) => Math.min(timeOf(() => run(large)), timeOf(() => run(large))) / Math.max(floorMs, Math.min(timeOf(() => run(small)), timeOf(() => run(small))));
+        const LINEAR_GROWTH_LIMIT = 9; // 4x input: linear ~4, quadratic ~16
+
+        it('the growth check itself tells linear from quadratic work (synthetic workloads)', () => {
+            const busy = n => { let x = 0; for (let i = 0; i < n; i++) x = (x * 31 + i) % 1000003; return x; };
+            expect(growth(n => busy(n * 20000), 1000, 4000)).toBeLessThan(LINEAR_GROWTH_LIMIT);
+            expect(growth(n => { for (let i = 0; i < n; i++) busy(n * 10); }, 1000, 4000)).toBeGreaterThan(LINEAR_GROWTH_LIMIT);
+        });
+
+        it('redactSecretsInText_manyGenericMatches_staysLinear', { timeout: 120000 }, () => {
+            const text = n => Array.from({ length: n }, (_, i) => `db_password=Winter${i}Pass${i}x`).join('\n');
+            const small = text(5000);
+            const large = text(20000);
             for (const file of ['<bash output>', 'src/app.ts']) {
-                const started = Date.now();
-                redactSecretsInText(text, file);
-                // the engine itself takes about a second for 20,000 findings; this guards against a quadratic redactor
-                expect(Date.now() - started, file).toBeLessThan(8000);
+                // The second of each pair of runs reuses the engine's cached scan of the same text, so the best time is the
+                // redactor's own work: that is where a quadratic hid (each finding searched the rest of the input).
+                expect(growth(t => redactSecretsInText(t, file), small, large), file).toBeLessThan(LINEAR_GROWTH_LIMIT);
             }
         });
 

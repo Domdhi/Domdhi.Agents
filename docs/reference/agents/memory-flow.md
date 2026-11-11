@@ -39,7 +39,7 @@ Claude's UserPromptSubmit recall hook reads the markdown notes store and the tra
 
 ## Categories and maintenance
 
-The five categories are patterns, constraints, decisions, workflows and rejected approaches. Decay rates/thresholds come from `MEMORY_DECAY`; capacity and warning/prune triggers come from `MEMORY_FILTERS.MEMORY_MAX_PER_CATEGORY` and `MEMORY_FILTERS.MEMORY_NEAR_LIMIT_PCT` in [constants.js](../../../.agents/core/constants.js). Consumers apply the documented environment overrides. Avoid copying literal caps/rates into this diagram.
+The five categories are patterns, constraints, decisions, workflows and rejected approaches. Decay rates/thresholds come from `MEMORY_DECAY` in [constants.js](../../../.agents/core/constants.js). A category has no size cap: a write is never refused or auto-pruned for the size of its category. Avoid copying literal rates into this diagram.
 
 Confidence, intrinsic importance, supersession and genuine retrieval usage have distinct meanings. Empty authoritative sources and incomplete/corrupt snapshots need different repair results. Lint/age warnings do not by themselves justify deleting memory or rewriting historical evidence.
 

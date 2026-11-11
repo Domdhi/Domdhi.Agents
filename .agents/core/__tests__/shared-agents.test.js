@@ -350,7 +350,7 @@ describe('native gate checkout boundary', () => {
       fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, value);
     };
     seed(installed);
-    for (const rel of ['gate.js', '_lib/telemetry-paths.js', '_lib/gate-summary.js', '_lib/owned-process-tree.js', '_lib/windows-process-job.ps1']) {
+    for (const rel of ['gate.js', '_lib/telemetry-paths.js', '_lib/gate-summary.js', '_lib/gate-receipt.js', '_lib/fs-safe.js', '_lib/owned-process-tree.js', '_lib/windows-process-job.ps1']) {
       put(installed, `.agents/core/${rel}`, fs.readFileSync(path.join(toolkit, '.agents/core', rel)));
     }
     put(installed, '.agents/core/context-probe.js', 'console.log(JSON.stringify({legacy:process.env.CLAUDE_PROJECT_DIR,neutral:process.env.AGENTS_PROJECT_DIR,keep:process.env.B4_KEEP_ENV}));\n');

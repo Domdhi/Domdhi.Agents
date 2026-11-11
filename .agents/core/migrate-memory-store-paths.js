@@ -28,7 +28,8 @@
  *
  * CODE SCOPE: .js/.cjs under .claude/core/ + .claude/hooks/. EXCLUDED (hand-edited —
  * a literal rewrite would be semantically wrong there):
- *   - memory-guard.cjs       — detects the store via a bare `'memories'` token (logic, not a path literal)
+ *   - memory-guard.cjs       — retired in v6.11; an adopter's edited copy stays, and it detects the store via a
+ *                              bare `'memories'` token (logic, not a path literal)
  *   - template-updater.js    — a v4.63 HISTORY comment naming the old path must stay accurate
  *   - decision-graph.js, memory-promoter.js, memory-backup.js, feedback-digest.js
  *                            — derive subdirs via path.join(<base>, 'daily'|'concepts'|'memories.db'),

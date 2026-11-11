@@ -335,7 +335,7 @@ function engineBlock(err, what, content) {
 /** The block report for findings, never printing a value. */
 function reportFindings(findings, what) {
     recordScannerBlock(summarizeFindings(findings)); // source-tagged guardrail event for the feedback digest
-    console.error(formatFindings(findings));
+    console.error(formatFindings(findings, { valueKeys: true }));
     console.error(`\n${what} blocked. Remove secrets and try again.`);
     console.error(bypassAdvice(findings));
     process.exit(1);

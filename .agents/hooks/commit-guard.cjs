@@ -419,9 +419,20 @@ function evaluateExpansion(expansion, g, ctx, depth, what) {
  * @param {string} cmd  the command text, head first (wrappers already stripped)
  */
 function checkGit(cmd, ctx, depth = 0) {
-  // POSIX reading first (g\it is git); then the Windows reading, where C:\Git\bin\git.exe is one path.
-  const g = parseGit(tokenize(cmd)) || parseGit(tokenize(cmd, { winPaths: true }));
-  if (!g) return null;
+  // POSIX reading (g\it is git) and the Windows reading (C:\Git\bin\git.exe and git -C C:\repo are paths). The same
+  // text means either, depending on the shell (Bash or PowerShell), so when the two readings differ both are judged
+  // and either one blocking blocks: a PowerShell 'git -C C:\repo ci', where ci is an alias for 'commit --no-verify',
+  // parsed fine the POSIX way with a mangled directory, found no alias there, and was allowed.
+  const posix = parseGit(tokenize(cmd));
+  const windows = parseGit(tokenize(cmd, { winPaths: true }));
+  if (!posix) return windows ? checkGitReading(windows, cmd, ctx, depth) : null;
+  const first = checkGitReading(posix, cmd, ctx, depth);
+  if (first || !windows || JSON.stringify(windows) === JSON.stringify(posix)) return first;
+  return checkGitReading(windows, cmd, ctx, depth);
+}
+
+/** Judge one reading of a git command line (see checkGit). Returns null or { block, feedback }. */
+function checkGitReading(g, cmd, ctx, depth) {
   const inline = new Map();
   for (const kv of g.config) {
     if (hooksConfigKey(kv)) return hooksBlock('a -c / --config-env override of core.hooksPath, an include path or url.*.insteadOf / pushInsteadOf');

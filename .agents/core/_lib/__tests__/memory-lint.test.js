@@ -1,5 +1,5 @@
 // AC→source map (M2 / memory-lint broken_refs):
-//   lintMemories(allMemories, { calculateDecayedConfidence, categories, maxPerCategory })
+//   lintMemories(allMemories, { calculateDecayedConfidence, categories })
 //   Check 1 (broken_refs) must recognize the toolkit's ACTUAL cross-reference forms:
 //     - "[[wiki-link]]" slugs in content.description / content.evidence
 //     - a top-level content.references[] array of slug ids

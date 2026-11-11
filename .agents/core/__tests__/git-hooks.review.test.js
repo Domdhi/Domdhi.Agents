@@ -10,6 +10,7 @@ import { createRequire } from 'node:module';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 
 const require = createRequire(import.meta.url);
 const { createTmpDir } = require('./_helpers/tmp-dir');
@@ -49,7 +50,8 @@ const bypassCommit = (text = 'chore: key\n') => {
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
 describe('SEC-CRITICAL-1 / CR-M1: a staged name that looks like a revision is scanned as itself', () => {
   for (const prefix of ['0:', '1:', '2:', '3:', ':']) {
-    sh(`a file named "${prefix}README" holding a key is blocked for the key (README is clean)`, () => {
+    // Git for Windows refuses a ':' in an index path (core.protectNTFS), so these names exist on POSIX only.
+    shPosix(`a file named "${prefix}README" holding a key is blocked for the key (README is clean)`, () => {
       R.stage(repo, 'README', 'hello\n');
       R.stageBlob(repo, `${prefix}README`, `k=${R.AWS_KEY}\n`);
       const before = count();
@@ -61,7 +63,7 @@ describe('SEC-CRITICAL-1 / CR-M1: a staged name that looks like a revision is sc
     });
   }
 
-  sh('commit.js without the hooks blocks the same staged name', () => {
+  shPosix('commit.js without the hooks blocks the same staged name', () => {
     hooks.removeHooks(repo);
     R.stage(repo, 'README', 'hello\n');
     R.stageBlob(repo, '0:README', `k=${R.AWS_KEY}\n`);
@@ -72,7 +74,7 @@ describe('SEC-CRITICAL-1 / CR-M1: a staged name that looks like a revision is sc
     expect(count()).toBe(before);
   });
 
-  sh('negative control: clean "0:README" and README commit normally', () => {
+  shPosix('negative control: clean "0:README" and README commit normally', () => {
     R.stage(repo, 'README', 'hello\n');
     R.stageBlob(repo, '0:README', 'also clean\n');
     const r = commitF(repo, 'docs: readme\n');
@@ -172,22 +174,22 @@ describe('SEC-MAJOR-2 / CR-M3 / CR-m5: one unforgeable audit record per bypassed
     fs.writeFileSync(notADir, 'x');
     const env = R.cleanEnv(repo, { ...BYPASS, CLAUDE_PROJECT_DIR: notADir });
     const msg = R.writeMessage(tmp.root, 'x\n', 'M-NIT');
-    const pre = spawnSync(hookFile('pre-commit'), [], { cwd: repo, env, encoding: 'utf8' });
+    const pre = spawnSync('sh', [hookFile('pre-commit')], { cwd: repo, env, encoding: 'utf8' });
     expect(pre.stderr).toMatch(/NOT recorded: guardrail-events\.jsonl could not be written/);
     expect(fs.existsSync(path.join(gitDir(), 'domdhi-bypass-marker.json'))).toBe(false);
-    const post = spawnSync(hookFile('commit-msg'), [msg], { cwd: repo, env, encoding: 'utf8' });
+    const post = spawnSync('sh', [hookFile('commit-msg'), msg], { cwd: repo, env, encoding: 'utf8' });
     expect(post.stderr).not.toMatch(/already recorded/);
     expect(post.stderr).toMatch(/NOT recorded/);
   });
 
   sh('a recorded pre-commit still writes the marker (the dedupe works)', () => {
-    spawnSync(hookFile('pre-commit'), [], { cwd: repo, env: R.cleanEnv(repo, BYPASS), encoding: 'utf8' });
+    spawnSync('sh', [hookFile('pre-commit')], { cwd: repo, env: R.cleanEnv(repo, BYPASS), encoding: 'utf8' });
     expect(fs.existsSync(path.join(gitDir(), 'domdhi-bypass-marker.json'))).toBe(true);
   });
 
   sh('commit-msg alone (a reword: no pre-commit before it) records the bypass', () => {
     const msg = R.writeMessage(tmp.root, 'reword\n', 'REWORD');
-    const r = spawnSync(hookFile('commit-msg'), [msg], { cwd: repo, env: R.cleanEnv(repo, BYPASS), encoding: 'utf8' });
+    const r = spawnSync('sh', [hookFile('commit-msg'), msg], { cwd: repo, env: R.cleanEnv(repo, BYPASS), encoding: 'utf8' });
     expect(r.status).toBe(0);
     expect(events()).toHaveLength(1);
     expect(events()[0]).toMatchObject({ rule: 'git-hook-no-scan', patterns: ['commit-msg'] });
@@ -195,7 +197,7 @@ describe('SEC-MAJOR-2 / CR-M3 / CR-m5: one unforgeable audit record per bypassed
 
   sh('pre-commit then commit-msg of one commit record once; a stale marker does not suppress a later record', () => {
     const msg = R.writeMessage(tmp.root, 'x\n', 'M1');
-    const run = (name, args = []) => spawnSync(hookFile(name), args, { cwd: repo, env: R.cleanEnv(repo, BYPASS), encoding: 'utf8' });
+    const run = (name, args = []) => spawnSync('sh', [hookFile(name), ...args], { cwd: repo, env: R.cleanEnv(repo, BYPASS), encoding: 'utf8' });
     run('pre-commit');
     run('commit-msg', [msg]);
     expect(events()).toHaveLength(1);
@@ -502,6 +504,101 @@ describe('SEC-MAJOR-4: the commit paths beyond `git commit`', () => {
       const r = R.git(repo, ['push', 'origin', 'main']);
       expect(r.status, r.out).not.toBe(0);
       expect(r.out).toMatch(/AWS Access Key/);
+    });
+
+    // ── a reviewed VALUE already in unpushed history: value-sha256 in the TIP's .betterleaksignore ──────────
+    describe('value-sha256 entries in the pushed tip cover one reviewed value anywhere in the push', () => {
+      // A generic match (no provider prefix), the shape of a reviewed public key; built from parts.
+      const PUB = ['Zk3', 'pQ9xL2mN7vB4cR8tY1wE6', 'uI0oP5aS3dF9gH2jK7lZ4x='].join('');
+      const PUB2 = ['Qw8', 'rT5yU2iO9pA4sD7fG1hJ3', 'kL6zX0cV8bN5mQ2wE9rT4y='].join('');
+      const valueKey = v => `value-sha256:${crypto.createHash('sha256').update(v, 'utf8').digest('hex')}`;
+      const commitValue = (rel, value, msg) => {
+        R.stage(repo, rel, `key = "${value}"\n`);
+        bypassCommit(msg);
+      };
+      const allowInTip = text => {
+        R.stage(repo, '.betterleaksignore', text);
+        const r = commitF(repo, 'chore: owner-reviewed value\n');
+        expect(r.status, r.out).toBe(0);
+      };
+
+      sh('an older commit introduced the value; the tip pins its hash: the push passes', () => {
+        commitValue('deploy/install.sh', PUB, 'feat: installer\n');
+        commitValue('deploy/install.ps1', PUB, 'feat: windows installer\n');
+        R.stage(repo, 'ok.txt', 'ok\n');
+        expect(commitF(repo, 'ok\n').status).toBe(0);
+        allowInTip(`${valueKey(PUB)} # RustDesk-style server public key, reviewed by the owner\n`);
+        const r = R.git(repo, ['push', 'origin', 'main']);
+        expect(r.status, r.out).toBe(0);
+        expect(R.gitOut(remote, ['rev-parse', 'main'])).toBe(R.gitOut(repo, ['rev-parse', 'HEAD']));
+      });
+
+      sh('the block report prints the value hash for a generic finding, never the value', () => {
+        commitValue('deploy/install.sh', PUB, 'feat: installer\n');
+        const r = R.git(repo, ['push', 'origin', 'main']);
+        expect(r.status, r.out).not.toBe(0);
+        expect(r.out).toContain(`Allow: ${valueKey(PUB)}`);
+        expect(r.out).toMatch(/value-sha256:<hash>/);
+        expect(r.out).not.toContain(PUB);
+      });
+
+      sh('a different value in the same range still blocks, and only it is reported', () => {
+        commitValue('deploy/install.sh', PUB, 'feat: installer\n');
+        commitValue('deploy/other.sh', PUB2, 'feat: other\n');
+        allowInTip(`${valueKey(PUB)}\n`);
+        const r = R.git(repo, ['push', 'origin', 'main']);
+        expect(r.status, r.out).not.toBe(0);
+        expect(r.out).toContain(`Allow: ${valueKey(PUB2)}`);
+        expect(r.out).not.toContain(`Allow: ${valueKey(PUB)}`);
+        expect(r.out).toMatch(/deploy\/other\.sh/);
+      });
+
+      sh('a prefix or malformed hash in the tip allows nothing', () => {
+        commitValue('deploy/install.sh', PUB, 'feat: installer\n');
+        const full = valueKey(PUB);
+        allowInTip(`${full.slice(0, full.length - 1)}\n${full}0\n${full.slice(0, 30)}\n`);
+        const r = R.git(repo, ['push', 'origin', 'main']);
+        expect(r.status, r.out).not.toBe(0);
+        expect(r.out).toContain(`Allow: ${full}`);
+      });
+
+      sh('a value hash committed BEFORE the tip and removed again does not count (only the tip list does)', () => {
+        commitValue('deploy/install.sh', PUB, 'feat: installer\n');
+        allowInTip(`${valueKey(PUB)}\n`);
+        R.git(repo, ['rm', '-q', '.betterleaksignore']);
+        expect(commitF(repo, 'chore: drop the list\n').status).toBe(0);
+        const r = R.git(repo, ['push', 'origin', 'main']);
+        expect(r.status, r.out).not.toBe(0);
+      });
+
+      sh('two pushed refs: an entry counts only when every tip lists it', () => {
+        commitValue('deploy/install.sh', PUB, 'feat: installer\n');
+        R.git(repo, ['branch', 'side']);
+        allowInTip(`${valueKey(PUB)}\n`);
+        const both = R.git(repo, ['push', 'origin', 'main', 'side']);
+        expect(both.status, both.out).not.toBe(0);
+        const mainOnly = R.git(repo, ['push', 'origin', 'main']);
+        expect(mainOnly.status, mainOnly.out).toBe(0);
+      });
+
+      sh('a value hash does not excuse a key in a commit message', () => {
+        const tree = R.gitOut(repo, ['write-tree']);
+        const commit = R.gitOut(repo, ['commit-tree', tree, '-p', 'HEAD', '-m', `rotate ${R.AWS_KEY}`]);
+        R.git(repo, ['update-ref', 'refs/heads/main', commit]);
+        allowInTip(`${valueKey(R.AWS_KEY)}\n`);
+        const r = R.git(repo, ['push', 'origin', 'main']);
+        expect(r.status, r.out).not.toBe(0);
+        expect(r.out).toMatch(/<commit message of [0-9a-f]{12}>/);
+      });
+
+      sh('path:rule:line entries keep per-commit semantics: in the tip only, they do not reach older commits', () => {
+        R.stage(repo, 'deploy/install.sh', `key = "${PUB}"\n`);
+        bypassCommit('feat: installer\n');
+        allowInTip('deploy/install.sh:generic-api-key:1\n');
+        const r = R.git(repo, ['push', 'origin', 'main']);
+        expect(r.status, r.out).not.toBe(0);
+        expect(r.out).toMatch(/deploy\/install\.sh/);
+      });
     });
 
     sh('CLAUDE_COMMIT_NO_SCAN=1 on the push is the audited bypass for the push scan, recorded', () => {
@@ -816,16 +913,17 @@ describe('SEC-MAJOR-4: the commit paths beyond `git commit`', () => {
     });
 
     sh('50 pushed commits are scanned in one pass, well inside a human wait', () => {
-      for (let i = 0; i < 50; i++) {
-        R.stage(repo, `files/f${i}.txt`, `content ${i}\n`);
-        expect(commitF(repo, `chore: file ${i}\n`).status).toBe(0);
-      }
+      // The history is imported, not committed through the hooks: this measures the push scan only
+      // (50 hooked commits alone took most of the old 30 s budget on Windows).
+      R.fastImport(repo, Array.from({ length: 50 }, (_, i) => ({ message: `chore: file ${i}\n`, files: { [`files/f${i}.txt`]: `content ${i}\n` } })), { branch: 'main' });
+      R.git(repo, ['reset', '-q', '--hard', 'main']);
       const started = Date.now();
       const r = R.git(repo, ['push', 'origin', 'main']);
       const elapsed = Date.now() - started;
       expect(r.status, r.out).toBe(0);
       expect(elapsed).toBeLessThan(30000);
-    });
+      expect(remoteHead()).toBe(R.gitOut(repo, ['rev-parse', 'main']));
+    }, 120000);
   });
 });
 
@@ -1109,5 +1207,16 @@ describe('SEC-NIT-2 / SEC-MAJOR-4: what the output and the shims claim', () => {
       const text = fs.readFileSync(path.join(base, rel), 'utf8');
       expect(text, rel).not.toMatch(/every commit path/i);
     }
+  });
+});
+
+describe('isNullDevice', () => {
+  it('treats /dev/null as the null device everywhere and NUL only on Windows', () => {
+    expect(hooks.isNullDevice('/dev/null', 'linux')).toBe(true);
+    expect(hooks.isNullDevice(' /dev/null ', 'win32')).toBe(true);
+    expect(hooks.isNullDevice('NUL', 'win32')).toBe(true);
+    expect(hooks.isNullDevice('nul', 'linux')).toBe(false); // an ordinary relative directory on POSIX
+    expect(hooks.isNullDevice('.githooks', 'win32')).toBe(false);
+    expect(hooks.isNullDevice(undefined, 'win32')).toBe(false);
   });
 });

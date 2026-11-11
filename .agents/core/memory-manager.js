@@ -33,11 +33,8 @@ const { appendJsonl } = require('./_lib/jsonl-writer');
 // Rebuild-status location and the shared index busy timeout.
 const { rebuildStatusPath, INDEX_BUSY_TIMEOUT_MS } = require('./_lib/memory-index-divergence');
 
-// Memory guard constants
-// Cap source is constants.js; env override (MEMORY_MAX_PER_CATEGORY) applied here
-// with the SAME expression as memory-guard.cjs so the two sites can never diverge.
-const MAX_MEMORIES_PER_CATEGORY = parseInt(process.env.MEMORY_MAX_PER_CATEGORY, 10) || CONSTANTS.MEMORY_FILTERS.MEMORY_MAX_PER_CATEGORY;
-const PRUNE_THRESHOLD_PERCENT = CONSTANTS.MEMORY_FILTERS.MEMORY_NEAR_LIMIT_PCT;
+// There is no per-category size cap: ranking, decay and the review queues manage relevance,
+// and a write is never refused for the size of its category.
 const PRUNE_MIN_AGE_DAYS = 30;
 const PRUNE_MIN_CONFIDENCE = 0.3;
 // Dead-weight flagger (ME-1.1): min active-work-days since `created` for a
@@ -408,53 +405,6 @@ class MemoryManager {
 
 
     /**
-     * Get the count of LIVE memories in a category.
-     *
-     * MEM-6: counts only live entries — superseded memories (invalid_at set) are
-     * dead history, and counting them let the per-category cap in createMemory be
-     * blocked by tombstones even when the true live count was well under the cap.
-     *
-     * Deliberately does NOT delegate to listMemories(): that method also queries
-     * the SQLite usage-index and computes decayed_confidence for every record —
-     * far more work than a cap check needs, AND its `listMemories` call is a
-     * scan the F39 single-pass health-check invariant counts on (createMemory's
-     * two getMemoryCount calls would otherwise inject 2 uncounted whole-category
-     * re-scans into a health-check run that writes a probe memory). This does
-     * its own minimal read — file content only enough to check `invalid_at` —
-     * so it stays outside the listMemories call-count contract entirely.
-     *
-     * The JSON files stay the authority here (NOT the SQLite index): the index is
-     * a derived cache that can legitimately lag a file written out-of-band, and
-     * undercounting would let a write slip past the per-category cap. What IS
-     * skipped is the `JSON.parse` — a file that doesn't contain the literal key
-     * `"invalid_at"` anywhere cannot have a top-level `invalid_at`, so it's live
-     * by inspection. Only the (rare) files that do contain the substring are
-     * parsed, which is what made this scan expensive at ~350 memories per category.
-     */
-    async getMemoryCount(category) {
-        const dir = path.join(this.memoriesDir, category);
-        let count = 0;
-        try {
-            const files = await fs.readdir(dir);
-            for (const file of files) {
-                if (!file.endsWith('.json')) continue;
-                try {
-                    const raw = await fs.readFile(path.join(dir, file), 'utf-8');
-                    if (!raw.includes('"invalid_at"')) { count++; continue; }
-                    const memory = JSON.parse(raw);
-                    if (!memory.invalid_at) count++;
-                } catch {
-                    // unreadable/malformed store file — skip, matching
-                    // pruneStaleMemories' tolerance for the same case
-                }
-            }
-        } catch {
-            return 0;
-        }
-        return count;
-    }
-
-    /**
      * Prune stale memories — removes memories older than maxAgeDays
      * with confidence below minConfidence
      */
@@ -502,7 +452,7 @@ class MemoryManager {
      * @param {string} id
      * @param {object} content
      * @param {{overwrite?: boolean}} [opts]
-     * @returns {Promise<object|null>} the created memory, or null on collision/cap
+     * @returns {Promise<object|null>} the created memory, or null on an id collision
      */
     async createMemory(category, id, content, opts = {}) {
         const { overwrite = false } = opts;
@@ -519,28 +469,6 @@ class MemoryManager {
                 console.log(`⛔ Memory guard: ${category}/${id} already exists — refusing to overwrite. Pass {overwrite:true} to replace it, or use updateMemory() to modify it.`);
                 return null;
             }
-        }
-
-        // Memory explosion guard.
-        // The second count is only taken when a prune actually RAN — otherwise the
-        // store is provably unchanged since the first scan and the recount was a
-        // duplicate whole-category read+parse on every single create (two full
-        // scans per write at ~350 files/category). It is NOT derived arithmetically
-        // from `pruned`: pruneStaleMemories deletes by age+confidence regardless of
-        // `invalid_at`, so its return value can include tombstones that never
-        // counted as live, and `count - pruned` would UNDERcount and let a write
-        // slip past the cap.
-        let currentCount = await this.getMemoryCount(category);
-        if (currentCount >= MAX_MEMORIES_PER_CATEGORY * PRUNE_THRESHOLD_PERCENT) {
-            const pruned = await this.pruneStaleMemories(category);
-            if (pruned > 0) {
-                console.log(`⚠️  Memory guard: auto-pruned ${pruned} stale memories from ${category}`);
-                currentCount = await this.getMemoryCount(category);
-            }
-        }
-        if (currentCount >= MAX_MEMORIES_PER_CATEGORY) {
-            console.log(`⛔ Memory guard: ${category} has ${currentCount} entries (max ${MAX_MEMORIES_PER_CATEGORY}). Skipping write for ${id}. Run prune or increase limit.`);
-            return null;
         }
 
         const TYPE_MAP = {
@@ -1403,10 +1331,10 @@ class MemoryManager {
     }
 
     /**
-     * Run all 10 memory lint checks and return a structured health report.
+     * Run all 9 memory lint checks and return a structured health report.
      */
     /**
-     * Run all 10 memory lint checks and return a structured health report.
+     * Run all 9 memory lint checks and return a structured health report.
      * Thin wrapper: assembles {category, summary, full} tuples then delegates
      * to _lib/memory-lint.js. Keeps per-instance decay resolver wired in.
      */
@@ -1427,7 +1355,6 @@ class MemoryManager {
         return lintMemoriesLib(allMemories, {
             calculateDecayedConfidence: (memory) => this.calculateDecayedConfidence(memory),
             categories: this.categories,
-            maxPerCategory: MAX_MEMORIES_PER_CATEGORY,
             retiredIds,
         });
     }
@@ -1503,7 +1430,7 @@ class MemoryManager {
      * MP-3.1: performance/usage analytics — the complement to generateReport()
      * (inventory) and lintMemories() (hygiene). Returns a structured object;
      * formatting lives in the CLI `analytics` case. Sections:
-     *   a) cap_utilization  — per-category {count, cap, pct_full, near_limit}
+     *   a) categories       — per-category {count, stale_count, archive_candidates, never_used}
      *   b) decay            — stale / archive-candidate totals
      *   c) usage            — never-used count + top-5 by usage_count
      *   d) prune            — stale AND usage_count===0, projected store size
@@ -1517,10 +1444,9 @@ class MemoryManager {
      */
     async generateAnalytics({ recentInjections = 50 } = {}) {
         const { MEMORY_DECAY } = require('./constants');
-        const cap = MAX_MEMORIES_PER_CATEGORY;
         const defaultLimit = CONSTANTS.MEMORY_FILTERS.DEFAULT_LIMIT;
 
-        const capUtilization = {};
+        const categoryStats = {};
         const allUsage = [];        // { category, id, usage_count }
         const allDecayed = [];      // decayed_confidence values (for the cliff)
         const pruneCandidates = []; // stale AND usage_count === 0
@@ -1549,12 +1475,8 @@ class MemoryManager {
             totalArchive += archive;
             totalNeverUsed += neverUsed;
 
-            const pctFull = cap > 0 ? count / cap : 0;
-            capUtilization[category] = {
+            categoryStats[category] = {
                 count,
-                cap,
-                pct_full: Number(pctFull.toFixed(3)),
-                near_limit: pctFull >= PRUNE_THRESHOLD_PERCENT,
                 stale_count: stale,
                 archive_candidates: archive,
                 never_used: neverUsed,
@@ -1636,8 +1558,7 @@ class MemoryManager {
 
         return {
             timestamp: new Date().toISOString(),
-            cap,
-            cap_utilization: capUtilization,
+            categories: categoryStats,
             decay: { total_stale: totalStale, total_archive_candidates: totalArchive },
             usage: { never_used: totalNeverUsed, top_used: topUsed },
             prune: {
@@ -1782,10 +1703,9 @@ class MemoryManager {
             return { promoted: false, error: `Invalid suggested id: "${memoryId}" — must be lowercase alphanumeric with '-'/'_' only (no path separators)` };
         }
 
-        // F10: surface an id collision as its own distinct error instead of
-        // letting createMemory's refusal collapse into the generic "category
-        // limit reached?" message below — a collision and a full category are
-        // different problems with different remedies (idOverride vs. wait/prune).
+        // F10: surface an id collision as its own distinct error (remedy: idOverride)
+        // before createMemory is asked; a null below can then only mean the id was
+        // taken by a concurrent write after this check.
         const existingAtTarget = await this.readMemory(category, memoryId);
         if (existingAtTarget) {
             return { promoted: false, error: `id collision: ${category}/${memoryId} already exists — retry with a different --id, or delete/update the existing memory first` };
@@ -1793,7 +1713,7 @@ class MemoryManager {
 
         const created = await this.createMemory(category, memoryId, draft.content || {});
         if (!created) {
-            return { promoted: false, error: `createMemory returned null (category limit reached?)` };
+            return { promoted: false, error: `createMemory returned null (id ${category}/${memoryId} was taken by a concurrent write)` };
         }
 
         try {
