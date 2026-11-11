@@ -13,6 +13,10 @@
  *   MEMORY_EMBED_PROVIDER = auto (default) | ollama | openai | none
  *     auto / ollama  http://127.0.0.1:11434/v1 (a local Ollama that is ALREADY running; nothing is started or installed)
  *     openai         any OpenAI-compatible /v1/embeddings server: MEMORY_EMBED_URL, MEMORY_EMBED_MODEL, MEMORY_EMBED_KEY
+ *   MEMORY_EMBED_URL may list several servers, comma-separated, best machine first
+ *   ("http://legion:11434/v1,http://pc:11434/v1"). Each call tries them in order; a server that fails is skipped
+ *   for HOST_RETRY_MS (remembered in <stateDir>/embed-hosts.json) so a machine that is off does not cost every
+ *   prompt its timeout. Every server must carry the same model, or the vectors are not comparable.
  *     none           keyword-only
  *   MEMORY_EMBED_MODEL defaults to "embeddinggemma".
  * When the embedder is unreachable, recall is keyword-only. Keyword-only has its own relevance gate
@@ -126,18 +130,84 @@ function bm25Rank(corpus, query) {
 
 // ---------------------------------------------------------------- embeddings
 
+/** A comma-separated list of server URLs, trimmed, without trailing slashes or duplicates. */
+function urlList(value) {
+    return [...new Set(String(value || '').split(',').map(u => u.trim().replace(/\/+$/, '')).filter(Boolean))];
+}
+
 function embedConfig(env = process.env) {
     const p = String(env.MEMORY_EMBED_PROVIDER || 'auto').toLowerCase();
     if (p === 'none') return { provider: 'none' };
     const model = env.MEMORY_EMBED_MODEL || DEFAULT_MODEL;
     const key = env.MEMORY_EMBED_KEY || '';
-    if (p === 'openai') return env.MEMORY_EMBED_URL ? { provider: 'openai', url: env.MEMORY_EMBED_URL.replace(/\/+$/, ''), model, key } : { provider: 'none' };
+    const listed = urlList(env.MEMORY_EMBED_URL);
+    if (p === 'openai') return listed.length ? { provider: 'openai', url: listed[0], urls: listed, model, key } : { provider: 'none' };
     if (p === 'auto' || p === 'ollama') {
-        // auto honors an explicit URL; otherwise only the default local Ollama is tried.
-        const url = (p === 'auto' && env.MEMORY_EMBED_URL ? env.MEMORY_EMBED_URL : OLLAMA_URL).replace(/\/+$/, '');
-        return { provider: p === 'auto' && env.MEMORY_EMBED_URL ? 'openai' : 'ollama', url, model, key };
+        // auto honors an explicit URL list; otherwise only the default local Ollama is tried.
+        const urls = p === 'auto' && listed.length ? listed : [OLLAMA_URL];
+        return { provider: p === 'auto' && listed.length ? 'openai' : 'ollama', url: urls[0], urls, model, key };
     }
     return { provider: 'none' };
+}
+
+// ---------------------------------------------------------------- server fallback
+
+const HOST_RETRY_MS = 2 * 60 * 1000;
+const SHORT_BUDGET_MS = 5000;
+
+function readHosts(file) {
+    try { const j = JSON.parse(fs.readFileSync(file, 'utf8')); return j && typeof j === 'object' && !Array.isArray(j) ? j : {}; } catch { return {}; }
+}
+
+function writeHosts(file, hosts) {
+    try {
+        fs.mkdirSync(path.dirname(file), { recursive: true });
+        const tmp = `${file}.${process.pid}.tmp`;
+        fs.writeFileSync(tmp, JSON.stringify(hosts));
+        fs.renameSync(tmp, file);
+    } catch { /* best effort: a lost write only means one more retry */ }
+}
+
+/**
+ * The servers to try, in order: those not marked failed within HOST_RETRY_MS keep their listed order and come
+ * first, then the recently failed ones (still tried, in case they are back). Pure: `hosts` maps url -> failure time.
+ */
+function serverOrder(urls, hosts, now) {
+    const fresh = u => !(Number.isFinite(hosts[u]) && now - hosts[u] >= 0 && now - hosts[u] < HOST_RETRY_MS);
+    return [...urls.filter(fresh), ...urls.filter(u => !fresh(u))];
+}
+
+/**
+ * Run `call(url, msLeft)` against each server in fallback order until one succeeds, sharing one time budget.
+ * A failure marks that server in `hostsFile`; a success clears its mark. Throws the last error when all fail.
+ */
+async function withFallback(urls, call, { timeoutMs, hostsFile, now = Date.now }) {
+    const hosts = hostsFile ? readHosts(hostsFile) : {};
+    const start = now();
+    const deadline = start + timeoutMs;
+    let lastError = new Error('no server listed');
+    let changed = false;
+    try {
+        for (const url of serverOrder(urls, hosts, start)) {
+            const left = deadline - now();
+            if (left <= 0) { lastError = new Error(`no answer within ${timeoutMs} ms`); break; }
+            try {
+                const out = await call(url, left);
+                if (url in hosts) { delete hosts[url]; changed = true; }
+                return out;
+            } catch (e) {
+                lastError = e;
+                // A server loading its model takes seconds on the first call after idle; inside a short budget (a prompt's
+                // recall) that timeout is not a fault, and the load finishes for the next prompt. Other failures (refused,
+                // unreachable, model missing) and timeouts with a long budget mark the server.
+                const timedOut = e && (e.name === 'TimeoutError' || e.name === 'AbortError');
+                if (!(timedOut && timeoutMs < SHORT_BUDGET_MS)) { hosts[url] = now(); changed = true; }
+            }
+        }
+    } finally {
+        if (changed && hostsFile) writeHosts(hostsFile, hosts);
+    }
+    throw urls.length > 1 ? new Error(`all ${urls.length} embedding servers failed; last: ${lastError.message || lastError}`) : lastError;
 }
 
 function unit(v) {
@@ -145,17 +215,27 @@ function unit(v) {
     return v.map(x => x / n);
 }
 
-/** kind: 'doc' | 'query'. Returns unit vectors. Throws on any failure (callers degrade to keyword-only). */
-async function embed(texts, kind, cfg, { timeoutMs = 600000, fetchImpl = globalThis.fetch } = {}) {
+/**
+ * kind: 'doc' | 'query'. Returns unit vectors. Throws on any failure (callers degrade to keyword-only).
+ * With several servers (cfg.urls) each is tried in order within the one `timeoutMs` budget; `hostsFile`
+ * remembers which failed recently (see withFallback).
+ */
+async function embed(texts, kind, cfg, { timeoutMs = 600000, fetchImpl = globalThis.fetch, hostsFile, now } = {}) {
     if (!texts.length) return [];
     if (!cfg || cfg.provider === 'none') throw new Error('no embedding provider');
+    const urls = Array.isArray(cfg.urls) && cfg.urls.length ? cfg.urls : [cfg.url];
+    return withFallback(urls, (url, left) => embedFrom(url, texts, kind, cfg, left, fetchImpl), { timeoutMs, hostsFile, now });
+}
+
+async function embedFrom(url, texts, kind, cfg, timeoutMs, fetchImpl) {
     const prefix = /gemma/i.test(cfg.model) ? (kind === 'doc' ? GEMMA_DOC : GEMMA_QUERY) : '';
     const headers = { 'content-type': 'application/json' };
     if (cfg.key) headers.authorization = `Bearer ${cfg.key}`;
     const out = [];
+    const signal = AbortSignal.timeout(Math.max(1, timeoutMs));
     for (let i = 0; i < texts.length; i += 32) {
-        const res = await fetchImpl(`${cfg.url}/embeddings`, {
-            method: 'POST', headers, signal: AbortSignal.timeout(timeoutMs),
+        const res = await fetchImpl(`${url}/embeddings`, {
+            method: 'POST', headers, signal,
             body: JSON.stringify({ model: cfg.model, input: texts.slice(i, i + 32).map(t => prefix + t) }),
         });
         // Ollama answers 404 for a model it has not pulled (the default "embeddinggemma" is not the "embeddinggemma-2" some
@@ -173,6 +253,7 @@ async function embed(texts, kind, cfg, { timeoutMs = 600000, fetchImpl = globalT
 // ---------------------------------------------------------------- vector index
 
 const indexFile = stateDir => path.join(stateDir, 'vectors.json');
+const hostsFileFor = stateDir => (stateDir ? path.join(stateDir, 'embed-hosts.json') : undefined);
 
 function loadIndex(stateDir) {
     try {
@@ -203,7 +284,7 @@ async function syncIndex(corpus, stateDir, cfg, opts = {}) {
     for (const k of removed) delete idx.items[k];
     const todo = staleKeys(corpus, idx, cfg);
     if (todo.length) {
-        const vecs = await embed(todo.map(k => corpus[k].text), 'doc', cfg, opts);
+        const vecs = await embed(todo.map(k => corpus[k].text), 'doc', cfg, { hostsFile: hostsFileFor(stateDir), ...opts });
         todo.forEach((k, i) => { idx.items[k] = { sha: corpus[k].sha, vec: vecs[i].map(x => Math.round(x * 1e5) / 1e5) }; });
     }
     if (todo.length || removed.length || !fs.existsSync(indexFile(stateDir))) writeIndex(stateDir, idx);
@@ -235,7 +316,7 @@ async function recall({ corpus, query, k = 3, floor = DEFAULT_FLOOR, kwScore = K
         try {
             if (sync) await syncIndex(corpus, stateDir, cfg, { fetchImpl });
             const idx = loadIndex(stateDir);
-            const [qv] = await embed([query], 'query', cfg, { timeoutMs, fetchImpl });
+            const [qv] = await embed([query], 'query', cfg, { timeoutMs, fetchImpl, hostsFile: hostsFileFor(stateDir) });
             const items = idx && idx.model === cfg.model ? idx.items : {};
             for (const key of keys) {
                 const it = items[key];
@@ -266,4 +347,4 @@ async function recall({ corpus, query, k = 3, floor = DEFAULT_FLOOR, kwScore = K
     return { hits, source, stale };
 }
 
-module.exports = { STOP, DEFAULT_FLOOR, tokens, queryTerms, minMatched, minScore, tuningFromEnv, KW_SCORE_PER_LN, bm25Rank, embedConfig, embed, loadIndex, staleKeys, syncIndex, recall, indexFile };
+module.exports = { STOP, DEFAULT_FLOOR, tokens, queryTerms, minMatched, minScore, tuningFromEnv, KW_SCORE_PER_LN, bm25Rank, embedConfig, embed, loadIndex, staleKeys, syncIndex, recall, indexFile, urlList, serverOrder, withFallback, readHosts, hostsFileFor, HOST_RETRY_MS };

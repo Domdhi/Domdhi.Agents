@@ -84,7 +84,8 @@ describe('embedConfig', () => {
     it('none disables; openai without a URL is none; an explicit URL under auto is openai-compatible', () => {
         expect(R.embedConfig({ MEMORY_EMBED_PROVIDER: 'none' }).provider).toBe('none');
         expect(R.embedConfig({ MEMORY_EMBED_PROVIDER: 'openai' }).provider).toBe('none');
-        expect(R.embedConfig({ MEMORY_EMBED_URL: 'http://h:1/v1/', MEMORY_EMBED_MODEL: 'm', MEMORY_EMBED_KEY: 'k' })).toEqual({ provider: 'openai', url: 'http://h:1/v1', model: 'm', key: 'k' });
+        expect(R.embedConfig({ MEMORY_EMBED_URL: 'http://h:1/v1/', MEMORY_EMBED_MODEL: 'm', MEMORY_EMBED_KEY: 'k' })).toEqual({ provider: 'openai', url: 'http://h:1/v1', urls: ['http://h:1/v1'], model: 'm', key: 'k' });
+        expect(R.embedConfig({ MEMORY_EMBED_URL: ' http://a:1/v1/, http://b:1/v1 ,http://a:1/v1' })).toMatchObject({ provider: 'openai', url: 'http://a:1/v1', urls: ['http://a:1/v1', 'http://b:1/v1'] });
         expect(R.embedConfig({ MEMORY_EMBED_PROVIDER: 'bogus' }).provider).toBe('none');
     });
 });
@@ -110,6 +111,58 @@ describe('embeddings against an OpenAI-compatible server', () => {
         await expect(R.embed(['x'], 'doc', cfg, { fetchImpl: notFound })).rejects.toThrow(/model "embeddinggemma" not found.*MEMORY_EMBED_MODEL/);
         const { source } = await R.recall({ corpus: corpusOf(pkill), query: 'pkill matched its own command line and killed the shell', stateDir: tmp.root, cfg, fetchImpl: notFound });
         expect(source).toContain('MEMORY_EMBED_MODEL');
+    });
+});
+
+describe('several embedding servers, best first', () => {
+    const hostsFile = () => R.hostsFileFor(tmp.root);
+    it('falls through a failing server to the next and remembers the failure', async () => {
+        const dead = await embedServer({ fail: true });
+        const good = await embedServer();
+        const cfg = { provider: 'openai', url: `${dead.url}/v1`, urls: [`${dead.url}/v1`, `${good.url}/v1`], model: 'm', key: '' };
+        const v = await R.embed(['x'], 'query', cfg, { timeoutMs: 5000, hostsFile: hostsFile() });
+        expect(v).toHaveLength(1);
+        expect(dead.calls).toHaveLength(1);
+        expect(good.calls).toHaveLength(1);
+        expect(Object.keys(R.readHosts(hostsFile()))).toEqual([`${dead.url}/v1`]);
+        // Within the retry window the failed server goes last, so the next call reaches the good one first.
+        await R.embed(['y'], 'query', cfg, { timeoutMs: 5000, hostsFile: hostsFile() });
+        expect(dead.calls).toHaveLength(1);
+        expect(good.calls).toHaveLength(2);
+    });
+    it('serverOrder keeps the listed order, moves recent failures last, and retries them after HOST_RETRY_MS', () => {
+        const urls = ['legion', 'pc', 'dmo'];
+        expect(R.serverOrder(urls, {}, 1000)).toEqual(urls);
+        expect(R.serverOrder(urls, { legion: 1000 }, 1000 + R.HOST_RETRY_MS - 1)).toEqual(['pc', 'dmo', 'legion']);
+        expect(R.serverOrder(urls, { legion: 1000 }, 1000 + R.HOST_RETRY_MS)).toEqual(urls);
+        expect(R.serverOrder(urls, { legion: 'junk', pc: 5000 }, 1000)).toEqual(urls); // a mark from the future or junk is ignored
+    });
+    it('a server that answers again is cleared, and when every server fails the error says so', async () => {
+        const dead = await embedServer({ fail: true });
+        const good = await embedServer();
+        const file = hostsFile();
+        require('node:fs').mkdirSync(tmp.root, { recursive: true });
+        require('node:fs').writeFileSync(file, JSON.stringify({ [`${good.url}/v1`]: Date.now() - 1000 }));
+        await R.embed(['x'], 'query', { provider: 'openai', url: `${good.url}/v1`, urls: [`${good.url}/v1`], model: 'm', key: '' }, { timeoutMs: 5000, hostsFile: file });
+        expect(R.readHosts(file)).toEqual({});
+        const both = { provider: 'openai', url: `${dead.url}/v1`, urls: [`${dead.url}/v1`, `${dead.url}/v1/x`], model: 'm', key: '' };
+        await expect(R.embed(['x'], 'query', both, { timeoutMs: 5000, hostsFile: file })).rejects.toThrow(/all 2 embedding servers failed.*500/);
+    });
+    it('a timeout inside a short budget (a cold model load) does not mark the server; a long-budget timeout does', async () => {
+        const slow = (url, ms) => new Promise((_, reject) => setTimeout(() => reject(Object.assign(new Error('timed out'), { name: 'TimeoutError' })), 5));
+        const file = hostsFile();
+        await expect(R.withFallback(['legion'], slow, { timeoutMs: 400, hostsFile: file })).rejects.toThrow(/timed out/);
+        expect(R.readHosts(file)).toEqual({});
+        await expect(R.withFallback(['legion'], slow, { timeoutMs: 60000, hostsFile: file })).rejects.toThrow(/timed out/);
+        expect(Object.keys(R.readHosts(file))).toEqual(['legion']);
+    });
+    it('recall falls through to the second server within its budget and stays hybrid', async () => {
+        const dead = await embedServer({ fail: true });
+        const good = await embedServer();
+        const cfg = { provider: 'openai', url: `${dead.url}/v1`, urls: [`${dead.url}/v1`, `${good.url}/v1`], model: 'm', key: '' };
+        await R.syncIndex(corpusOf(ssh, mint, pkill), tmp.root, cfg);
+        const { source } = await R.recall({ corpus: corpusOf(ssh, mint, pkill), query: 'ssh to dmo keeps dropping when idle', stateDir: tmp.root, cfg, timeoutMs: 2000 });
+        expect(source).toBe('hybrid');
     });
 });
 

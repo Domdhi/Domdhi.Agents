@@ -2687,3 +2687,33 @@ describe('buildFtsQuery', () => {
     expect(buildFtsQuery(null)).toBe(null);
   });
 });
+
+describe('indexMemory binds no undefined value', () => {
+  // Node 24's node:sqlite refuses to bind undefined ("Provided value cannot be bound to SQLite parameter N"); Node 26
+  // quietly stores NULL. A strict fake binder makes the contract hold on every Node version: the largest adopter's CI (Node 24)
+  // failed four prune-unused tests whose seeded memories have no `metadata`, while every local run passed.
+  function strictDb(bound) {
+    return {
+      prepare: () => ({
+        run: (...args) => {
+          const at = args.findIndex(value => value === undefined);
+          if (at >= 0) throw new Error(`Provided value cannot be bound to SQLite parameter ${at + 1}.`);
+          bound.push(args);
+        },
+        get: () => undefined,
+      }),
+    };
+  }
+
+  it('a memory with no metadata (and no updated) indexes with NULLs, not undefined', () => {
+    const manager = new MemoryManager();
+    const bound = [];
+    manager.db = strictDb(bound);
+    const ok = manager.indexMemory({ id: 'no-metadata', category: 'patterns', created: '2026-11-11T00:00:00.000Z', content: { description: 'x' } });
+    expect(manager.lastIndexError ?? null).toBeNull();
+    expect(ok).toBe(true);
+    const row = bound.find(args => args[0] === 'no-metadata' && args.length === 11);
+    expect(row[3]).toBeNull();
+    expect(row[5]).toBe('2026-11-11T00:00:00.000Z');
+  });
+});

@@ -26,11 +26,12 @@ beforeEach(() => {
     sessionsDir = path.join(tmp.root, 'claude', 'projects', mungePath(tmp.root));
     stateDir = path.join(tmp.root, 'docs', '.output', '.state', 'memory-notes');
     fs.mkdirSync(sessionsDir, { recursive: true });
+    // The developer's own MEMORY_* settings (capture, sync, embed servers) must not reach the CLI under test.
     env = {
-        ...process.env, AGENT_SHARED_STATE_ROOT: tmp.root, AGENTS_PROJECT_DIR: tmp.root, CLAUDE_CONFIG_DIR: path.join(tmp.root, 'claude'), MEMORY_DIR: memDir,
+        ...Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('MEMORY_'))), AGENT_SHARED_STATE_ROOT: tmp.root, AGENTS_PROJECT_DIR: tmp.root, CLAUDE_CONFIG_DIR: path.join(tmp.root, 'claude'), MEMORY_DIR: memDir,
         MEMORY_EMBED_PROVIDER: 'none', MEMORY_PROFILE: 'standard',
     };
-    for (const k of ['ANTHROPIC_API_KEY', 'ANTHROPIC_BASE_URL', 'MEMORY_CAPTURE', 'MEMORY_CAPTURE_PROVIDER', 'MEMORY_CAPTURE_KEY_COMMAND', 'MEMORY_CAPTURE_MODEL', 'CLAUDE_PROJECT_DIR']) delete env[k];
+    for (const k of ['ANTHROPIC_API_KEY', 'ANTHROPIC_BASE_URL', 'CLAUDE_PROJECT_DIR']) delete env[k];
 });
 afterEach(async () => { await Promise.all(servers.map(s => s.close())); tmp.cleanup(); });
 

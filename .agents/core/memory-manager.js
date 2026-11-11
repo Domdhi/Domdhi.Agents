@@ -358,7 +358,7 @@ class MemoryManager {
             `);
             stmt.run(
                 memory.id, memory.category,
-                JSON.stringify(memory.content), JSON.stringify(memory.metadata),
+                JSON.stringify(memory.content) ?? null, JSON.stringify(memory.metadata) ?? null,
                 // ?? null: node:sqlite cannot bind undefined — a hand-authored
                 // record missing `updated` used to abort indexing here, leaving
                 // that memory silently invisible to FTS search (retro 260716).

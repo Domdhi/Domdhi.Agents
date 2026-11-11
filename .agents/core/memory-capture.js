@@ -74,7 +74,10 @@ function captureConfig(env = process.env, which) {
     const provider = asked === 'openai' ? 'openai' : asked === 'claude-cli' ? 'claude-cli' : 'anthropic';
     if (provider === 'openai') {
         const model = env.MEMORY_CAPTURE_MODEL || '';
-        return { provider, model, baseUrl: env.MEMORY_CAPTURE_BASE_URL || 'http://127.0.0.1:11434/v1', key: env.MEMORY_CAPTURE_API_KEY || '', keySource: 'n/a', ready: Boolean(model) };
+        // MEMORY_CAPTURE_BASE_URL may list several servers, comma-separated, best machine first; each call tries them in order.
+        const baseUrls = rec.urlList(env.MEMORY_CAPTURE_BASE_URL);
+        if (!baseUrls.length) baseUrls.push('http://127.0.0.1:11434/v1');
+        return { provider, model, baseUrl: baseUrls[0], baseUrls, key: env.MEMORY_CAPTURE_API_KEY || '', keySource: 'n/a', ready: Boolean(model) };
     }
     const { models, defaultAlias } = ex.modelTable();
     const alias = env.MEMORY_CAPTURE_MODEL || defaultAlias;
@@ -157,7 +160,7 @@ async function captureOne(file, ctx, o, env, io) {
     }
     const input = o.method === 'U' ? ex.userOnly(r) : r.text;
     const parts = ex.chunks(input);
-    io.log(`session ${sid.slice(0, 8)}: ${input.length} chars to send in ${parts.length} call(s) to ${cfg.provider === 'openai' ? cfg.baseUrl : cfg.provider === 'claude-cli' ? `claude -p (${cfg.model}, your Claude login)` : cfg.model}`);
+    io.log(`session ${sid.slice(0, 8)}: ${input.length} chars to send in ${parts.length} call(s) to ${cfg.provider === 'openai' ? (cfg.baseUrls || [cfg.baseUrl]).join(' > ') : cfg.provider === 'claude-cli' ? `claude -p (${cfg.model}, your Claude login)` : cfg.model}`);
     if (o.dryRun) return { staged: 0, cost: 0 };
     // Recursion guard: the keyless provider's own child session must never start a capture.
     if (env.MEMORY_CAPTURE_INNER) throw new Error('capture refused inside a capture child (MEMORY_CAPTURE_INNER is set)');
@@ -180,7 +183,8 @@ async function captureOne(file, ctx, o, env, io) {
         const m = cfgX.price || { inPerM: 0, outPerM: 0 };
         for (const text of parts) {
             const res = cfgX.provider === 'openai'
-                ? await ex.callOpenAI({ baseUrl: cfgX.baseUrl, model: cfgX.model, key: cfgX.key, text, known, fetchImpl: io.fetchImpl })
+                ? await rec.withFallback(cfgX.baseUrls || [cfgX.baseUrl], baseUrl => ex.callOpenAI({ baseUrl, model: cfgX.model, key: cfgX.key, text, known, fetchImpl: io.fetchImpl }),
+                    { timeoutMs: 30 * 60 * 1000, hostsFile: path.join(ctx.stateDir, 'capture-hosts.json') })
                 : cfgX.provider === 'claude-cli'
                     ? await ex.callClaudeCli({ model: cfgX.model, text, known, env })
                     : await ex.callAnthropic({ model: cfgX.model, key, text, known, fetchImpl: io.fetchImpl, retryMs: io.retryMs });
@@ -375,14 +379,16 @@ const commands = {
     async status(a, ctx, env, io) {
         const cap = captureConfig(env), emb = rec.embedConfig(env), corpus = notes.loadCorpus({ memoryDir: ctx.memoryDir, engineRoot: ctx.engineRoot });
         const idx = rec.loadIndex(ctx.stateDir);
+        const hosts = rec.readHosts(rec.hostsFileFor(ctx.stateDir)), t = Date.now();
+        const hostState = u => (Number.isFinite(hosts[u]) && t - hosts[u] < rec.HOST_RETRY_MS ? `${u} (failed ${Math.round((t - hosts[u]) / 1000)}s ago)` : u);
         const on = captureEnabled(env), rOff = !recallEnabled(env);
         io.log([
             `memory dir:        ${ctx.memoryDir}${env.MEMORY_DIR ? '  (MEMORY_DIR)' : '  (native auto-memory dir)'}`,
             `corpus:            ${Object.values(corpus).filter(d => d.source === 'notes').length} notes + ${Object.values(corpus).filter(d => d.source === 'engine').length} engine memories`,
             `recall hook:       ${rOff ? 'OFF (MEMORY_RECALL)' : 'on'}${env.MEMORY_PROFILE === 'minimal' ? ' but disabled by MEMORY_PROFILE=minimal' : ''}`,
-            `embeddings:        ${emb.provider === 'none' ? 'none (keyword-only)' : `${emb.provider} ${emb.url} model ${emb.model}`}; indexed ${idx ? Object.keys(idx.items).length : 0}/${Object.keys(corpus).length}`,
+            `embeddings:        ${emb.provider === 'none' ? 'none (keyword-only)' : `${emb.provider} ${(emb.urls || [emb.url]).map(u => hostState(u)).join(' > ')} model ${emb.model}`}; indexed ${idx ? Object.keys(idx.items).length : 0}/${Object.keys(corpus).length}`,
             `auto capture:      ${on ? 'ON (MEMORY_CAPTURE)' : 'off (set MEMORY_CAPTURE=on to enable the SessionEnd hook)'}`,
-            `capture provider:  ${cap.provider} ${cap.model || '(no model)'}; ${cap.provider === 'openai' ? `server ${cap.baseUrl}` : cap.provider === 'claude-cli' ? `runs \`claude -p\` with your Claude login (no API key)` : `key source: ${cap.keySource}`}; ${cap.ready ? 'ready' : 'NOT READY'}`,
+            `capture provider:  ${cap.provider} ${cap.model || '(no model)'}; ${cap.provider === 'openai' ? `server ${(cap.baseUrls || [cap.baseUrl]).join(' > ')}` : cap.provider === 'claude-cli' ? `runs \`claude -p\` with your Claude login (no API key)` : `key source: ${cap.keySource}`}; ${cap.ready ? 'ready' : 'NOT READY'}`,
             ...captureProviders(env).slice(1).map(p => { const f = captureConfig(env, p); return `capture fallback:  ${f.provider} ${f.model || '(no model)'}; ${f.ready ? 'ready' : 'NOT READY'}`; }),
             `notes sync:       ${syncLine(ctx)}`,
             `candidates:        ${listMd(ctx.candidatesDir).length} awaiting review; ${pendingSessions(ctx, 30).length} session(s) not yet captured`,
