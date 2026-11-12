@@ -1029,6 +1029,63 @@ describe('SEC-MAJOR-8: a large or binary-looking staged file is scanned, never s
 });
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
+describe('moved or copied committed content is not rescanned; changed content is', () => {
+  // Moving a folder of already-committed design files re-raised old false positives at commit, because the
+  // staged scan lists a rename as a new file. A blob already committed adds nothing new.
+  sh('a rename of a committed file holding a key commits without a finding', () => {
+    keyFile('old/leak.txt');
+    bypassCommit();
+    R.git(repo, ['mv', 'old', 'new']);
+    const r = commitF(repo, 'chore: move folder\n');
+    expect(r.status, r.out).toBe(0);
+    expect(R.gitOut(repo, ['ls-files'])).toContain('new/leak.txt');
+  });
+
+  sh('a byte-identical copy of committed content commits without a finding', () => {
+    keyFile('leak.txt');
+    bypassCommit();
+    R.stage(repo, 'copy/leak.txt', `k=${R.AWS_KEY}\n`);
+    const r = commitF(repo, 'chore: copy\n');
+    expect(r.status, r.out).toBe(0);
+  });
+
+  sh('a moved file with ANY change is a new blob and is scanned', () => {
+    keyFile('leak.txt');
+    bypassCommit();
+    R.git(repo, ['mv', 'leak.txt', 'moved.txt']);
+    R.stage(repo, 'moved.txt', `k=${R.AWS_KEY}\nextra line\n`);
+    const before = count();
+    const r = commitF(repo, 'chore: move and edit\n');
+    expect(r.status, r.out).not.toBe(0);
+    expect(r.out).toMatch(/AWS Access Key/);
+    expect(count()).toBe(before);
+  });
+
+  sh('a new key is still caught next to a moved committed file', () => {
+    keyFile('old.txt');
+    bypassCommit();
+    R.git(repo, ['mv', 'old.txt', 'renamed.txt']);
+    R.stage(repo, 'fresh.txt', `token=${R.AWS_KEY.replace(/.$/, 'Q')}\n`);
+    const r = commitF(repo, 'chore: move plus new key\n');
+    expect(r.status, r.out).not.toBe(0);
+    expect(r.out).toMatch(/fresh\.txt/);
+    expect(r.out).not.toMatch(/renamed\.txt/);
+  });
+
+  sh('pushing a rename of content already on the remote passes', () => {
+    const remote = R.addRemote(repo, tmp.root);
+    keyFile('old/leak.txt');
+    bypassCommit();
+    const first = R.git(repo, ['push', '-q', '-u', 'origin', 'main'], { env: BYPASS });
+    expect(first.status, first.out).toBe(0);
+    R.git(repo, ['mv', 'old', 'new']);
+    expect(commitF(repo, 'chore: move\n').status).toBe(0);
+    const r = R.git(repo, ['push', 'origin', 'main']);
+    expect(r.status, r.out).toBe(0);
+    expect(R.gitOut(remote, ['rev-parse', 'main'])).toBe(R.gitOut(repo, ['rev-parse', 'main']));
+  });
+});
+
 describe('CR-m1: core.hooksPath that is not a directory means "hooks disabled", reported, never thrown', () => {
   sh('core.hooksPath=/dev/null: install reports it, no stack trace, nothing written', () => {
     hooks.removeHooks(repo);

@@ -247,12 +247,31 @@ function scanChunk(root, chunk, blobs, results, { ignore, batch }) {
 // ── the commit being made ─────────────────────────────────────────────────────
 
 /**
+ * Blob ids already committed at HEAD. A staged file whose exact content is one of them adds nothing new to the
+ * repository: a rename, a move or a copy of committed content. Without HEAD (the first commit) or if git cannot
+ * list it, the set is empty and everything staged is scanned: over-scan, never under-scan.
+ */
+function committedBlobs(root) {
+    let out;
+    try { out = gitOut(['ls-tree', '-r', '-z', '--full-tree', 'HEAD'], root); } catch { return new Set(); }
+    const ids = new Set();
+    for (const rec of Buffer.from(out).toString('utf8').split('\0')) {
+        const m = /^\d+ blob ([0-9a-f]+)\t/.exec(rec);
+        if (m) ids.add(m[1]);
+    }
+    return ids;
+}
+
+/**
  * Scan the staged set. Returns { order, results, gitlinks }: `order` the scanned paths in diff order.
  * The ignore list is the INDEX version of `.betterleaksignore`, so an entry counts once it is itself staged.
+ * Content already committed at HEAD is not rescanned (see committedBlobs): moving a folder of old files must not
+ * re-raise findings on bytes the repository already holds. Any changed byte is a new blob and is scanned.
  */
 function scanStaged(root, { batch = true } = {}) {
     const { entries, gitlinks } = listStaged(root);
-    const todo = entries.filter(e => !patterns.isHardSkipPath(e.path)).map(e => ({ rel: e.path, path: e.path, sha: e.sha }));
+    const committed = committedBlobs(root);
+    const todo = entries.filter(e => !patterns.isHardSkipPath(e.path) && !committed.has(e.sha)).map(e => ({ rel: e.path, path: e.path, sha: e.sha }));
     const results = scanEntries(root, todo, { ignore: engine.projectIgnoreSet(root), batch });
     return { order: todo.map(e => e.rel), results, gitlinks };
 }
@@ -414,6 +433,8 @@ function scanPush(root, remote, url, updates, { batch = true } = {}) {
         commits.forEach((c, i) => ignoreByCommit.set(c, ignoreText[i].missing || ignoreText[i].type !== 'blob' ? new Set() : engine.parseIgnore(ignoreText[i].content.toString('utf8'))));
         for (const e of raw) {
             if (!SYMLINK_AND_FILE_MODES.has(e.mode) || patterns.isHardSkipPath(e.path)) continue;
+            // A blob the listing does not send is already on the remote (a renamed or moved file): the push does not publish it.
+            if (!names.has(e.sha)) continue;
             const key = `${e.sha}\0${e.path}`;
             if (!byKey.has(key)) byKey.set(key, { sha: e.sha, path: e.path, commits: [] });
             byKey.get(key).commits.push(e.commit);
@@ -488,6 +509,6 @@ function scanPush(root, remote, url, updates, { batch = true } = {}) {
 }
 
 module.exports = {
-    GitScanError, toplevel, parseRaw, listStaged, catBatch, checkBlobs, readBlobs, scanEntries, scanStaged,
+    GitScanError, toplevel, parseRaw, listStaged, committedBlobs, catBatch, checkBlobs, readBlobs, scanEntries, scanStaged,
     parsePushLines, scanPush, tipValueAllows, remoteAdvertised, typesOf, stagingUnsafe, CHUNK_BYTES,
 };
