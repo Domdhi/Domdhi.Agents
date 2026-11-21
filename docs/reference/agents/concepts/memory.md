@@ -4,6 +4,8 @@ The curated memory store is tracked JSON under `docs/.output/.memory/`: reusable
 
 Runtime helpers need Node with no mandatory npm install. Node 24+ provides built-in SQLite/FTS5; an older runtime can use optional better-sqlite3 or fall back to JSON search. The source, optional index and additive schema migrations are implemented in [memory-manager.js](../../../../.agents/core/memory-manager.js).
 
+Two boundaries matter when the working tree is not trusted (a headless run whose model can write inside the checkout). Hooks run outside any sandbox, so: (1) `MEMORY_SQLITE_NPM=off` (also `0`, `false`, `no`) stops `_lib/sqlite-backend.js` from requiring anything out of the project's `node_modules/` (built-in SQLite, else the JSON scan); unset keeps every install working. (2) Every hook state write under `docs/.output/.state/` (daily log, telemetry, notes state, the index, session snapshots) refuses a symlinked ancestor folder or file through `_lib/fs-safe.js` and skips with one stderr line; a refused write never fails or blocks a hook.
+
 ## Acquisition and capture
 
 Main Agent creates a small number of curated memories from reusable learning at session-handoff boundaries. Subagents stage drafts in `docs/.output/.state/memory-inbox/`; only the main owner promotes/discards them. A session can produce no useful new memory. Do not store task/branch progress that belongs in a TODO or handoff.

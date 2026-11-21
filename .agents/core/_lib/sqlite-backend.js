@@ -19,6 +19,26 @@
  * All paths satisfy the same minimal API: new DatabaseSync(path[, {readOnly}]),
  * db.exec(sql), db.prepare(sql).run/get/all, db.close().
  *
+ * TRUST BOUNDARY OF THE NPM DRIVER (L1H, security review M6). better-sqlite3 is the one non-built-in
+ * module a hook process loads: a bare `require` walks up from this file into the project's own
+ * `node_modules/` (and, for the legacy install, `.claude/core/node_modules`). Hooks run unsandboxed
+ * on a tree whose `node_modules/` a sandboxed run can write (only `node_modules/.bin` is protected
+ * by the CLI), so on Node < 24 a planted `node_modules/better-sqlite3/index.js` is code execution
+ * outside the sandbox, with the user's privileges and network. The package cannot be verified from
+ * inside the tree it lives in (a modified-time or symlink check is defeated by writing a real
+ * directory and `utimes`), and adopters legitimately keep it in the project's `node_modules`, so
+ * the driver cannot be moved or pinned without breaking them. The sound lever is therefore to let a
+ * caller that does not trust the tree turn the npm driver OFF:
+ *
+ *   MEMORY_SQLITE_NPM=off   (also 0, false, no)  never load better-sqlite3: node:sqlite, else the
+ *                            JSON-only scan. Nothing from `node_modules/` is required.
+ *
+ * The environment variable is read from the `claude` process's environment, which every hook
+ * inherits and the model cannot change. The headless fix-on-a-branch wrapper (scheduled-runs guide)
+ * sets it, and also refuses a Node older than 24 so the built-in driver is the one in play. Unset
+ * (the default) keeps every existing install working. On Node 24+ node:sqlite already leads, so the
+ * npm driver is only ever reached when the built-in one is missing.
+ *
  * NOTE: supportsFts5 is a CAPABILITY PROBE, not a backend label. A prior
  * version hardcoded it false for node:sqlite — which produced a misleading
  * health report (search worked fine, but the report claimed FTS5 was
@@ -43,6 +63,17 @@ function probeFts5(DS) {
   }
 }
 
+/**
+ * Whether the optional npm driver may be loaded. False when MEMORY_SQLITE_NPM is off, 0, false or no
+ * (case-insensitive); true otherwise, so an unset variable changes nothing.
+ *
+ * @param {object} [env] defaults to process.env (a missing env, as in a bare vm sandbox, counts as unset)
+ * @returns {boolean}
+ */
+function npmDriverAllowed(env = process.env || {}) {
+  return !['off', '0', 'false', 'no'].includes(String(env.MEMORY_SQLITE_NPM || '').trim().toLowerCase());
+}
+
 // Try to adopt better-sqlite3. `require()` only loads the JS wrapper — the native
 // .node binary loads lazily at construction and can fail on an ABI mismatch (a
 // better-sqlite3 built for a different Node major). So we PROBE (construct an
@@ -51,6 +82,7 @@ function probeFts5(DS) {
 // (Known coverage gap: on Node 24+ node:sqlite always wins first, so this branch
 // only executes on Node < 24 or a runtime whose built-in sqlite is absent.)
 function tryBetterSqlite3() {
+  if (!npmDriverAllowed()) return null; // an untrusted tree: load nothing from node_modules/ (see the header)
   try {
     let BetterSqlite3;
     try { BetterSqlite3 = require('better-sqlite3'); }
@@ -127,4 +159,4 @@ function resolveSqliteOpener({ readOnly = false } = {}) {
   return (dbPath) => new DatabaseSync(dbPath, { readOnly });
 }
 
-module.exports = { probeFts5, resolveSqliteBackend, resolveSqliteOpener };
+module.exports = { probeFts5, resolveSqliteBackend, resolveSqliteOpener, npmDriverAllowed };

@@ -2,6 +2,8 @@
 
 **Load this when:** executing an implementation plan with independent tasks — dispatching a fresh subagent per task with spec compliance review first, then code quality review.
 
+When to run a review (per wave, mid-epic, final) is in [review-cadence.md](review-cadence.md). "Per task" below means the unit of work you dispatch, which in a planned run is a wave's diff, not each story.
+
 ---
 
 ## Core Principle
@@ -11,7 +13,7 @@ Fresh subagent per task + two-stage review (spec then quality) = high quality, f
 **Stage 1 — Coverage (Spec Compliance + Candidate Findings):** Did they build what was requested (nothing more, nothing less)? While reading the diff, surface every candidate code finding — including low-confidence ones — each labeled with confidence and severity. Do not filter; discovery is the goal.
 **Stage 2 — Adjudicate (Code Quality):** Is it well-built (clean, tested, maintainable)? Receive the candidate findings from stage 1 and apply severity and escalation rules to decide what blocks merge. (Adjudication ranks findings; it is not the ship-level judge — that gate lives in verification-before-completion.)
 
-Always run spec compliance before code quality. Never run code quality review if spec compliance has open issues.
+Run spec compliance before code quality, and do not run code quality review while spec compliance has open issues.
 
 ---
 
@@ -130,14 +132,14 @@ Task tool (general-purpose):
 
     ## Do Not Trust the Report
 
-    The implementer may have been optimistic. You MUST verify everything independently.
+    The implementer may have been optimistic. Verify everything independently.
 
-    DO NOT:
+    Do not:
     - Take their word for what they implemented
     - Trust their claims about completeness
     - Accept their interpretation of requirements
 
-    DO:
+    Do:
     - Read the actual code they wrote
     - Compare actual implementation to requirements line by line
     - Check for missing pieces they claimed to implement
@@ -185,7 +187,7 @@ When an implementation passes its tests but the tests themselves were bent to fi
 
 - **Implementation gaps masked by test rewrites.** If the AC says "skip path X" and the test asserts "skip path Y" instead, the implementation is missing X — the agent worked around the gap by editing the test. Force the implementation change, not the test change.
 - **Test asserts literal AC numbers/strings instead of behavior.** Hard-coding the exact value from the AC into the assertion (rather than deriving it) can pass while the logic that should produce it is absent. Verify the value is computed, not pasted.
-- **Seeding return values ignored when spies/mocks are present.** When a test mocks a boundary, every setup call that seeds state (create, insert, add) MUST assert its return value. Otherwise silent seeding failures pass on canned mock data while the real store is empty — one assertion per seeding call closes the false-confidence gap.
+- **Seeding return values ignored when spies/mocks are present.** When a test mocks a boundary, every setup call that seeds state (create, insert, add) must assert its return value. Otherwise silent seeding failures pass on canned mock data while the real store is empty — one assertion per seeding call closes the false-confidence gap.
 - **Spy-on-the-subject boundary check.** Spying on / mocking the very method that the AC is about hollows the test. Mocking a boundary is legitimate when the bypassed behavior has its own coverage; it is not when the bypassed behavior IS the AC under review. If the AC is "search returns the right results" and the test mocks `search` → flag as MAJOR.
 
 ---
@@ -215,7 +217,7 @@ Task tool (code-reviewer):
 
 ---
 
-## Red Flags — Never Do These
+## Red Flags
 
 - Skip spec compliance review
 - Run code quality review before spec compliance passes
@@ -224,7 +226,7 @@ Task tool (code-reviewer):
 - Skip scene-setting context (subagent needs to know where task fits)
 - Ignore subagent questions (answer before letting them proceed)
 - Accept "close enough" on spec compliance (issues found = not done)
-- Skip review loops (reviewer found issues = implementer fixes = review again)
+- Skip fixing a reviewer finding (each one is fixed and proven by a test; no second review)
 - Let implementer self-review replace actual review (both are needed)
 - Move to next task while either review has open issues
 

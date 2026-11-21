@@ -17,10 +17,17 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { getTelemetryDir } = require('./telemetry-paths');
-const { sameRealDir } = require('./fs-safe');
+const { sameRealDir, assertNoSymlinkedAncestor } = require('./fs-safe');
 
 const RECEIPT_SCHEMA = 1;
 const HISTORY_CAP = 200;
+/** The by-id receipt archive keeps this many passing receipts, newest by mtime; older receipts past it are gone. */
+const ARCHIVE_CAP = 200;
+/** Receipts that are not a plain passing run (failed, running, filtered, change-scoped) live in a separate small ring so they never evict a wave's passing receipt. */
+const ARCHIVE_FAILED_CAP = 20;
+/** A receipt is a few KB; anything larger than this in the archive is not one. */
+const ARCHIVE_MAX_BYTES = 4 * 1024 * 1024;
+const ARCHIVE_ID = /^[A-Za-z0-9_-]{1,64}$/;
 const DEFAULT_RECEIPTS = Object.freeze({ maxAgeHours: 24, forceRunEvery: 5, requireFullForPr: false });
 /** Gitignored working state; never part of the tree hash, so writing a receipt cannot change it. */
 const STATE_PREFIX = 'docs/.output/.state/';
@@ -551,7 +558,7 @@ function bumpReuse(records, id) {
  *
  * @returns {{ok:boolean, reasons:{check:string, message:string}[]}}
  */
-function evaluateReceipt({ receipt, current, mode, projectNames }) {
+function evaluateReceipt({ receipt, current, mode, projectNames, ignoreCurrentTree = false }) {
     const reasons = [];
     const fail = (check, message) => reasons.push({ check, message });
     if (!receipt || typeof receipt !== 'object' || receipt.schema !== RECEIPT_SCHEMA) {
@@ -565,9 +572,13 @@ function evaluateReceipt({ receipt, current, mode, projectNames }) {
     if (mode !== 'full' && receipt.mode !== 'full' && receipt.mode !== 'normal') fail('mode', `the receipt has an unknown mode ${JSON.stringify(receipt.mode)}`);
     if (!receipt.treeHashStart || !receipt.treeHashEnd) fail('treeHash', 'the receipt has no tree hash');
     else if (receipt.treeHashStart !== receipt.treeHashEnd) fail('treeHash', `the tree changed during the run (${short(receipt.treeHashStart)} → ${short(receipt.treeHashEnd)}); that run proves nothing`);
-    if (!current.treeHash) fail('treeHash', 'the current tree hash could not be computed');
-    else if (receipt.treeHashStart && receipt.treeHashStart !== current.treeHash) {
-        fail('treeHash', `tree hash: the receipt covers ${short(receipt.treeHashStart)} but the tree is now ${short(current.treeHash)} (files were edited, added or removed since the gate ran)`);
+    // `ignoreCurrentTree` is the code-hash caller's switch (verifyReceiptEvidence): the whole-tree comparison is its
+    // one omission, because the code hash it checks instead leaves out the files a wave edits after its gate.
+    if (!ignoreCurrentTree) {
+        if (!current.treeHash) fail('treeHash', 'the current tree hash could not be computed');
+        else if (receipt.treeHashStart && receipt.treeHashStart !== current.treeHash) {
+            fail('treeHash', `tree hash: the receipt covers ${short(receipt.treeHashStart)} but the tree is now ${short(current.treeHash)} (files were edited, added or removed since the gate ran)`);
+        }
     }
     if (!current.head) fail('head', 'the current HEAD could not be read');
     else if (receipt.head !== current.head) fail('head', `HEAD: the receipt was taken at ${short(receipt.head)} but HEAD is ${short(current.head)}`);
@@ -661,8 +672,88 @@ function treeSnapshot(root) {
         });
     }
     for (const key of [...entries.keys()]) if (key.startsWith(STATE_PREFIX)) entries.delete(key);
-    const lines = [...entries.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([file, e]) => `${e.mode} ${e.blob}\t${file}\n`);
-    return { ok: true, hash: sha256(lines.join('')), entries };
+    return { ok: true, hash: hashTreeEntries(entries), entries };
+}
+
+/**
+ * The tree hash over a snapshot's entries: sha256 of one `${mode} ${blob}\t${path}\n` line per
+ * entry, sorted by path in UTF-16 code-unit order. With no `exclude` the output is byte-identical
+ * to the hash `treeSnapshot` has always produced, so receipts written before this existed verify.
+ * `exclude(path)` returning true drops that entry; anything else but undefined throws, because a
+ * mistyped exclusion (a string, an array) must never silently hash everything.
+ *
+ * @param {Map<string,{mode:string, blob:string}>} entries
+ * @param {{exclude?: (path:string) => boolean}} [options]
+ * @returns {string}
+ */
+function hashTreeEntries(entries, { exclude } = {}) {
+    if (exclude !== undefined && typeof exclude !== 'function') throw new TypeError('hashTreeEntries: exclude must be a function');
+    const kept = [...entries.entries()].filter(([file]) => !(exclude && exclude(file)));
+    const lines = kept.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([file, e]) => `${e.mode} ${e.blob}\t${file}\n`);
+    return sha256(lines.join(''));
+}
+
+/** Paths a wave edits after its gate (TODO, plan, handoff, review reports, memory): never part of the code hash. */
+const CODE_HASH_EXCLUDED_DIRS = ['docs/.output/', 'docs/work/'];
+const CODE_HASH_EXCLUDED_TODO = /^docs\/TODO_[^/]*\.md$/;
+const CODE_FILE_IN_DOCS = /\.(?:[cm]?[jt]sx?|py|sh|ps1|psm1|rb|go|rs|cs|java|php|pl)$/i;
+
+/**
+ * True when a repo-relative, forward-slash path is outside the code hash by the fixed rule (`docs/.output/`,
+ * `docs/work/`, `docs/TODO_*.md`). The one definition: `codeTreeHash` uses it, and ac-verify uses it to refuse a
+ * `verify:` command that names a path whose contents the hash would never see. Matching is case-insensitive
+ * here on purpose (a case-insensitive filesystem reaches the same file under another spelling); the hash
+ * itself stays exact-case, so a case variant is refused, never silently trusted.
+ *
+ * @param {string} rel
+ * @returns {boolean}
+ */
+function isUnderExcludedDocs(rel) {
+    const lower = String(rel).toLowerCase();
+    return CODE_HASH_EXCLUDED_DIRS.some(dir => lower.startsWith(dir) || `${lower}/` === dir)
+        || /^docs\/todo_[^/]*\.md$/.test(lower);
+}
+
+function isCodeHashExcluded(rel) {
+    const lower = String(rel).toLowerCase();
+    return (CODE_HASH_EXCLUDED_DIRS.some(dir => lower.startsWith(dir) || `${lower}/` === dir) && !CODE_FILE_IN_DOCS.test(lower))
+        || /^docs\/todo_[^/]*\.md$/.test(lower);
+}
+
+/**
+ * Hash of the code in the working tree: the `treeSnapshot` entries minus `docs/.output/`,
+ * `docs/work/` (except code files there, see CODE_FILE_IN_DOCS), `docs/TODO_*.md` (direct children of
+ * docs/) and every `extraExclude` path. An
+ * `extraExclude` entry is a repo-relative file or directory (trailing slash optional) matched on a
+ * path-segment boundary; '', '.' and '/' are ignored so a blank entry never excludes the whole
+ * tree. The ac-verify records and the ship seal share this one definition.
+ *
+ * `extraExclude` MUST come from tracked configuration, never from the TODO or any other document an
+ * agent can edit: an entry such as `.agents` silently drops all of that code from the hash. The fixed
+ * exclusions above hide files a binding could still execute (a script under `docs/.output/`), which is
+ * why ac-verify refuses any `verify:` path inside them instead of widening this hash.
+ *
+ * @param {string} root repository root
+ * @param {{extraExclude?: string[]}} [options]
+ * @returns {{ok:true, hash:string} | {ok:false, reason:string}}
+ */
+function codeTreeHash(root, { extraExclude } = {}) {
+    if (extraExclude !== undefined && !Array.isArray(extraExclude)) throw new TypeError('codeTreeHash: extraExclude must be an array');
+    const extras = [];
+    for (const entry of extraExclude || []) {
+        if (typeof entry !== 'string') throw new TypeError('codeTreeHash: extraExclude entries must be strings');
+        const clean = entry.replace(/\\/g, '/').replace(/^(?:\.\/)+/, '').replace(/^\/+/, '').replace(/\/+$/, '');
+        if (clean && clean !== '.') extras.push(clean);
+    }
+    const snapshot = treeSnapshot(root);
+    if (!snapshot.ok) return { ok: false, reason: snapshot.reason };
+    // Code files inside the excluded docs folders stay in the hash (wave 1 security M1): a test can
+    // `require` a helper that lives under docs/.output/, and editing it after the seal must change the hash.
+    // A wave only edits prose and data there after its gate (.md, .json), never these extensions.
+    const exclude = (rel) => (CODE_HASH_EXCLUDED_DIRS.some(dir => rel.startsWith(dir)) && !CODE_FILE_IN_DOCS.test(rel))
+        || CODE_HASH_EXCLUDED_TODO.test(rel)
+        || extras.some(extra => rel === extra || rel.startsWith(`${extra}/`));
+    return { ok: true, hash: hashTreeEntries(snapshot.entries, { exclude }) };
 }
 
 function headSha(root) {
@@ -693,7 +784,126 @@ function readReceipt(root) {
     const receipt = readJson(receiptPath(root));
     return receipt && typeof receipt === 'object' && !Array.isArray(receipt) ? receipt : null;
 }
-function writeReceipt(root, receipt) { writeJsonAtomic(receiptPath(root), receipt); }
+
+// ── By-id archive (SF-2.5) ──────────────────────────────────────────
+//
+// gate-receipt.json holds only the latest run, and the history rows exist only for a project or build with a known
+// closure, so a checkpoint naming a receipt two gate runs old could not be resolved. Every receipt is therefore also
+// archived as gate-receipts/by-id/{id}.json (history files all end in a name hash + .json directly under
+// gate-receipts/, so the subfolder never reads as history). The archive is evidence for story-checkpoint only; a
+// failure here must never change the gate's verdict, and nothing here is ever read through a symlink.
+
+const archiveDir = (root) => path.join(historyDir(root), 'by-id');
+const failedArchiveDir = (root) => path.join(archiveDir(root), 'failed');
+const archiveFile = (root, id) => path.join(archiveDir(root), `${id}.json`);
+const failedArchiveFile = (root, id) => path.join(failedArchiveDir(root), `${id}.json`);
+const isArchiveId = (id) => typeof id === 'string' && ARCHIVE_ID.test(id);
+
+/**
+ * A receipt belongs in the passing ring only when it is a plain passing run: status passed, exit 0, not change-scoped and
+ * not filtered. Everything else (failed, running, interrupted, filtered, change-scoped) goes to the failure ring, so the
+ * frequent partial runs of a long wave never evict an earlier wave's passing receipt. story-checkpoint still applies the
+ * full complete-pass rules to whatever it reads from either ring.
+ */
+function isPlainPass(receipt) {
+    return receipt.status === 'passed' && receipt.exitCode === 0 && receipt.changedOnly !== true && !receipt.filter;
+}
+
+/** Write `${file}` atomically without following a symlink at the temp or the final path. */
+function writeArchiveFile(file, text) {
+    const leaf = fs.lstatSync(file, { throwIfNoEntry: false });
+    if (leaf && !leaf.isFile()) throw new Error(`refusing to replace ${path.basename(file)}: it is not a regular file`);
+    const tmp = `${file}.${process.pid}.tmp`;
+    fs.rmSync(tmp, { force: true });
+    try {
+        fs.writeFileSync(tmp, text, { flag: 'wx' });
+        fs.renameSync(tmp, file);
+    } catch (error) {
+        try { fs.rmSync(tmp, { force: true }); } catch { /* best effort */ }
+        throw error;
+    }
+}
+
+/** Keep the newest `cap` regular .json files (by mtime); `keepName` is never pruned. Symlinks are never touched. */
+function pruneArchive(dir, keepName, cap) {
+    const rows = [];
+    for (const name of fs.readdirSync(dir)) {
+        if (!name.endsWith('.json')) continue;
+        const stat = fs.lstatSync(path.join(dir, name), { throwIfNoEntry: false });
+        if (stat && stat.isFile()) rows.push({ name, mtime: stat.mtimeMs });
+    }
+    if (rows.length <= cap) return;
+    rows.sort((a, b) => (b.mtime - a.mtime) || (a.name < b.name ? 1 : a.name > b.name ? -1 : 0));
+    const keep = new Set(rows.slice(0, cap).map(r => r.name));
+    keep.add(keepName);
+    for (const row of rows) {
+        if (keep.has(row.name)) continue;
+        try { fs.unlinkSync(path.join(dir, row.name)); } catch { /* best effort */ }
+    }
+}
+
+function archiveReceipt(root, receipt) {
+    if (!receipt || typeof receipt !== 'object' || !isArchiveId(receipt.id)) return;
+    const plain = isPlainPass(receipt);
+    const dir = plain ? archiveDir(root) : failedArchiveDir(root);
+    const target = plain ? archiveFile(root, receipt.id) : failedArchiveFile(root, receipt.id);
+    const other = plain ? failedArchiveFile(root, receipt.id) : archiveFile(root, receipt.id);
+    fs.mkdirSync(dir, { recursive: true });
+    assertNoSymlinkedAncestor(target, historyDir(root));
+    writeArchiveFile(target, JSON.stringify(receipt, null, 2));
+    // The gate rewrites one id as its run progresses (running, then passed): the other ring must not keep a superseded copy.
+    try {
+        assertNoSymlinkedAncestor(other, historyDir(root));
+        const stale = fs.lstatSync(other, { throwIfNoEntry: false });
+        if (stale && stale.isFile()) fs.unlinkSync(other);
+    } catch { /* best effort: archivedReceipt reads the passing ring first, story-checkpoint also judges the current receipt first */ }
+    pruneArchive(dir, `${receipt.id}.json`, plain ? ARCHIVE_CAP : ARCHIVE_FAILED_CAP);
+}
+
+/** True when this project's gate has ever written a by-id archive (the folder exists as a real directory). */
+function hasArchive(root) {
+    try {
+        const dir = archiveDir(root);
+        assertNoSymlinkedAncestor(dir, historyDir(root));
+        const stat = fs.lstatSync(dir, { throwIfNoEntry: false });
+        return Boolean(stat && stat.isDirectory());
+    } catch { return false; }
+}
+
+function readArchiveFile(root, file, id) {
+    try {
+        assertNoSymlinkedAncestor(file, historyDir(root));
+        const stat = fs.lstatSync(file, { throwIfNoEntry: false });
+        if (!stat || !stat.isFile() || stat.size > ARCHIVE_MAX_BYTES) return null;
+        const data = JSON.parse(fs.readFileSync(file, 'utf8'));
+        return data && typeof data === 'object' && !Array.isArray(data) && data.id === id ? data : null;
+    } catch { return null; }
+}
+
+/**
+ * The archived receipt with this id (the passing ring, then the failure ring), or null: an invalid id, no file, a
+ * symlinked file or folder, a file that is not a regular file or is over the size cap, JSON that is not an object, or a
+ * file whose own `id` is another id.
+ */
+function archivedReceipt(root, id) {
+    if (!isArchiveId(id)) return null;
+    return readArchiveFile(root, archiveFile(root, id), id) || readArchiveFile(root, failedArchiveFile(root, id), id);
+}
+
+/**
+ * Write the current receipt, then archive it by id. The archive is best effort and never throws or changes the result,
+ * but a failed archive write is not silent: one stderr line says the receipt cannot be found by id later, so a checkpoint
+ * that names it will rerun.
+ */
+function writeReceipt(root, receipt) {
+    writeJsonAtomic(receiptPath(root), receipt);
+    try {
+        archiveReceipt(root, receipt);
+    } catch (error) {
+        const id = receipt && typeof receipt === 'object' && typeof receipt.id === 'string' ? receipt.id.slice(0, 64) : '?';
+        try { process.stderr.write(`[gate-receipt] warning: receipt ${id} was not archived by id (${String(error && error.message).replace(/[\r\n]+/g, ' ').slice(0, 160)}); a story checkpoint naming it will rerun\n`); } catch { /* a closed stderr must not fail the gate */ }
+    }
+}
 
 /** A project's (or the build's) history records; unreadable history is empty, which means RUN. */
 function readHistory(root, name) {
@@ -704,7 +914,72 @@ function writeHistory(root, name, records) { writeJsonAtomic(historyFile(root, n
 
 const BUILD_HISTORY = '(build)';
 
-/** sha256 of the gate engine (gate.js + this module) and the toolkit version. */
+/**
+ * The test runner's packages: vitest and vite (vitest's host, a peer dependency) plus the transitive
+ * runtime `dependencies` of both. The gate executes this code and believes what it reports, but the
+ * code hash never covers it (`node_modules/` is ignored), so a patched reporter makes every test pass
+ * and leaves no trace in any diff.
+ */
+const RUNNER_SEEDS = Object.freeze(['vitest', 'vite']);
+/** Executable and manifest files only: native bindings and type declarations are not what reports a verdict. */
+const RUNNER_FILE = /\.(?:[cm]?js|json|node|wasm)$/;
+const RUNNER_MAX_PACKAGES = 500;
+/** Digest used when no runner package is installed (an adopter on another runner): stable, so it never flips a receipt. */
+const NO_RUNNER = 'no-vitest-runner';
+
+/** Feed every file of one installed package into `hash`, in sorted order, skipping nested `node_modules`. */
+function hashPackageFiles(hash, dir, rel) {
+    const entries = fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    for (const entry of entries) {
+        if (entry.name === 'node_modules' || entry.name === '.bin') continue;
+        const child = path.join(dir, entry.name);
+        const childRel = `${rel}/${entry.name}`;
+        if (entry.isDirectory()) hashPackageFiles(hash, child, childRel);
+        else if (entry.isSymbolicLink()) hash.update(`link\0${childRel}\0${fs.readlinkSync(child)}\0`);
+        else if (entry.isFile() && RUNNER_FILE.test(entry.name)) {
+            const bytes = fs.readFileSync(child);
+            hash.update(`file\0${childRel}\0${bytes.length}\0`);
+            hash.update(bytes);
+        }
+    }
+}
+
+/**
+ * sha256 of the installed test runner (see RUNNER_SEEDS): each package's name, version and files.
+ * A runner changed after a receipt was written changes the engine identity, so the receipt is stale.
+ * Returns null when a runner file cannot be read (an unknown is never a pass) and the fixed
+ * NO_RUNNER marker when no runner package is installed at all. Called once per gate run (the
+ * receipt's engine field is computed when the receipt starts), never per project.
+ *
+ * Limit, stated: this detects a runner that changed after the receipt, or a receipt written by a
+ * different runner. A patch applied before the first gate run is the baseline, not a change; the
+ * wall on `node_modules/` (`subagentReadOnlyPaths`) is what keeps a subagent from writing it.
+ */
+function runnerIdentity(root) {
+    const modules = path.join(root, 'node_modules');
+    const hash = crypto.createHash('sha256');
+    const seen = new Set();
+    const queue = [...RUNNER_SEEDS.map((name) => ({ name, from: modules }))];
+    let found = 0;
+    try {
+        while (queue.length) {
+            const { name, from } = queue.shift();
+            if (seen.has(name)) continue;
+            seen.add(name);
+            if (seen.size > RUNNER_MAX_PACKAGES) return null;
+            const dir = [path.join(from, name), path.join(modules, name)].find((candidate) => fs.existsSync(path.join(candidate, 'package.json')));
+            if (!dir) { hash.update(`missing\0${name}\0`); continue; }
+            found += 1;
+            const manifest = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8'));
+            hash.update(`package\0${name}\0${typeof manifest.version === 'string' ? manifest.version : ''}\0`);
+            hashPackageFiles(hash, dir, name);
+            for (const dep of Object.keys(manifest.dependencies || {}).sort()) queue.push({ name: dep, from: path.join(dir, 'node_modules') });
+        }
+    } catch { return null; }
+    return found === 0 ? NO_RUNNER : hash.digest('hex');
+}
+
+/** sha256 of the gate engine (gate.js + this module), the toolkit version and the installed test runner. */
 function engineIdentity(root, coreDir = CORE_DIR) {
     let gate; let self;
     try { gate = fs.readFileSync(path.join(coreDir, 'gate.js')); self = fs.readFileSync(path.join(coreDir, '_lib', 'gate-receipt.js')); } catch { return null; }
@@ -713,7 +988,9 @@ function engineIdentity(root, coreDir = CORE_DIR) {
         const data = readJson(path.join(root, rel));
         if (data && typeof data.version === 'string') { version = data.version; break; }
     }
-    return sha256(gate, '\0', self, '\0', version);
+    const runner = runnerIdentity(root);
+    if (runner === null) return null;
+    return sha256(gate, '\0', self, '\0', version, '\0', runner);
 }
 
 const GATE_CONFIG_REL = path.join('.claude', 'gate.config.json');
@@ -751,6 +1028,37 @@ function verifyReceiptForRoot({ root, mode = 'normal' }) {
 }
 
 /**
+ * Judge an already-read receipt against a CODE tree instead of the whole tree: everything `verifyReceiptForRoot`
+ * checks (status, exit code, schema, HEAD, engine, config hash, change scope, build, projects) except the
+ * whole-tree hash, plus a passed test leg and `receipt.codeHash === codeHash`. A wave edits its TODO, plan and review
+ * reports after the gate, so the whole-tree hash can never match at commit time; `codeHash` (gate end, written by
+ * gate.js) is the part that does. A receipt with no `codeHash` (written by an older gate) is refused. The caller owns
+ * reading the receipt (ship-check reads it with its symlink posture) and computing `codeHash`.
+ *
+ * @param {{root:string, receipt:object|null, codeHash:string, mode?:string}} args
+ * @returns {{ok:boolean, reasons:{check:string,message:string}[]}}
+ */
+function verifyReceiptEvidence({ root, receipt, codeHash, mode = 'normal' }) {
+    const { config, hash } = readGateConfigFile(root);
+    const filter = config.test && typeof config.test.filter === 'string' ? config.test.filter : null;
+    const { projects } = normalizeProjects(config.test, filter);
+    const result = evaluateReceipt({
+        receipt, mode, projectNames: projects.map(p => p.name), ignoreCurrentTree: true,
+        current: { treeHash: null, head: headSha(root), engine: engineIdentity(root), configHash: hash },
+    });
+    const reasons = result.reasons;
+    if (receipt && typeof receipt === 'object' && receipt.schema === RECEIPT_SCHEMA) {
+        if (!receipt.test || receipt.test.status === undefined) reasons.push({ check: 'test', message: 'the receipt has no test leg (a build-only or non-test run is not test evidence)' });
+        if (typeof receipt.codeHash !== 'string' || !/^[0-9a-f]{64}$/.test(receipt.codeHash)) {
+            reasons.push({ check: 'codeHash', message: 'the receipt carries no code hash (written by an older gate: run the gate again)' });
+        } else if (typeof codeHash !== 'string' || receipt.codeHash !== codeHash) {
+            reasons.push({ check: 'codeHash', message: `code hash: the receipt covers ${short(receipt.codeHash)} but the code is ${short(codeHash)} (code was edited, added or removed since the gate ran)` });
+        }
+    }
+    return { ok: reasons.length === 0, reasons };
+}
+
+/**
  * The PR helper's gate check. `required` follows `receipts.requireFullForPr`; when it is not
  * set the check passes without looking.
  */
@@ -772,6 +1080,6 @@ module.exports = {
     parseGateArgs, receiptsConfig, normalizeProjects, scanStaticReads,
     dotnetClosure, projectClosure, buildClosure, declaredInputFiles, globToRegExp, solutionProjectPaths,
     decideReuse, appendRecord, bumpReuse, evaluateReceipt, hashFiles,
-    treeSnapshot, headSha, receiptPath, historyDir, readReceipt, writeReceipt, readHistory, writeHistory,
-    engineIdentity, readGateConfigFile, verifyReceiptForRoot, checkReceiptForPr, short,
+    treeSnapshot, hashTreeEntries, codeTreeHash, isCodeHashExcluded, isUnderExcludedDocs, CODE_FILE_IN_DOCS, headSha, receiptPath, historyDir, readReceipt, writeReceipt, archivedReceipt, hasArchive, readHistory, writeHistory,
+    engineIdentity, runnerIdentity, NO_RUNNER, readGateConfigFile, verifyReceiptForRoot, verifyReceiptEvidence, checkReceiptForPr, short,
 };

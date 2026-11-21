@@ -32,11 +32,11 @@ Check that at least ONE of these files exists AND does not contain `<!-- @@templ
 - `docs/product/brief.md`
 - `docs/product/brainstorm.md`
 - Any file matching `docs/modules/*/research.md` or `docs/.output/findings/research/**`
-- `docs/architecture/overview.md` — **brownfield exit (C8):** a real reverse-engineered architecture from `/onboard` is a valid upstream artifact. `/onboard` deliberately produces architecture (not a brief), so without this a brownfield repo dead-ends here with no onboard-native path to requirements. When this is the only real artifact, draw requirements from it in Reverse-Engineering Mode.
+- `docs/architecture/overview.md` — **brownfield exit (C8):** a real reverse-engineered architecture from brownfield onboarding is a valid upstream artifact. Onboarding deliberately produces architecture (not a brief), so without this a brownfield repo dead-ends here with no path to requirements. When this is the only real artifact, draw requirements from it in Reverse-Engineering Mode.
 
 **If NONE of them are real (all missing or all template-only):**
 - If YOLO_MODE → warn: "No Phase 1 artifacts found (brief, brainstorm, research, or architecture). Proceeding in yolo mode with Interview Mode." → go to Interview Mode
-- Otherwise → **STOP**: "No upstream artifacts found. Run `/create:project-brief`, `/brainstorm`, `/research`, or `/onboard` (brownfield) first. Use `--yolo` to bypass this gate."
+- Otherwise → **STOP**: "No upstream artifacts found. Run `/create:project-brief`, `/brainstorm`, or `/research` first (or `/onboard` (brownfield) if installed). Use `--yolo` to bypass this gate."
 
 **If at least one is real** → read whichever exist for context and proceed to mode detection.
 

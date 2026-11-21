@@ -651,6 +651,27 @@ describe('curate() dry-run', () => {
 // (AC drift: no writePendingCuration() method — write is inline in curate())
 // ---------------------------------------------------------------------------
 describe('curate() non-dry (file write)', () => {
+  // L1H (review C1 part 2): the Stop hook spawns the curator unsandboxed under the strict profile, and the pending folder
+  // sits under docs/.output/.state/, which the working tree controls. A symlinked ancestor is refused, never written through.
+  it('curate_nonDry_refusesASymlinkedPendingFolder_andWritesNothingInTheTarget', async () => {
+    createConcept(tmp, 'patterns', 'link-concept', { title: 'Link', confidence: 0.7, sources: [] });
+    mockCuratorExecSync(cannedCuration);
+    const victimDir = path.join(tmp.root, 'victim-dir');
+    fs.mkdirSync(victimDir);
+    const pending = path.join(tmp.root, 'docs', '.output', '.state', 'memory-pending-curation');
+    fs.mkdirSync(path.dirname(pending), { recursive: true });
+    try {
+      fs.symlinkSync(victimDir, pending, 'dir');
+    } catch {
+      return; // no symlink permission on this machine: nothing to prove
+    }
+
+    const curator = new MemoryCurator();
+    await expect(curator.curate({ dryRun: false })).rejects.toThrow(/symlinked ancestor/);
+
+    expect(fs.readdirSync(victimDir)).toEqual([]);
+  });
+
   it('curate_nonDry_writesFileInPendingDir', async () => {
     createConcept(tmp, 'patterns', 'write-concept', { title: 'Write', confidence: 0.7, sources: [] });
     mockCuratorExecSync(cannedCuration);

@@ -72,7 +72,7 @@ I hold to the project's operating standard — **resolve it or don't report it**
 
 ## Skills
 
-My frontmatter skills are always loaded; `/review:specialize` may inject additional stack-specific skills (e.g., `react-patterns`, `ef-core-patterns`) based on the project's architecture document.
+My frontmatter skills are always loaded; `/review:specialize` (if installed) may inject additional stack-specific skills (e.g., `react-patterns`, `ef-core-patterns`) based on the project's architecture document.
 
 Read these files at the start of every task:
 - `.agents/skills/full-output-enforcement/SKILL.md` — anti-truncation rules; ban placeholder patterns, force complete code generation

@@ -24,6 +24,7 @@ const { execSync } = require('child_process');
 const { isAtLeast } = require('../core/profile');
 const { readHookInput } = require('../core/_lib/hook-input');
 const { spawnDailyLogCapture, spawnBackground } = require('../core/_lib/hook-spawners');
+const { safeAppend, safeMkdirp, reportRefusal } = require('../core/_lib/fs-safe');
 const DailyLog = require('../core/daily-log');
 
 const DEDUP_MINUTES = 30;
@@ -189,16 +190,26 @@ function handleBashPostToolUse(input) {
     // this fallback exists only for when the DailyLog class/fs operations
     // themselves are unavailable (e.g. permissions, bad path), not to
     // independently reproduce the string template.
+    //
+    // Both appends refuse a symlink (L1H, review C1 part 2): this hook is unsandboxed, the commit subject
+    // is model-chosen text, and `docs/.output/.state/` is whatever the working tree makes it. A refused
+    // write is skipped with one stderr line and is NOT retried through the fallback (it would be refused
+    // there too); the hook never fails because of it.
     try {
         const log = new DailyLog(projectDir);
         log.captureCommit(hash, subject, filesChanged, insertions, deletions);
-    } catch {
+    } catch (error) {
+        if (reportRefusal(error)) return;
         const now = new Date();
         const timeLabel = now.toISOString().slice(11, 16);
         const entry = DailyLog.formatCommitEntry(hash, subject, filesChanged, insertions, deletions, timeLabel);
         const dailyDir = path.join(projectDir, 'docs', '.output', '.state', 'memory-daily');
-        fs.mkdirSync(dailyDir, { recursive: true });
-        fs.appendFileSync(dailyLogPath, entry, 'utf8');
+        try {
+            safeMkdirp(dailyDir, projectDir);
+            safeAppend(dailyLogPath, entry, 'utf8', projectDir);
+        } catch (fallbackError) {
+            if (!reportRefusal(fallbackError)) throw fallbackError;
+        }
     }
 }
 

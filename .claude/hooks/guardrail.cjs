@@ -1,10 +1,12 @@
 #!/usr/bin/env node
 'use strict';
 // Generated compatibility entry point from .agents/hooks/guardrail.cjs.
+// Blocking hook: fail closed. Only a clean exit 0 passes; a crash, a spawn error, a signal or a timeout exits 2.
 const entry = require('path').resolve(__dirname, "../../.agents/hooks/guardrail.cjs");
 if (require.main === module) {
-    const result = require('child_process').spawnSync(process.execPath, [entry, ...process.argv.slice(2)], { stdio: 'inherit', windowsHide: true });
-    if (result.error) throw result.error;
-    if (result.signal) process.kill(process.pid, result.signal);
-    else process.exitCode = result.status === null ? 1 : result.status;
+    const result = require('child_process').spawnSync(process.execPath, [entry, ...process.argv.slice(2)], { stdio: 'inherit', windowsHide: true, timeout: Number(process.env.HOOK_WRAPPER_TIMEOUT_MS) || 9000 });
+    if (result.error || result.signal || result.status === null) {
+        process.stderr.write('[guardrail] BLOCKED (fail-closed): the hook did not finish (' + ((result.error && result.error.code) || result.signal || 'no exit status') + ').\n');
+        process.exitCode = 2;
+    } else process.exitCode = result.status === 0 ? 0 : 2;
 } else module.exports = require(entry);

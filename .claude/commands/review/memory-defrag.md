@@ -40,14 +40,14 @@ Stop. Do not proceed to Step 1.
 
 #### 0b. Pending curation check
 
-Mirror `/review:promote-memories` Step 0: surface any unreviewed curation proposals from `memory-curator.js`.
+Mirror the memory-promotion Step 0: surface any unreviewed curation proposals from `memory-curator.js`.
 
 ```bash
 node .claude/core/memory-curator.js status
 ```
 
 If pending curation exists, ask the user: **Address curation first?** [Y / n]
-- **Y** → stop. Print: "Run `/review:promote-memories` first to address curation, then re-run `/review:memory-defrag`."
+- **Y** → stop. Print: "Run `/review:promote-memories` first (if installed) to address curation, or review the proposals manually, then re-run `/review:memory-defrag`."
 - **n** → proceed to Step 1.
 
 If no pending curation, proceed silently.
@@ -260,6 +260,6 @@ Memory corpus size: before {N_before} → after {N_after}.
 ## Cross-References
 
 - Companion command: `/review:memory-health` (lint + decay, read-only)
-- Companion command: `/review:promote-memories` (concept-to-template promotion)
+- Companion command: `/review:promote-memories` if installed (concept-to-template promotion)
 - Light dedup runs on Stop hook via `memory-curator.js` (strict profile only) — defrag is the heavier, less frequent intervention
 - Memory architecture decision: `docs/.output/findings/reviews/2026-04-20-adr-memory-unification.md`

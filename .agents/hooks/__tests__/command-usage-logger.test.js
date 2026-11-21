@@ -561,3 +561,540 @@ describe('command-usage-logger', () => {
         });
     });
 });
+
+// ─── SF-3.2: run_id and wave on gate_run and command_invocation rows ──────────
+//
+// PINNED CONTRACT (the tests are the spec; the implementer must not edit them).
+//   Source of the pointer: docs/.output/.state/telemetry/current-run-{session}.json under the hook's resolved project
+//   root (the same root command-usage.jsonl is written under): { run_id, plan, wave, story, since } (the "run id and
+//   session pointer" seam, written by run-record.js, SF-3.1). The session is the SAME one the row's `session_id` uses:
+//   env CLAUDE_CODE_SESSION_ID first, else the hook payload's `session_id`; neither -> no pointer is read.
+//   Stamping: a usable pointer (a regular file, <= 64 KiB, JSON object, run_id a non-empty string) adds EXACTLY two keys
+//   to command_invocation and gate_run rows: run_id (the pointer's string) and wave (the pointer's number, else null; a
+//   freshly started run has wave null). Any other state (no session, absent, unreadable, directory, symlink, FIFO,
+//   oversized, corrupt, wrong shape, another session's pointer, an unsafe session id) leaves the row exactly as before
+//   SF-3.2: the two keys are ABSENT (not null), the row is still written, the hook still exits 0 and never blocks. A
+//   pointer is never followed through a symlink and a FIFO is never opened blockingly (memory:
+//   hook-reads-of-agent-writable-paths-must-reject-fifos). Every "unchanged" case is paired with a control: the same
+//   path rewritten as a valid pointer MUST stamp, so a green "unchanged" is the reader refusing the shape, not the
+//   reader looking in the wrong place.
+//   telemetry-log.js start rows (self-instrumented command_invocation) are NOT stamped (they are written before the
+//   pointer exists); the hook source documents that they join by session_id and timestamp.
+//   gate.js is not edited (no run id logic there).
+
+describe('SF-3.2 command-usage rows carry run_id and wave from the session pointer', () => {
+    const { spawnSync } = require('node:child_process');
+    const { fileURLToPath } = require('node:url');
+    const HOOK = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'command-usage-logger.cjs');
+    const GATE_JS = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'core', 'gate.js');
+    const TELEMETRY = ['docs', '.output', '.state', 'telemetry'];
+    const POINTER = { run_id: '261118-1200-run-todo-software-factory', plan: 'docs/.output/plans/p.md', wave: 3, story: 'SF-3.2', since: '261118-1200' };
+    const SKILL_KEYS = ['command', 'duration_ms', 'session_id', 'timestamp', 'type'];
+    const GATE_KEYS = ['command', 'duration_ms', 'outcome', 'session_id', 'timestamp', 'type'];
+    const SKILL_EVENT = { tool_input: { skill: 'do' } };
+    const GATE_EVENT = { tool_input: { command: 'node .claude/core/gate.js --test' }, tool_response: { exit_code: 0 } };
+    const posixIt = process.platform === 'win32' ? it.skip : it;
+    const nonRootPosixIt = process.platform === 'win32' || (process.getuid && process.getuid() === 0) ? it.skip : it;
+    let tmp;
+    let priorProjectDir;
+    let priorSession;
+
+    const telemetryDir = () => path.join(tmp.root, ...TELEMETRY);
+    const jsonlPath = () => path.join(telemetryDir(), 'command-usage.jsonl');
+    const pointerPath = (session) => path.join(telemetryDir(), `current-run-${session}.json`);
+    const plant = (session, body) => {
+        const p = pointerPath(session);
+        fs.mkdirSync(path.dirname(p), { recursive: true });
+        fs.writeFileSync(p, typeof body === 'string' ? body : JSON.stringify(body));
+        return p;
+    };
+    const unplant = (p) => fs.rmSync(p, { recursive: true, force: true });
+    const rows = () => (fs.existsSync(jsonlPath()) ? fs.readFileSync(jsonlPath(), 'utf8').trim().split('\n').map(l => JSON.parse(l)) : []);
+    const lastRow = () => rows().at(-1);
+    const keysOf = (row) => Object.keys(row).sort();
+    // Run the real hook as the harness does: stdin JSON, env, exit code. A hard timeout turns a blocked read into a failure.
+    const runHook = (payload, session = 'sess-a') => spawnSync(process.execPath, [HOOK], {
+        input: JSON.stringify(payload),
+        env: { ...process.env, CLAUDE_PROJECT_DIR: tmp.root, CLAUDE_CODE_SESSION_ID: session },
+        encoding: 'utf8',
+        timeout: 15000,
+    });
+
+    beforeEach(() => {
+        tmp = createTmpDir({ prefix: 'cul-sf32-' });
+        priorProjectDir = process.env.CLAUDE_PROJECT_DIR;
+        priorSession = process.env.CLAUDE_CODE_SESSION_ID;
+        process.env.CLAUDE_PROJECT_DIR = tmp.root;
+        process.env.CLAUDE_CODE_SESSION_ID = 'sess-a';
+    });
+
+    afterEach(() => {
+        if (priorProjectDir === undefined) delete process.env.CLAUDE_PROJECT_DIR;
+        else process.env.CLAUDE_PROJECT_DIR = priorProjectDir;
+        if (priorSession === undefined) delete process.env.CLAUDE_CODE_SESSION_ID;
+        else process.env.CLAUDE_CODE_SESSION_ID = priorSession;
+        tmp.cleanup();
+    });
+
+    // ── stamping ──────────────────────────────────────────────────────────
+
+    it.each([
+        ['command_invocation', SKILL_EVENT, SKILL_KEYS],
+        ['gate_run', GATE_EVENT, GATE_KEYS],
+    ])('processEvent_%s_pointerForEnvSession_stampsRunIdAndWaveAndNothingElse', (_type, event, baseKeys) => {
+        plant('sess-a', POINTER);
+
+        processEvent(event);
+
+        const row = lastRow();
+        expect(row.run_id).toBe(POINTER.run_id);
+        expect(row.wave).toBe(3);
+        expect(row.session_id).toBe('sess-a');
+        expect(keysOf(row)).toEqual([...baseKeys, 'run_id', 'wave'].sort());
+    });
+
+    it('processEvent_killedGateRun_stillStampsRunIdAndWave', () => {
+        plant('sess-a', POINTER);
+        fs.writeFileSync(path.join(telemetryDir(), '_latest-summary.json'), JSON.stringify({ overall: false, killed: 'SIGKILL' }));
+
+        processEvent({ tool_input: { command: 'node .claude/core/gate.js test' }, tool_response: { stdout: '' } });
+
+        expect(lastRow()).toMatchObject({ type: 'gate_run', outcome: 'unknown', killed: 'SIGKILL', run_id: POINTER.run_id, wave: 3 });
+    });
+
+    it('processEvent_noEnvSessionPayloadSessionIdFallback_stampsFromPayloadSessionPointer', () => {
+        delete process.env.CLAUDE_CODE_SESSION_ID;
+        plant('sess-p', { ...POINTER, run_id: 'run-p', wave: 4 });
+
+        processEvent({ ...SKILL_EVENT, session_id: 'sess-p' });
+
+        expect(lastRow()).toMatchObject({ session_id: 'sess-p', run_id: 'run-p', wave: 4 });
+    });
+
+    it('processEvent_envSessionAndDifferentPayloadSession_usesTheEnvSessionTheRowReports', () => {
+        plant('sess-a', { ...POINTER, run_id: 'run-env', wave: 1 });
+        plant('sess-p', { ...POINTER, run_id: 'run-payload', wave: 2 });
+
+        processEvent({ ...SKILL_EVENT, session_id: 'sess-p' });
+
+        expect(lastRow()).toMatchObject({ session_id: 'sess-a', run_id: 'run-env', wave: 1 });
+    });
+
+    it('processEvent_pointerJustAfterStartWithNullWave_stampsRunIdAndNullWave', () => {
+        plant('sess-a', { ...POINTER, wave: null, story: null, plan: null });
+
+        processEvent(GATE_EVENT);
+
+        expect(lastRow().run_id).toBe(POINTER.run_id);
+        expect('wave' in lastRow()).toBe(true);
+        expect(lastRow().wave).toBeNull();
+    });
+
+    it('processEvent_pointerWaveIsNotANumber_stampsRunIdAndNullWave', () => {
+        plant('sess-a', { ...POINTER, wave: '3' });
+
+        processEvent(SKILL_EVENT);
+
+        expect(lastRow().run_id).toBe(POINTER.run_id);
+        expect(lastRow().wave).toBeNull();
+    });
+
+    it('processEvent_pointerMovesToNextWaveBetweenEvents_eachRowCarriesItsOwnWave', () => {
+        plant('sess-a', { ...POINTER, wave: 1 });
+        processEvent(GATE_EVENT);
+        plant('sess-a', { ...POINTER, wave: 2 });
+        processEvent(GATE_EVENT);
+
+        expect(rows().map(r => r.wave)).toEqual([1, 2]);
+    });
+
+    it('processEvent_twoSessionsInOneTree_eachRowCarriesItsOwnSessionsRun', () => {
+        plant('sess-a', { ...POINTER, run_id: 'run-a', wave: 1 });
+        plant('sess-b', { ...POINTER, run_id: 'run-b', wave: 9 });
+
+        processEvent(GATE_EVENT);
+        process.env.CLAUDE_CODE_SESSION_ID = 'sess-b';
+        processEvent(GATE_EVENT);
+
+        expect(rows().map(r => [r.session_id, r.run_id, r.wave])).toEqual([['sess-a', 'run-a', 1], ['sess-b', 'run-b', 9]]);
+    });
+
+    it('processEvent_cwdFieldOnPayload_doesNotRedirectThePointerRead', () => {
+        const decoy = path.join(tmp.root, 'decoy');
+        fs.mkdirSync(path.join(decoy, ...TELEMETRY), { recursive: true });
+        fs.writeFileSync(path.join(decoy, ...TELEMETRY, 'current-run-sess-a.json'), JSON.stringify({ ...POINTER, run_id: 'run-decoy' }));
+        plant('sess-a', POINTER);
+
+        processEvent({ ...SKILL_EVENT, cwd: decoy });
+
+        expect(lastRow().run_id).toBe(POINTER.run_id);
+    });
+
+    it('processEvent_unrelatedBashCommandWithPointer_writesNothing', () => {
+        plant('sess-a', POINTER);
+
+        const result = processEvent({ tool_input: { command: 'ls -la' } });
+
+        expect(result).toBeNull();
+        expect(fs.existsSync(jsonlPath())).toBe(false);
+    });
+
+    // ── unchanged when absent ─────────────────────────────────────────────
+
+    it.each([
+        ['command_invocation', SKILL_EVENT, SKILL_KEYS],
+        ['gate_run', GATE_EVENT, GATE_KEYS],
+    ])('processEvent_%s_absentPointer_rowKeysExactlyAsBefore', (_type, event, baseKeys) => {
+        processEvent(event);
+
+        expect(keysOf(lastRow())).toEqual(baseKeys);
+        expect('run_id' in lastRow()).toBe(false);
+        expect('wave' in lastRow()).toBe(false);
+    });
+
+    it('processEvent_noSessionAtAll_rowUnchangedEvenWhenPointerFilesExist', () => {
+        delete process.env.CLAUDE_CODE_SESSION_ID;
+        plant('sess-a', POINTER);
+        plant('undefined', POINTER);
+        plant('null', POINTER);
+        plant('', POINTER);
+
+        processEvent(SKILL_EVENT);
+        processEvent({ ...SKILL_EVENT, session_id: 'sess-a' });
+
+        expect(keysOf(rows()[0])).toEqual(SKILL_KEYS);
+        expect(rows()[1].run_id).toBe(POINTER.run_id);
+    });
+
+    it('processEvent_onlyAnotherSessionsPointerExists_rowUnchangedAndThatSessionStillStamps', () => {
+        plant('sess-b', POINTER);
+
+        processEvent(GATE_EVENT);
+        process.env.CLAUDE_CODE_SESSION_ID = 'sess-b';
+        processEvent(GATE_EVENT);
+
+        expect(keysOf(rows()[0])).toEqual(GATE_KEYS);
+        expect(rows()[1].run_id).toBe(POINTER.run_id);
+    });
+
+    // ── adversarial pointers: rows unchanged, hook exits 0, a valid pointer in the same place still stamps ──
+
+    const CORRUPT = [
+        ['not JSON', '{nope'],
+        ['empty file', ''],
+        ['truncated JSON', '{"run_id":"r1","wa'],
+        ['a JSON array', '[]'],
+        ['a JSON string', '"run-1"'],
+        ['JSON null', 'null'],
+        ['no run_id', '{"wave":1,"plan":null,"story":null,"since":"261118-1200"}'],
+        ['run_id a number', '{"run_id":7,"wave":1}'],
+        ['run_id empty string', '{"run_id":"","wave":1}'],
+        ['run_id an object', '{"run_id":{"a":1},"wave":1}'],
+        ['binary garbage', Buffer.from([0xff, 0xfe, 0x00, 0x01, 0x80]).toString('latin1')],
+    ];
+
+    it.each(CORRUPT)('processEvent_corruptPointer_%s_rowStillWrittenUnchangedThenValidPointerStamps', (_name, body) => {
+        const p = plant('sess-a', body);
+
+        const returned = processEvent(GATE_EVENT);
+        unplant(p);
+        plant('sess-a', POINTER);
+        processEvent(GATE_EVENT);
+
+        expect(returned).toBeNull();
+        expect(rows()).toHaveLength(2);
+        expect(keysOf(rows()[0])).toEqual(GATE_KEYS);
+        expect(rows()[1].run_id).toBe(POINTER.run_id);
+    });
+
+    it.each(CORRUPT)('hookProcess_corruptPointer_%s_exits0AndWritesTheUnchangedRow', (_name, body) => {
+        plant('sess-a', body);
+
+        const res = runHook(SKILL_EVENT);
+
+        expect(res.error).toBeUndefined();
+        expect(res.status).toBe(0);
+        expect(rows()).toHaveLength(1);
+        expect(keysOf(rows()[0])).toEqual(SKILL_KEYS);
+    });
+
+    it('hookProcess_validPointer_exits0AndStampsTheRow', () => {
+        plant('sess-a', POINTER);
+
+        const res = runHook(GATE_EVENT);
+
+        expect(res.status).toBe(0);
+        expect(rows()).toHaveLength(1);
+        expect(rows()[0]).toMatchObject({ type: 'gate_run', run_id: POINTER.run_id, wave: 3, session_id: 'sess-a' });
+    });
+
+    it('processEvent_pointerPathIsADirectory_rowUnchangedThenValidPointerStamps', () => {
+        const p = pointerPath('sess-a');
+        fs.mkdirSync(p, { recursive: true });
+
+        processEvent(SKILL_EVENT);
+        unplant(p);
+        plant('sess-a', POINTER);
+        processEvent(SKILL_EVENT);
+
+        expect(keysOf(rows()[0])).toEqual(SKILL_KEYS);
+        expect(rows()[1].run_id).toBe(POINTER.run_id);
+    });
+
+    it('hookProcess_pointerPathIsADirectory_exits0AndWritesTheUnchangedRow', () => {
+        fs.mkdirSync(pointerPath('sess-a'), { recursive: true });
+
+        const res = runHook(GATE_EVENT);
+
+        expect(res.status).toBe(0);
+        expect(keysOf(lastRow())).toEqual(GATE_KEYS);
+    });
+
+    nonRootPosixIt('processEvent_pointerUnreadableMode000_rowUnchangedThenReadablePointerStamps', () => {
+        const p = plant('sess-a', POINTER);
+        fs.chmodSync(p, 0o000);
+
+        processEvent(GATE_EVENT);
+        fs.chmodSync(p, 0o600);
+        processEvent(GATE_EVENT);
+
+        expect(keysOf(rows()[0])).toEqual(GATE_KEYS);
+        expect(rows()[1].run_id).toBe(POINTER.run_id);
+    });
+
+    nonRootPosixIt('hookProcess_pointerUnreadableMode000_exits0AndWritesTheUnchangedRow', () => {
+        const p = plant('sess-a', POINTER);
+        fs.chmodSync(p, 0o000);
+
+        const res = runHook(SKILL_EVENT);
+
+        expect(res.status).toBe(0);
+        expect(keysOf(lastRow())).toEqual(SKILL_KEYS);
+    });
+
+    it('processEvent_pointerOverTheSizeCap_treatedAsCorruptRowUnchanged', () => {
+        // Valid JSON padded to 2 MiB: a pointer is < 1 KiB, so a reader that slurps the whole file has no cap.
+        const p = plant('sess-a', JSON.stringify(POINTER) + ' '.repeat(2 * 1024 * 1024));
+
+        processEvent(GATE_EVENT);
+        unplant(p);
+        plant('sess-a', POINTER);
+        processEvent(GATE_EVENT);
+
+        expect(keysOf(rows()[0])).toEqual(GATE_KEYS);
+        expect(rows()[1].run_id).toBe(POINTER.run_id);
+    });
+
+    posixIt('processEvent_pointerIsASymlinkToAValidPointer_notFollowedRowUnchanged', () => {
+        const target = path.join(tmp.root, 'elsewhere.json');
+        fs.writeFileSync(target, JSON.stringify(POINTER));
+        const p = pointerPath('sess-a');
+        fs.mkdirSync(path.dirname(p), { recursive: true });
+        fs.symlinkSync(target, p);
+
+        processEvent(SKILL_EVENT);
+        unplant(p);
+        plant('sess-a', POINTER);
+        processEvent(SKILL_EVENT);
+
+        expect(keysOf(rows()[0])).toEqual(SKILL_KEYS);
+        expect(rows()[1].run_id).toBe(POINTER.run_id);
+    });
+
+    posixIt('hookProcess_pointerIsASymlinkToAValidPointer_exits0NotFollowedRowUnchanged', () => {
+        const target = path.join(tmp.root, 'elsewhere.json');
+        fs.writeFileSync(target, JSON.stringify(POINTER));
+        const p = pointerPath('sess-a');
+        fs.mkdirSync(path.dirname(p), { recursive: true });
+        fs.symlinkSync(target, p);
+
+        const res = runHook(GATE_EVENT);
+
+        expect(res.status).toBe(0);
+        expect(keysOf(lastRow())).toEqual(GATE_KEYS);
+    });
+
+    posixIt('processEvent_pointerIsADanglingSymlink_rowUnchangedThenValidPointerStamps', () => {
+        const p = pointerPath('sess-a');
+        fs.mkdirSync(path.dirname(p), { recursive: true });
+        fs.symlinkSync(path.join(tmp.root, 'does-not-exist.json'), p);
+
+        processEvent(SKILL_EVENT);
+        unplant(p);
+        plant('sess-a', POINTER);
+        processEvent(SKILL_EVENT);
+
+        expect(keysOf(rows()[0])).toEqual(SKILL_KEYS);
+        expect(rows()[1].run_id).toBe(POINTER.run_id);
+    });
+
+    posixIt('hookProcess_pointerIsAFifo_neverBlocksExits0AndWritesTheUnchangedRow', () => {
+        // A hook must never block: a plain open of a FIFO with no writer hangs forever. The hard spawnSync timeout
+        // turns that hang into res.error (ETIMEDOUT) instead of a stuck suite.
+        const p = pointerPath('sess-a');
+        fs.mkdirSync(path.dirname(p), { recursive: true });
+        expect(spawnSync('mkfifo', [p]).status).toBe(0);
+
+        const res = runHook(GATE_EVENT);
+
+        expect(res.error).toBeUndefined();
+        expect(res.signal).toBeNull();
+        expect(res.status).toBe(0);
+        expect(keysOf(lastRow())).toEqual(GATE_KEYS);
+    });
+
+    posixIt('hookProcess_fifoReplacedByValidPointer_nextRowStamps', () => {
+        // Control for the FIFO case: the same path as a regular file stamps, so the unchanged row above is the
+        // reader refusing the FIFO, not the reader looking in the wrong place.
+        const p = pointerPath('sess-a');
+        fs.mkdirSync(path.dirname(p), { recursive: true });
+        expect(spawnSync('mkfifo', [p]).status).toBe(0);
+        const first = runHook(GATE_EVENT);
+        unplant(p);
+        plant('sess-a', POINTER);
+
+        const second = runHook(GATE_EVENT);
+
+        expect(first.status).toBe(0);
+        expect(second.status).toBe(0);
+        expect(keysOf(rows()[0])).toEqual(GATE_KEYS);
+        expect(rows()[1].run_id).toBe(POINTER.run_id);
+    });
+
+    it.each([['../evil'], ['a/b'], ['..'], ['a b'], ['sess*'], ['']])(
+        'processEvent_unsafePayloadSessionId_%j_rowUnchangedAndNothingReadOutsideTheTelemetryDir',
+        (unsafe) => {
+            // Traps: pointers a naive `current-run-${session}.json` join would resolve to for the traversal ids.
+            delete process.env.CLAUDE_CODE_SESSION_ID;
+            fs.mkdirSync(path.join(telemetryDir(), 'current-run-..'), { recursive: true });
+            fs.writeFileSync(path.join(telemetryDir(), 'current-run-..', 'current-run-evil.json'), JSON.stringify(POINTER));
+            fs.writeFileSync(path.join(telemetryDir(), 'current-run-.json'), JSON.stringify(POINTER));
+            fs.writeFileSync(path.join(tmp.root, 'docs', '.output', '.state', 'current-run-evil.json'), JSON.stringify(POINTER));
+            plant('sess-a', POINTER);
+
+            processEvent({ ...SKILL_EVENT, session_id: unsafe });
+            processEvent({ ...SKILL_EVENT, session_id: 'sess-a' });
+
+            expect(keysOf(rows()[0])).toEqual(['command', 'duration_ms', 'session_id', 'timestamp', 'type']);
+            expect(rows()[1].run_id).toBe(POINTER.run_id);
+        },
+    );
+
+    it.each([[undefined], [null], [{}], [42]])('processEvent_nonStringPayloadSessionId_%j_rowUnchangedAndNoThrow', (weird) => {
+        delete process.env.CLAUDE_CODE_SESSION_ID;
+        plant('sess-a', POINTER);
+
+        processEvent({ ...SKILL_EVENT, session_id: weird });
+        processEvent({ ...SKILL_EVENT, session_id: 'sess-a' });
+
+        expect(rows()).toHaveLength(2);
+        expect('run_id' in rows()[0]).toBe(false);
+        expect(rows()[1].run_id).toBe(POINTER.run_id);
+    });
+
+    // ── self-instrumented start rows and gate.js stay as they are ─────────
+
+    it('logCommand_telemetryLogStartRowWithPointerPresent_carriesNoRunIdOrWave', () => {
+        // Guard (green by design): the start row is written before the pointer exists and joins by session_id and
+        // timestamp. A pointer left over from an earlier run in this session must not leak onto it.
+        const { logCommand } = require('../../../.agents/core/telemetry-log');
+        plant('sess-a', POINTER);
+
+        const event = logCommand('do', null, tmp.root);
+
+        expect(keysOf(event)).toEqual(['command', 'duration_ms', 'session_id', 'source', 'timestamp', 'type']);
+        expect(keysOf(lastRow())).toEqual(['command', 'duration_ms', 'session_id', 'source', 'timestamp', 'type']);
+    });
+
+    it('commandUsageLoggerSource_documentsThatSelfInstrumentedStartRowsCannotCarryRunId', () => {
+        // AC: "documented, not changed". The hook header is where the self-instrumented gap is already described.
+        const src = fs.readFileSync(HOOK, 'utf8');
+        const comments = src.split('\n').filter(l => /^\s*(\/\/|\/?\*)/.test(l)).join('\n');
+
+        expect(comments).toMatch(/(telemetry-log|self-instrumented)[\s\S]{0,400}run_id|run_id[\s\S]{0,400}(telemetry-log|self-instrumented)/);
+        expect(comments).toMatch(/session_id[\s\S]{0,200}timestamp|timestamp[\s\S]{0,200}session_id/);
+    });
+
+    it('gateJs_isNotEditedForRunIdStamping_hasNoPointerOrRunIdLogic', () => {
+        // Guard (green by design): AC "gate.js is not edited". The row writers do the stamping from the hook side.
+        const src = fs.readFileSync(GATE_JS, 'utf8');
+
+        expect(src).not.toMatch(/current-run|run_id/);
+    });
+});
+
+
+// ── Wave 4 Group B review: M2 (the pointer root) and the project-root nit ─────────────────────────────────────
+describe('M2 a linked-worktree hook reads the pointer run-record.js wrote under the main worktree', () => {
+    const { spawnSync } = require('node:child_process');
+    const { createLinkedWorktree } = require('../../core/__tests__/_helpers/linked-worktree');
+    const hasGit = spawnSync('git', ['--version'], { windowsHide: true }).status === 0;
+    const gitIt = hasGit ? it : it.skip;
+    const TELEMETRY = ['docs', '.output', '.state', 'telemetry'];
+    const POINTER = { run_id: '261118-1200-run-todo-wt', plan: null, wave: 2, story: null, since: '261118-1200' };
+    const GATE_EVENT = { tool_input: { command: 'node .claude/core/gate.js --test' }, tool_response: { exit_code: 0 } };
+    let fx = null;
+    let priorProjectDir;
+    let priorSession;
+
+    beforeEach(() => {
+        priorProjectDir = process.env.CLAUDE_PROJECT_DIR;
+        priorSession = process.env.CLAUDE_CODE_SESSION_ID;
+        process.env.CLAUDE_CODE_SESSION_ID = 'sess-wt';
+    });
+    afterEach(() => {
+        if (priorProjectDir === undefined) delete process.env.CLAUDE_PROJECT_DIR;
+        else process.env.CLAUDE_PROJECT_DIR = priorProjectDir;
+        if (priorSession === undefined) delete process.env.CLAUDE_CODE_SESSION_ID;
+        else process.env.CLAUDE_CODE_SESSION_ID = priorSession;
+        if (fx) { fx.cleanup(); fx = null; }
+    });
+
+    gitIt('processEvent_claudeProjectDirIsTheLinkedWorktree_stampsFromThePointerUnderTheMainWorktree', () => {
+        fx = createLinkedWorktree();
+        process.env.CLAUDE_PROJECT_DIR = fx.linked;
+        const pointer = path.join(fx.main, ...TELEMETRY, 'current-run-sess-wt.json');
+        fs.mkdirSync(path.dirname(pointer), { recursive: true });
+        fs.writeFileSync(pointer, JSON.stringify(POINTER));
+
+        processEvent(GATE_EVENT);
+
+        const rows = fs.readFileSync(path.join(fx.linked, ...TELEMETRY, 'command-usage.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+        expect(rows).toHaveLength(1);
+        expect(rows[0]).toMatchObject({ type: 'gate_run', run_id: POINTER.run_id, wave: 2 });
+    });
+
+    gitIt('processEvent_aPointerOnlyUnderTheLinkedWorktree_isNotRead', () => {
+        // The writer never puts one there; reading it would let a stray file stamp rows.
+        fx = createLinkedWorktree();
+        process.env.CLAUDE_PROJECT_DIR = fx.linked;
+        const pointer = path.join(fx.linked, ...TELEMETRY, 'current-run-sess-wt.json');
+        fs.mkdirSync(path.dirname(pointer), { recursive: true });
+        fs.writeFileSync(pointer, JSON.stringify(POINTER));
+
+        processEvent(GATE_EVENT);
+
+        const row = JSON.parse(fs.readFileSync(path.join(fx.linked, ...TELEMETRY, 'command-usage.jsonl'), 'utf8').trim());
+        expect('run_id' in row).toBe(false);
+    });
+
+    it('processEvent_resolvesTheProjectRootOncePerGateRow', () => {
+        const tmpRoot = createTmpDir({ prefix: 'cul-once-' });
+        process.env.CLAUDE_PROJECT_DIR = tmpRoot.root;
+        const projectRoot = require('../../core/_lib/project-root');
+        const original = projectRoot.resolveProjectRoot;
+        const hookPath = require.resolve('../../../.agents/hooks/command-usage-logger.cjs');
+        let calls = 0;
+        projectRoot.resolveProjectRoot = (...args) => { calls++; return original(...args); };
+        delete require.cache[hookPath];
+        try {
+            require(hookPath).processEvent(GATE_EVENT);
+        } finally {
+            projectRoot.resolveProjectRoot = original;
+            delete require.cache[hookPath];
+            tmpRoot.cleanup();
+        }
+
+        expect(calls).toBe(1);
+    });
+});

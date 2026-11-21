@@ -245,9 +245,11 @@ describe('SEC-MAJOR-2 / CR-M3 / CR-m5: one unforgeable audit record per bypassed
   sh('commit.js says NOT recorded when its own event cannot be written', () => {
     hooks.removeHooks(repo);
     keyFile();
-    const notADir = path.join(tmp.root, 'file-not-dir');
-    fs.writeFileSync(notADir, 'x');
-    const r = R.runCommitJs(repo, R.writeMessage(tmp.root, 'feat: x\n'), ['--no-scan'], { CLAUDE_PROJECT_DIR: notADir });
+    // The event goes to the verified repository's events file (an environment override can no longer redirect
+    // it), so the write is made to fail by putting a directory where the file belongs.
+    const eventsPath = path.join(repo, 'docs', '.output', '.state', 'telemetry', 'guardrail-events.jsonl');
+    fs.mkdirSync(eventsPath, { recursive: true });
+    const r = R.runCommitJs(repo, R.writeMessage(tmp.root, 'feat: x\n'), ['--no-scan']);
     expect(r.status, r.out).toBe(0);
     expect(r.out).toMatch(/NOT recorded/);
   });
@@ -472,10 +474,12 @@ describe('SEC-MAJOR-4: the commit paths beyond `git commit`', () => {
       expect(r.status, r.out).toBe(0);
     });
 
-    sh('a deletion push publishes nothing and passes', () => {
+    // The force guard refuses a deletion unless the owner overrides (git-hooks.force-guard.test.js); the scanner
+    // itself must still treat the all-zero local sha as "publishes nothing" and pass it.
+    sh('a deletion push (owner override) publishes nothing and the scanner passes it', () => {
       R.git(repo, ['branch', 'gone']);
       expect(R.git(repo, ['push', '-q', 'origin', 'gone']).status).toBe(0);
-      const r = R.git(repo, ['push', 'origin', ':gone']);
+      const r = R.git(repo, ['push', 'origin', ':gone'], { env: { AGENTS_ALLOW_FORCE_PUSH: '1' } });
       expect(r.status, r.out).toBe(0);
     });
 

@@ -34,14 +34,14 @@ const { isFrozen } = require('./freeze-state');
  *
  * @param {string} command        - The original command (before sanitization)
  * @param {string} matchedPattern - The rule pattern that triggered the block
- * @param {string} [tier]         - Optional path-tier name (zeroAccessPaths / readOnlyPaths / noDeletePaths / dangerousPatterns)
+ * @param {string} [tier]         - Optional path-tier name (zeroAccessPaths / readOnlyPaths / noDeletePaths / subagentReadOnlyPaths / dangerousPatterns)
  * @returns {string}
  */
 function formatBlocked(command, matchedPattern, tier) {
     const tierLine = tier ? ['  Tier    : ' + tier] : [];
     // A configuration-file tier can be lifted by the project-owned override; the
     // managed rules file is template-zone and must not be edited for it.
-    const liftable = tier === 'readOnlyPaths' || tier === 'noDeletePaths';
+    const liftable = tier === 'readOnlyPaths' || tier === 'noDeletePaths' || tier === 'subagentReadOnlyPaths';
     const options = liftable
         ? [
             '    1. A person makes the change in their own editor or terminal',

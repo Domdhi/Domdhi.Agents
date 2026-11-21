@@ -2189,3 +2189,386 @@ describe('gate', () => {
     });
   });
 });
+
+// ─── SF-1.5: failure ledger recording ─────────────────────────────────────────
+//
+// Contract (pinned by .agents/core/_lib/__tests__/failure-ledger.test.js):
+//   a failing gate run appends exactly ONE row {ts, head, sig, legs, passed, killed} (+ `log`, and
+//   `cls` for an environment failure) to docs/.output/.state/telemetry/gate-failures.jsonl and prints
+//   `[GATE] failure signature {id} seen {N} times in a row` ({id} = the first 12 chars of sig);
+//   a passing run appends a pass row (passed true) and prints no such line; a KILLED / TIMED OUT run
+//   appends a row with `killed` set ('TIMEOUT' or the signal) and is neutral; a usage or config error
+//   (exit 2) records nothing; a ledger write failure never changes the gate's exit code.
+// The fixture projects are not git work trees, so `head` is null (unknown tree = changed tree).
+describe('gate failure ledger (SF-1.5)', () => {
+  const LEDGER_REL = 'docs/.output/.state/telemetry/gate-failures.jsonl';
+  const LEDGER_CLI = path.resolve(path.dirname(GATE_PATH), '_lib', 'failure-ledger.js');
+  const SEEN = /\[GATE\] failure signature (\S+) seen (\d+) times in a row/;
+  const OK_LEG = { argv: ['node', '-e', 'console.log("Tests: 1 passed, 0 failed, 0 skipped, 1 total")'], timeout: 30000 };
+  // A vitest-shaped failure whose duration line differs on every run (the signature must not).
+  const FAIL_SCRIPT = [
+    "console.log(' FAIL  src/a.test.js > math > adds');",
+    "console.log('AssertionError: expected 2 to be 3 // Object.is equality');",
+    "console.log(' ❯ src/a.test.js:2:34');",
+    "console.log('   Duration  ' + (10 + Math.floor(Math.random() * 900)) + 'ms');",
+    "console.log('Tests: 1 passed, 1 failed, 0 skipped, 2 total');",
+    'process.exit(1);',
+  ].join('');
+  const OTHER_FAIL_SCRIPT = FAIL_SCRIPT.replace('math > adds', 'math > subtracts');
+  const failLeg = (script = FAIL_SCRIPT) => ({ argv: ['node', '-e', script], timeout: 30000 });
+  const sleepLeg = { argv: ['node', '-e', 'setTimeout(() => {}, 60000)'], timeout: 600000 };
+
+  let tmp;
+  let root;
+  beforeEach(() => {
+    tmp = createTmpDir({ prefix: 'gate-ledger-' });
+    root = tmp.root;
+  });
+  afterEach(() => tmp.cleanup());
+
+  const config = (legs = {}) => tmp.write('.claude/gate.config.json', JSON.stringify({ stack: 'fixture', build: OK_LEG, test: OK_LEG, ...legs }));
+  const ledgerPath = () => path.join(root, LEDGER_REL);
+  const rows = () => {
+    let text;
+    try { text = fs.readFileSync(ledgerPath(), 'utf8'); } catch { return []; }
+    return text.split('\n').filter(Boolean).flatMap(line => { try { return [JSON.parse(line)]; } catch { return []; } });
+  };
+  const gate = (mode = 'test', env = {}) => {
+    const childEnv = { ...process.env, CLAUDE_PROJECT_DIR: root, CI: '', ...env };
+    if (!('GATE_TEST_TIMEOUT_MS' in env)) delete childEnv.GATE_TEST_TIMEOUT_MS;
+    try {
+      return { code: 0, out: execFileSync(process.execPath, [GATE_PATH, mode], { cwd: root, encoding: 'utf8', env: childEnv, stdio: ['ignore', 'pipe', 'pipe'] }) };
+    } catch (error) {
+      return { code: error.status, out: String(error.stdout) + String(error.stderr) };
+    }
+  };
+  const seen = out => { const m = SEEN.exec(out); return m ? { id: m[1], n: Number(m[2]) } : null; };
+  const seenN = out => (seen(out) || {}).n;
+  const printedLog = out => /\[GATE\] Log: (.+)/.exec(out)[1].trim();
+
+  it.each([
+    ['build', 'test', { build: failLeg() }],
+    ['test', 'test', { test: failLeg() }],
+    ['lint', 'test', { lint: failLeg() }],
+    ['visual', 'test', { visual: failLeg() }],
+    ['e2e', 'e2e', { e2e: failLeg() }],
+  ])('failingLeg_%s_appendsExactlyOneLedgerRowAndPrintsTheSignatureLine', (leg, mode, legs) => {
+    config(legs);
+
+    const result = gate(mode);
+
+    expect(result.code).toBe(1);
+    const written = rows();
+    expect(written).toHaveLength(1);
+    expect(Object.keys(written[0]).sort()).toEqual(['head', 'killed', 'legs', 'log', 'passed', 'sig', 'ts']);
+    expect(written[0]).toMatchObject({ head: null, legs: [leg], passed: false, killed: null });
+    expect(written[0].sig).toMatch(/^[0-9a-f]{64}$|^empty:/);
+    expect(written[0].log).toBe(printedLog(result.out));
+    expect(fs.existsSync(written[0].log)).toBe(true);
+    expect(seen(result.out)).toEqual({ id: written[0].sig.slice(0, 12), n: 1 });
+  });
+
+  it('failingTestAndLint_oneRunRecordsOneRowNamingBothLegsInOrder', () => {
+    config({ test: failLeg(), lint: failLeg() });
+
+    const result = gate('test');
+
+    expect(result.code).toBe(1);
+    const written = rows();
+    expect(written).toHaveLength(1);
+    expect(written[0].legs).toEqual(['test', 'lint']);
+  });
+
+  it('sameFailureTwice_withVaryingDurationNoise_isTheSameSignatureSeenTwice', () => {
+    config({ test: failLeg() });
+
+    const first = gate('test');
+    const second = gate('test');
+
+    const written = rows();
+    expect(written).toHaveLength(2);
+    expect(written[1].sig).toBe(written[0].sig);
+    expect(seenN(first.out)).toBe(1);
+    expect(seenN(second.out)).toBe(2);
+  });
+
+  it('threeIdenticalFailures_countsUpToThree', () => {
+    config({ test: failLeg() });
+    gate('test');
+    gate('test');
+    expect(seenN(gate('test').out)).toBe(3);
+  });
+
+  it('aDifferentFailingSet_restartsTheStreakAtOne', () => {
+    config({ test: failLeg() });
+    gate('test');
+    config({ test: failLeg(OTHER_FAIL_SCRIPT) });
+
+    const second = gate('test');
+
+    const written = rows();
+    expect(written[1].sig).not.toBe(written[0].sig);
+    expect(seenN(second.out)).toBe(1);
+  });
+
+  it('aFailureWithNoParsedTestNames_usesTheEmptyColonModeSignature', () => {
+    config({ test: { argv: ['node', '-e', 'process.exit(1)'], timeout: 30000 } });
+
+    const result = gate('test');
+
+    expect(rows()[0].sig).toBe('empty:test');
+    expect(seen(result.out)).toEqual({ id: 'empty:test', n: 1 });
+  });
+
+  it('aPassingRun_printsNoSignatureLine_addsNoFailureRowAndResetsTheStreak', () => {
+    config({ test: failLeg() });
+    gate('test');
+    gate('test');
+    config({});
+
+    const passing = gate('test');
+
+    expect(passing.code).toBe(0);
+    expect(seen(passing.out)).toBeNull();
+    const written = rows();
+    expect(written.filter(r => r.passed === false)).toHaveLength(2);
+    expect(written[written.length - 1]).toMatchObject({ passed: true, sig: null, killed: null });
+    config({ test: failLeg() });
+    expect(seenN(gate('test').out)).toBe(1);
+  });
+
+  it('aPassingRunOnAFreshProject_appendsNoFailureRow', () => {
+    config({});
+
+    const result = gate('test');
+
+    expect(result.code).toBe(0);
+    expect(rows().filter(r => r.passed === false)).toEqual([]);
+  });
+
+  it('aTimedOutRun_isNeutral_recordsATimeoutRowAndDoesNotBreakTheStreak', () => {
+    config({ test: failLeg() });
+    expect(seenN(gate('test').out)).toBe(1);
+    config({ test: sleepLeg });
+
+    const timedOut = gate('test', { GATE_TEST_TIMEOUT_MS: '1500' });
+
+    expect(timedOut.code).toBe(1);
+    expect(timedOut.out).toContain('Tests: TIMED OUT');
+    expect(seen(timedOut.out)).toBeNull();
+    expect(rows()).toHaveLength(2);
+    expect(rows()[1]).toMatchObject({ passed: false, killed: 'TIMEOUT' });
+    config({ test: failLeg() });
+    expect(seenN(gate('test').out)).toBe(2);
+  });
+
+  it.skipIf(process.platform === 'win32')('aSignalKilledRun_isNeutral_recordsTheSignalAndDoesNotBreakTheStreak', () => {
+    config({ test: failLeg() });
+    expect(seenN(gate('test').out)).toBe(1);
+    config({ test: { argv: ['node', '-e', "process.kill(process.pid, 'SIGKILL')"], timeout: 30000 } });
+
+    const killed = gate('test');
+
+    expect(killed.code).toBe(1);
+    expect(killed.out).toContain('Tests: KILLED (SIGKILL)');
+    expect(seen(killed.out)).toBeNull();
+    expect(rows()[1]).toMatchObject({ passed: false, killed: 'SIGKILL' });
+    config({ test: failLeg() });
+    expect(seenN(gate('test').out)).toBe(2);
+  });
+
+  it('aConfigurationError_exitingTwo_recordsNothing', () => {
+    config({ test: { projects: [{ name: 'x' }] } });
+
+    const result = gate('test');
+
+    expect(result.code).toBe(2);
+    expect(rows()).toEqual([]);
+    expect(fs.existsSync(ledgerPath())).toBe(false);
+  });
+
+  it('aUsageError_exitingTwo_recordsNothing', () => {
+    config({ test: failLeg() });
+    gate('test');
+
+    const result = gate('--bogus-flag');
+
+    expect(result.code).toBe(2);
+    expect(rows()).toHaveLength(1);
+  });
+
+  it('aLedgerThatCannotBeWritten_doesNotChangeAFailingGatesExitCodeOrVerdict', () => {
+    config({ test: failLeg() });
+    fs.mkdirSync(ledgerPath(), { recursive: true });
+
+    const result = gate('test');
+
+    expect(result.code).toBe(1);
+    expect(result.out).toContain('[GATE] Overall: FAILED');
+    expect(result.out).not.toContain('Fatal error');
+  });
+
+  it('aLedgerThatCannotBeWritten_doesNotChangeAPassingGatesExitCode', () => {
+    config({});
+    fs.mkdirSync(ledgerPath(), { recursive: true });
+
+    const result = gate('test');
+
+    expect(result.code).toBe(0);
+    expect(result.out).toContain('[GATE] Overall: PASSED');
+  });
+
+  it('corruptLedgerLines_doNotChangeTheExitCodeOrTheCount', () => {
+    config({ test: failLeg() });
+    gate('test');
+    fs.appendFileSync(ledgerPath(), 'garbage line\n{"half": \n');
+
+    const second = gate('test');
+
+    expect(second.code).toBe(1);
+    expect(seenN(second.out)).toBe(2);
+  });
+
+  it('anEnvironmentFailure_isStoredWithClsEnvironment', () => {
+    const script = [
+      "console.error('Error: connect ECONNREFUSED 127.0.0.1:5432');",
+      "console.log(' FAIL  src/db.test.js > connects');",
+      "console.log('Tests: 0 passed, 1 failed, 0 skipped, 1 total');",
+      'process.exit(1);',
+    ].join('');
+    config({ test: failLeg(script) });
+
+    const result = gate('test');
+
+    expect(result.code).toBe(1);
+    expect(rows()[0].cls).toBe('environment');
+  });
+
+  it('afterAFailingGate_lastFormatPrompt_printsTheExpectedSawFileLineFromTheGateLog', () => {
+    config({ test: failLeg() });
+    gate('test');
+
+    const prompt = execFileSync(process.execPath, [LEDGER_CLI, 'last', '--format', 'prompt'], {
+      encoding: 'utf8', env: { ...process.env, CLAUDE_PROJECT_DIR: root },
+    });
+
+    expect(prompt).toContain('expected 3 | saw 2 | src/a.test.js:2');
+  });
+
+  // ── Review-fix regression tests (software-factory wave 1) ──────────────────
+  const printLeg = (lines, code = 1) => ({
+    argv: ['node', '-e', `${lines.map(l => `console.log(${JSON.stringify(l)});`).join('')}process.exit(${code});`],
+    timeout: 30000,
+  });
+  const hangLeg = (ms = 1500) => ({ argv: ['node', '-e', 'setTimeout(() => {}, 60000)'], timeout: ms });
+
+  describe('F2 build, lint, visual and E2E failures get distinct signatures', () => {
+    const buildError = (code, message) => printLeg([`src/a.ts(10,5): error ${code}: ${message}`]);
+    const lintError = (rule, message) => printLeg([`src/a.js:3:7: error ${rule} ${message}`]);
+
+    it('F2_buildFailures_differentErrorsGiveDifferentSignaturesAndTheSameErrorTwiceGivesTheSame', () => {
+      config({ build: buildError('TS2304', "Cannot find name 'x'.") });
+      const first = gate('test');
+      const again = gate('test');
+      config({ build: buildError('TS2322', 'Type string is not assignable to type number.') });
+      const other = gate('test');
+
+      const written = rows();
+      expect(written).toHaveLength(3);
+      expect(written[0].sig).toMatch(/^[0-9a-f]{64}$/);
+      expect(written[1].sig).toBe(written[0].sig);
+      expect(written[2].sig).not.toBe(written[0].sig);
+      expect(seenN(first.out)).toBe(1);
+      expect(seenN(again.out)).toBe(2);
+      expect(seenN(other.out)).toBe(1);
+    });
+
+    it('F2_lintFailures_differentRulesGiveDifferentSignatures', () => {
+      config({ lint: lintError('no-unused-vars', "'x' is defined but never used") });
+      gate('test');
+      config({ lint: lintError('eqeqeq', "Expected '===' and instead saw '=='") });
+      gate('test');
+
+      const written = rows();
+      expect(written.map(r => r.legs)).toEqual([['lint'], ['lint']]);
+      expect(written[1].sig).not.toBe(written[0].sig);
+    });
+
+    it('F2_visualFailures_differentFailingTestsGiveDifferentSignatures', () => {
+      config({ visual: failLeg() });
+      gate('test');
+      config({ visual: failLeg(OTHER_FAIL_SCRIPT) });
+      gate('test');
+
+      const written = rows();
+      expect(written.map(r => r.legs)).toEqual([['visual'], ['visual']]);
+      expect(written[1].sig).not.toBe(written[0].sig);
+    });
+
+    it('F2_e2eFailures_differentFailingTestsGiveDifferentSignatures', () => {
+      config({ e2e: failLeg() });
+      gate('e2e');
+      config({ e2e: failLeg(OTHER_FAIL_SCRIPT) });
+      gate('e2e');
+
+      const written = rows();
+      expect(written.map(r => r.legs)).toEqual([['e2e'], ['e2e']]);
+      expect(written[1].sig).not.toBe(written[0].sig);
+    });
+
+    it('F2_threeDifferentBuildErrors_neverReadAsTheSameFailureThreeTimes', () => {
+      const counts = ['TS1001', 'TS1002', 'TS1003'].map(code => {
+        config({ build: buildError(code, 'something else broke') });
+        return seenN(gate('test').out);
+      });
+      expect(counts).toEqual([1, 1, 1]);
+    });
+  });
+
+  describe('F3 the environment class reads only the failing material', () => {
+    it('F3_markerInAPassingBuildLegsOutput_failingAssertionsStayGenuineAndCountUp', () => {
+      const noisyBuild = { argv: ['node', '-e', "console.log('Tests: 1 passed, 0 failed, 0 skipped, 1 total');console.error('Error: connect ECONNREFUSED handled ok')"], timeout: 30000 };
+      config({ build: noisyBuild, test: failLeg() });
+
+      const counts = [1, 2, 3].map(() => seenN(gate('test').out));
+
+      expect(counts).toEqual([1, 2, 3]);
+      expect(rows().every(r => !('cls' in r))).toBe(true);
+    });
+  });
+
+  describe('F4 any leg timing out is neutral', () => {
+    const expectNeutralTimeout = (legs, mode, expectedLegs) => {
+      config({ test: failLeg() });
+      expect(seenN(gate('test').out)).toBe(1);
+      config(legs);
+
+      const timedOut = gate(mode);
+
+      expect(timedOut.code).toBe(1);
+      expect(seen(timedOut.out)).toBeNull();
+      const written = rows();
+      expect(written).toHaveLength(2);
+      expect(written[1]).toMatchObject({ passed: false, killed: 'TIMEOUT' });
+      expect(written[1].legs).toEqual(expectedLegs);
+      config({ test: failLeg() });
+      expect(seenN(gate('test').out)).toBe(2);
+    };
+
+    it('F4_aBuildLegTimeout_isNeutralAndKeepsTheStreak', () => {
+      expectNeutralTimeout({ build: hangLeg(), test: failLeg() }, 'test', ['build']);
+    });
+
+    it('F4_aLintLegTimeout_isNeutralAndKeepsTheStreak', () => {
+      expectNeutralTimeout({ lint: hangLeg(), test: OK_LEG }, 'test', ['lint']);
+    });
+
+    it('F4_aVisualLegTimeout_isNeutralAndKeepsTheStreak', () => {
+      expectNeutralTimeout({ visual: hangLeg(), test: OK_LEG }, 'test', ['visual']);
+    });
+
+    it('F4_anE2eLegTimeout_isNeutralAndKeepsTheStreak', () => {
+      expectNeutralTimeout({ e2e: hangLeg() }, 'e2e', ['e2e']);
+    });
+  });
+});

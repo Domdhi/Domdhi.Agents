@@ -36,6 +36,7 @@ const notes = require('./_lib/memory-notes');
 const rec = require('./_lib/memory-recall');
 const ex = require('./_lib/memory-extract');
 const msync = require('./_lib/memory-sync');
+const { safeWriteAtomic } = require('./_lib/fs-safe');
 
 const VALUE_FLAGS = new Set(['session', 'model', 'method', 'max-keep', 'min-user-chars', 'older-than-min', 'max-sessions', 'k', 'prefer']);
 
@@ -115,11 +116,9 @@ const isSecret = t => ex.SECRET_RE.test(t) || engineSecretCheck(t);
 
 const readJson = (p, d) => { try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch { return d; } };
 
+// Ledger and candidate writes under the state folder: no write through a symlinked ancestor or leaf.
 function writeAtomic(p, text) {
-    fs.mkdirSync(path.dirname(p), { recursive: true });
-    const tmp = `${p}.${process.pid}.tmp`;
-    fs.writeFileSync(tmp, text);
-    fs.renameSync(tmp, p);
+    safeWriteAtomic(p, text);
 }
 
 const ledgerOf = ctx => readJson(ctx.ledgerPath, {});

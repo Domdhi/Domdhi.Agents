@@ -25,6 +25,7 @@ const fs = require('fs');
 const path = require('path');
 const { getDailyDir } = require('./_lib/daily-log-paths');
 const { resolveProjectRoot, resolveWorktreeRoot } = require('./_lib/project-root');
+const { safeAppend, safeMkdirp } = require('./_lib/fs-safe');
 
 /**
  * Build a compact commit-specific daily log entry string. Pure — no fs I/O,
@@ -63,7 +64,28 @@ class DailyLog {
         // is removed instead of landing in the shared main-worktree log.
         this.projectRoot = process.env.AGENT_SOURCE_ROOT ? resolveWorktreeRoot(path.resolve(__dirname, '..', '..')) : projectRoot || resolveProjectRoot(path.resolve(__dirname, '..', '..'));
         const sharedRoot = process.env.AGENT_SHARED_STATE_ROOT ? resolveProjectRoot(this.projectRoot) : this.projectRoot;
+        this.sharedRoot = sharedRoot;
         this.dailyDir = getDailyDir(sharedRoot);
+    }
+
+    /**
+     * Append `entry` to today's daily log without following a symlink (L1H, review C1 part 2). The
+     * daily log is written by unsandboxed hooks (memory-capture on every commit, pre-compaction,
+     * Stop), and `docs/.output/.state/` is whatever the working tree makes it: a symlinked
+     * `memory-daily/<date>.md` or `.state` turned this append into an arbitrary write, with
+     * attacker-chosen text (the commit subject). Every ancestor up to the shared root is
+     * lstat-checked and the leaf is opened with O_NOFOLLOW. A refusal throws an Error that
+     * fs-safe's `isRefusal` recognizes; hook callers catch it, call `reportRefusal` and skip.
+     *
+     * @param {string} dateStr YYYY-MM-DD
+     * @param {string} entry
+     * @returns {{ logPath: string, dateStr: string }}
+     */
+    _append(dateStr, entry) {
+        safeMkdirp(this.dailyDir, this.sharedRoot);
+        const logPath = path.join(this.dailyDir, `${dateStr}.md`);
+        safeAppend(logPath, entry, 'utf8', this.sharedRoot);
+        return { logPath, dateStr };
     }
 
     /**
@@ -217,11 +239,7 @@ ${decisions}
 
 `;
 
-        fs.mkdirSync(this.dailyDir, { recursive: true });
-        const logPath = path.join(this.dailyDir, `${dateStr}.md`);
-        fs.appendFileSync(logPath, entry, 'utf8');
-
-        return { logPath, dateStr };
+        return this._append(dateStr, entry);
     }
 
     /**
@@ -243,11 +261,7 @@ ${note}
 
 `;
 
-        fs.mkdirSync(this.dailyDir, { recursive: true });
-        const logPath = path.join(this.dailyDir, `${dateStr}.md`);
-        fs.appendFileSync(logPath, entry, 'utf8');
-
-        return { logPath, dateStr };
+        return this._append(dateStr, entry);
     }
 
     /**
@@ -268,11 +282,7 @@ ${note}
 
         const entry = formatCommitEntry(hash, subject, filesChanged, insertions, deletions, timeLabel);
 
-        fs.mkdirSync(this.dailyDir, { recursive: true });
-        const logPath = path.join(this.dailyDir, `${dateStr}.md`);
-        fs.appendFileSync(logPath, entry, 'utf8');
-
-        return { logPath, dateStr };
+        return this._append(dateStr, entry);
     }
 }
 

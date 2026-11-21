@@ -565,3 +565,30 @@ describe('static checks of the engine wiring', () => {
     expect(gr.DEFAULT_RECEIPTS).toMatchObject({ maxAgeHours: 24, forceRunEvery: 5 });
   });
 });
+
+describe('SF-1.3 review (security M3): the receipt carries the code hash at gate end', () => {
+  it('a test run records codeHash equal to the code tree hash, and it survives edits to docs the hash excludes', () => {
+    const t = makeRepo();
+    const r = t.ran(['full', 'test']);
+    expect(r.code, r.out).toBe(0);
+
+    const { codeHash } = t.receipt();
+
+    expect(codeHash).toBe(gr.codeTreeHash(t.root).hash);
+    expect(codeHash).toMatch(/^[0-9a-f]{64}$/);
+    // The whole-tree hash moves with a doc edit; the code hash does not (docs/.output is excluded).
+    t.write('docs/.output/plans/p.md', 'a plan written after the gate\n');
+    expect(gr.codeTreeHash(t.root).hash).toBe(codeHash);
+    expect(gr.verifyReceiptForRoot({ root: t.root }).ok).toBe(false);
+  });
+
+  it('a code edit after the gate changes the current code hash away from the receipt', () => {
+    const t = makeRepo();
+    expect(t.ran(['full', 'test']).code).toBe(0);
+    const { codeHash } = t.receipt();
+
+    t.write('A/A.cs', 'class A { int late; }\n');
+
+    expect(gr.codeTreeHash(t.root).hash).not.toBe(codeHash);
+  });
+});

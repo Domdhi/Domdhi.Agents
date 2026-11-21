@@ -25,6 +25,7 @@
  *   docs/.output/.state/telemetry/_latest-summary.json         — Combined summary
  *   docs/.output/.state/telemetry/gate-receipt.json            — What the latest test run proved (test/full modes)
  *   docs/.output/.state/telemetry/gate-receipts/               — Per-project history that reuse decisions read
+ *   docs/.output/.state/telemetry/gate-receipts/by-id/         — Every receipt by id ({id}.json; failed/ holds the non-passing ones); story checkpoints resolve through it
  *
  * `test` mode also runs a `lint` leg (same condition as test) — a project with
  * no lint script configured (and no explicit config override) skips it
@@ -64,6 +65,15 @@ const path = require('path');
 const { getTelemetryDir } = require('./_lib/telemetry-paths');
 const { writeSummary } = require('./_lib/gate-summary');
 const receipt = require('./_lib/gate-receipt');
+
+// Failure ledger (SF-1.5): one row per finished gate run, so "the same failure again" is a computed
+// fact. Recording must never change the gate's verdict or exit code, so every error is swallowed.
+function recordLedger(entry) {
+    try {
+        const r = require('./_lib/failure-ledger').recordGateRun({ root: PROJECT_ROOT, ...entry });
+        if (r && r.line) console.log(`[GATE] ${r.line}`);
+    } catch { /* the ledger is advisory */ }
+}
 
 const PROJECT_ROOT = process.env.CLAUDE_PROJECT_DIR || path.resolve(__dirname, '..', '..');
 const GATE_DIR = getTelemetryDir(PROJECT_ROOT);
@@ -1236,6 +1246,8 @@ function startReceipt(run, { filter, commands, changedHonored, now }) {
     const head = receipt.headSha(PROJECT_ROOT);
     const startedAt = new Date(now).toISOString();
     run.startSnapshot = snapshot;
+    // Computed once per gate run, here: the engine identity folds in a content hash of the installed test runner
+    // (vitest, vite and their runtime dependencies), so a changed runner invalidates this receipt and every reuse.
     run.engine = receipt.engineIdentity(PROJECT_ROOT);
     run.configHash = configFile.hash;
     run.rel = receiptRel();
@@ -1265,6 +1277,10 @@ function settleReceipt(run, { overall, interrupted = false, exitCode, by }) {
     const start = run.startSnapshot;
     const end = start && start.ok ? receipt.treeSnapshot(PROJECT_ROOT) : { ok: false, reason: 'no start hash' };
     r.treeHashEnd = end.ok ? end.hash : null;
+    // The code-only hash (docs/.output, docs/work and docs/TODO_*.md excluded) at gate end: ship-check seals and
+    // verifies against it, because a wave edits those docs after its gate and the whole-tree hash can never match then.
+    const codeEnd = receipt.codeTreeHash(PROJECT_ROOT);
+    if (codeEnd.ok) r.codeHash = codeEnd.hash;
     let invalid = false;
     if (start && start.ok) {
         if (!end.ok) {
@@ -1321,7 +1337,7 @@ function planReuse({ projects, snapshot, filter, mode, now, settings, engine, co
     for (const project of projects) {
         let closure; let hits = [];
         if (!snapshot.ok) closure = { known: false, reason: `tree hash unavailable: ${snapshot.reason}` };
-        else if (!engine) closure = { known: false, reason: 'the gate engine identity could not be computed' };
+        else if (!engine) closure = { known: false, reason: 'the gate engine identity (gate code and test runner) could not be computed' };
         else {
             closure = receipt.projectClosure({ project, snapshot, readText: readProjectText, meta });
             if (closure.known && project.reuse) hits = receipt.scanStaticReads(projectSourceFiles(project, snapshot));
@@ -1607,6 +1623,7 @@ async function main() {
             e2e: { succeeded, passed: parsed.passed, failed: parsed.failed, skipped: parsed.skipped, total: parsed.total, zeroCollected, ...(e2eKilled ? { killedBy: e2eKilled } : {}) },
         });
         console.log(`[GATE] Log: ${logPath}`);
+        recordLedger({ legs: ['e2e'], passed: succeeded, killed: e2eKilled || null, timedOut: Boolean(e2eResult.timedOut), output: e2eLog, log: logPath, results: { e2e: parsed } });
         console.log(`[GATE] Overall: ${succeeded ? 'PASSED' : 'FAILED'}`);
         process.exit(succeeded ? 0 : 1);
     }
@@ -1897,6 +1914,7 @@ async function main() {
             lint.timestamp = new Date().toISOString();
             const lintKilled = lint.succeeded ? null : killSignal(lintResult);
             if (lintKilled) lint.killedBy = lintKilled;
+            if (lintResult.timedOut) lint.timedOut = true;
 
             fs.writeFileSync(path.join(GATE_DIR, '_latest-lint.json'), JSON.stringify(lint, null, 2));
 
@@ -2028,6 +2046,7 @@ async function main() {
             errorCount: build.errors.length,
             warningCount: build.warnings.length,
             ...(build.killedBy ? { killedBy: build.killedBy } : {}),
+            ...(build.timedOut ? { timedOut: true } : {}),
         }
     };
     // Top-level marker: a leg was stopped from outside, so `overall: false` is not a verdict on the code.
@@ -2055,7 +2074,8 @@ async function main() {
             succeeded: lint.succeeded,
             errorCount: lint.errors.length,
             warningCount: lint.warnings.length,
-            skipped: !!lint.skipped
+            skipped: !!lint.skipped,
+            ...(lint.timedOut ? { timedOut: true } : {})
         };
     }
 
@@ -2080,6 +2100,24 @@ async function main() {
     fs.writeFileSync(logPath, fullLog);
 
     console.log(`[GATE] Log: ${logPath}`);
+    {
+        const failedLegs = [['build', build], ['test', test], ['lint', lint], ['visual', visual]]
+            .filter(([, leg]) => leg && leg.succeeded === false && !leg.skipped && !leg.skippedLeg)
+            .map(([name]) => name);
+        const ranLegs = [['build', build], ['test', test], ['lint', lint], ['visual', visual]]
+            .filter(([, leg]) => leg).map(([name]) => name);
+        // A time limit hit by ANY leg is neutral: the run says nothing about the code.
+        const timedOut = [build, test, lint, visual].some(leg => leg && leg.timedOut);
+        recordLedger({
+            legs: overall ? ranLegs : (failedLegs.length ? failedLegs : ranLegs),
+            passed: overall,
+            killed: summary.killed || null,
+            timedOut,
+            output: fullLog,
+            log: logPath,
+            results: { build, test, lint, visual },
+        });
+    }
     if (run.receipt) console.log(`[GATE] Receipt: ${run.receipt.status} (${run.receipt.mode}, id ${run.receipt.id}) → ${run.rel}`);
     console.log(`[GATE] Overall: ${overall ? 'PASSED' : (summary.killed ? `KILLED (${summary.killed}) — re-run; this is not a verdict on the code` : 'FAILED')}`);
 

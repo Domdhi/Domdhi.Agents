@@ -107,6 +107,7 @@
 | constraints/ directory | {Created / Existed / Would create} | {count} files |
 | decisions/ directory | {Created / Existed / Would create} | {count} files |
 | workflows/ directory | {Created / Existed / Would create} | {count} files |
+| rejected-approaches/ directory | {Created / Existed / Would create} | {count} files |
 | ADR seeding | {Seeded {N} / Already populated / Would seed {N}} | {ADR numbers} |
 | Pattern seeding | {Seeded {N} / Already populated / Would seed {N}} | {pattern names} |
 | Health check | {Passed / Warnings / Failed / Skipped} | {details} |
@@ -115,7 +116,7 @@
 
 **Confidence guide:**
 - 0.9 — Architecture-documented (seeded by `/specialize`)
-- 0.8 — Retro-validated (promoted by `/retro`)
+- 0.8 — Retro-validated (promoted by `/retro`, if installed)
 - 0.7 — Proven in implementation (written by `/do`)
 - 0.6 — New from story (written by `/do`)
 - 0.5 — Session observation (manual)
@@ -129,7 +130,7 @@
 | /do | {API / Glob / None} | {API / None} | {INTEGRATED / PARTIAL / NOT_INTEGRATED} |
 | /run-todo | {API / None} | {API / None} | {INTEGRATED / PARTIAL / NOT_INTEGRATED} |
 | /review:code-review | {API / None} | N/A | {INTEGRATED / PARTIAL / NOT_INTEGRATED} |
-| /retro | {API / None} | {API / None} | {INTEGRATED / PARTIAL / NOT_INTEGRATED} |
+| /retro (if installed) | {API / None} | {API / None} | {INTEGRATED / PARTIAL / NOT_INTEGRATED} |
 | /prime | {API / None} | N/A | {INTEGRATED / PARTIAL / NOT_INTEGRATED} |
 | /end | {API / None} | N/A | {INTEGRATED / PARTIAL / NOT_INTEGRATED} |
 
@@ -140,7 +141,7 @@
 ```
 /specialize → seeds decisions (0.9) + patterns (0.9) from architecture
 /do         → reads patterns during planning, writes new patterns (0.6–0.7) post-task
-/retro      → reads all, promotes confidence (→ 0.8), writes validated patterns
+/retro      → reads all, promotes confidence (→ 0.8), writes validated patterns (if installed)
 ```
 
 ---

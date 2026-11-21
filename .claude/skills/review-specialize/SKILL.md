@@ -7,13 +7,13 @@ description: "Use WHEN specializing shared agents for a project's tech stack and
 
 # Specialize
 
-Specialize the shared agent system for **this project's** tech stack, patterns, and architectural decisions. Reads the filled-in planning docs and customizes agents, seeds the memory system, and audits skills for relevance.
+Specialize the shared agent system for this project's tech stack, patterns and architectural decisions. A good run leaves every agent carrying accurate project context that cites the architecture doc, memory seeded with the architecture's decisions and patterns, a risk map the code reviewer can use, and a clear audit of which skills fit the stack and which are missing.
 
-**Idempotent** — safe to re-run. Agent context sections are replaced (not duplicated). Memories are only seeded into empty categories.
+The run is idempotent: agent context sections are replaced, never duplicated, and memories are seeded only into empty categories.
 
 ## Telemetry (run first)
 
-This command is user-typed, so it does not fire `PostToolUse:Skill` — without this it leaves no `command_invocation` row and fleet analytics under-count human-driven runs. Self-log the invocation before anything else (best-effort — if it fails, continue regardless):
+This command is user-typed, so it does not fire `PostToolUse:Skill`; without a self-log, fleet analytics under-count human-driven runs. Log the invocation before anything else, best-effort (continue if it fails):
 
 ```bash
 node .claude/core/telemetry-log.js review:specialize
@@ -30,72 +30,34 @@ MODE: $ARGUMENTS (default: `--fix`)
 
 ### 0. Phase Gate
 
-Verify the project is ready for specialization:
+- `docs/architecture/overview.md` is required and must not be a template (`<!-- @@template -->`). It is the load-bearing input: the tech stack, components and risk map all come from it.
+- `docs/work/backlog.md` is optional. When it is real, the risk map can use epic and story boundaries; when it is missing or a template, proceed in architecture-only mode.
 
-- Read `docs/architecture/overview.md` — **REQUIRED**: must exist and NOT be a template (`<!-- @@template -->`). The architecture doc is the load-bearing input — specialization extracts the tech stack, components, and risk map from it.
-- Read `docs/work/backlog.md` — **OPTIONAL**: if it exists and is real, the risk map can use epic/story boundaries; if it is missing or a template, proceed in **architecture-only mode**.
-
-**If `architecture/overview.md` is missing or a template:**
+If `architecture/overview.md` is missing or a template, stop:
 
 ```
 ABORT: /specialize requires a real docs/architecture/overview.md.
-Run /onboard (brownfield) or /create:project-architecture (greenfield) first.
+Run /create:project-architecture first (for a brownfield repo, /onboard if installed).
 ```
 
-**Architecture-only mode (C7):** when the backlog is missing/template — the normal state right after `/onboard`, which deliberately defers the backlog to the create-chain — do **NOT** abort. Specialize the agents from the architecture doc (stack extraction, agent `## Project Context`, gate config, risk map all derive from architecture) and note in the report: *"backlog absent — backlog-derived refinements deferred; re-run `/review:specialize` after `/create:project-epics` to incorporate epic boundaries."* This is what lets `/onboard`'s chained specialize actually produce specialized agents instead of silently aborting.
+**Architecture-only mode (C7).** A missing or template backlog is the normal state right after brownfield onboarding, which defers the backlog to the create-chain, so do not abort. Specialize from the architecture doc alone (stack, agent `## Project Context`, gate config and risk map all derive from it) and note in the report: *"backlog absent — backlog-derived refinements deferred; re-run `/review:specialize` after `/create:project-epics` to incorporate epic boundaries."*
 
 ### 1. Extract Project Tech Stack
 
-Read `docs/architecture/overview.md` and dynamically extract the full tech stack. **Nothing is hardcoded** — parse whatever the architecture document contains.
+Read `docs/architecture/overview.md` and extract the stack from whatever it contains; nothing is hardcoded. Handle variable row counts.
 
-**1a. Backend** — Parse `## Tech Stack > ### Backend` table:
-```
-| Layer | Technology | Version | Rationale |
-```
-Extract each row as `{layer, technology, version, rationale}`. Handle variable row counts.
+- **Backend**: the `## Tech Stack > ### Backend` table, `| Layer | Technology | Version | Rationale |`, as `{layer, technology, version, rationale}`.
+- **Frontend**: the `### Frontend` table, same shape. Absent or empty means backend-only: set `FRONTEND = NONE`.
+- **Database**: `### Database`, `| Role | Technology | Version | Rationale |`. Roles include Primary, Cache, Search and so on; there may be several.
+- **Infrastructure**: `### Infrastructure`, `| Service | Technology | Rationale |`.
+- **Auth**: provider, flow, token type and storage, authorization model (RBAC, ABAC, claims) and the roles and policies.
+- **Testing strategy**: `## Development Standards > ### Testing Strategy`, `| Level | Framework | Coverage Target | Scope |`, per tier.
+- **Cross-cutting concerns**: logging, error handling, caching, configuration and secrets, feature flags.
+- **ADRs**: every `### ADR-\d+:` heading (the count varies, so do not hardcode a range), with title, status, date, context, decision, alternatives and consequences.
+- **Project identity**: from `docs/product/brief.md`, the name (the `# Project Brief: {name}` heading) and the organization if present.
 
-**1b. Frontend** — Parse `### Frontend` table (same format). If section is absent or empty → project is backend-only. Set `FRONTEND = NONE`.
+**Placeholder detection.** If any extracted technology value contains `{` (an unfilled placeholder), stop:
 
-**1c. Database** — Parse `### Database` table:
-```
-| Role | Technology | Version | Rationale |
-```
-Roles may include Primary, Cache, Search, etc. Handle multiple databases.
-
-**1d. Infrastructure** — Parse `### Infrastructure` table:
-```
-| Service | Technology | Rationale |
-```
-
-**1e. Authentication & Authorization** — Parse the auth section for:
-- Provider (OAuth, JWT, session, API key, etc.)
-- Flow (code flow, implicit, client credentials, etc.)
-- Token type and storage
-- Authorization model (RBAC, ABAC, claims-based)
-- Roles and policies
-
-**1f. Testing Strategy** — Parse `## Development Standards > ### Testing Strategy` table:
-```
-| Level | Framework | Coverage Target | Scope |
-```
-Extract for each tier (Unit, Integration, E2E).
-
-**1g. Cross-Cutting Concerns** — Parse the cross-cutting section for:
-- Logging framework and destinations
-- Error handling strategy
-- Caching approach
-- Configuration source and secrets management
-- Feature flag approach
-
-**1h. ADRs** — Scan for ALL `### ADR-\d+:` headings (variable count — do NOT hardcode a range). For each, extract:
-- Title, Status, Date
-- Context, Decision, Alternatives, Consequences
-
-**1i. Project Identity** — Read `docs/product/brief.md` for:
-- Project name (from `# Project Brief: {name}` heading)
-- Organization (if present)
-
-**Placeholder detection:** If any extracted technology value contains `{` characters (unfilled template placeholders), abort:
 ```
 ABORT: Architecture doc contains unfilled placeholders.
 Found: {example placeholder values}
@@ -104,11 +66,9 @@ Run /create:project-architecture to fill in actual values first.
 
 ### 2. Specialize Agents
 
-For each role, use `.agents/roles/*.md` when its canonical source exists; otherwise use the legacy `.claude/agents/*.md`. Never edit a generated native role. After canonical edits, run `node .claude/core/render-shared-agents.js` to refresh both runtimes. Native model/tool settings belong in `.claude/shared-agents.json` or `.codex/shared-agents.json`, not the canonical role.
+Use `.agents/roles/*.md` for each role whose canonical source exists; otherwise use the legacy `.claude/agents/*.md`. Never edit a generated native role. After canonical edits run `node .claude/core/render-shared-agents.js` to refresh both runtimes. Native model and tool settings belong in `.claude/shared-agents.json` or `.codex/shared-agents.json`, not the canonical role.
 
-For each selected role source, read the agent file, match it by the frontmatter `name`, select its tech stack slices (mapping below), and append (or replace) a `## Project Context` section at EOF after the existing Skills and operating sections.
-
-**Name-to-tech-stack mapping:**
+Match each role by its frontmatter `name`, pick its slice of the stack from the mapping below, and append (or replace) a `## Project Context` section at EOF, after the existing Skills and operating sections.
 
 | Agent | Tech Stack Slices |
 |-------|------------------|
@@ -124,7 +84,7 @@ For each selected role source, read the agent file, match it by the frontmatter 
 | `playwright` | Frontend tech, test URLs, browser configuration |
 | `shadow` | Project name, tech stack summary for technical writing context |
 
-**Format to append to each agent file (after the `---` frontmatter closing):**
+Section format:
 
 ```markdown
 ## Project Context
@@ -148,30 +108,13 @@ For each selected role source, read the agent file, match it by the frontmatter 
 - ...
 ```
 
-**Rationale sourcing:** All "why", "solves", and "consequence" annotations MUST be drawn from the architecture document (`docs/architecture/overview.md`) — specifically the Rationale columns, Component Architecture descriptions, and ADR Consequences sections. Do NOT invent rationale. If the architecture doc doesn't provide a rationale for a given item, use "—" instead of guessing.
+**Rationale sourcing.** Every "why", "solves" and "consequence" comes from the architecture doc (Rationale columns, Component Architecture descriptions, ADR Consequences). Do not invent rationale; where the doc gives none, write "—".
 
-**Idempotency and Soul Zone preservation:**
-- Before appending, check if `## Project Context` already exists in the markdown body (after the `---` frontmatter); if found → **replace** everything from `## Project Context` to end of file with the new content
-- **CRITICAL**: Do NOT touch anything above `## Project Context`. The content between the closing `---` of frontmatter and `## Project Context` is the agent's **Soul Zone** (managed by `/personalize`). Preserve it exactly as-is.
-- If `## Project Context` does not exist → append after existing content (soul or thin instructions) with a blank line separator
-- The `> Specialized for` marker line confirms this section was generated by `/specialize`; in `--dry-run` mode, report "Would update" / "Would add" / "Already current"
+**Idempotency and Soul Zone.** If `## Project Context` already exists in the body, replace everything from it to EOF; otherwise append after the existing content with a blank line. Never touch anything above `## Project Context`: the content between the closing frontmatter `---` and that heading is the agent's Soul Zone, managed by `/personalize`, and is preserved exactly. The `> Specialized for` line marks the section as generated by `/specialize`. In `--dry-run`, report "Would update" / "Would add" / "Already current".
 
 ### 2b. Create Stack-Specific Agents
 
-Analyze the extracted tech stack and architecture to determine which **additional** specialized agents to create. This is dynamic — not a fixed list. Each distinct technology domain that represents meaningful specialization gets its own agent.
-
-#### Discovery Process
-
-1. **Scan the architecture doc** for technology domains that require deep expertise beyond what the 10 default agents cover. A domain qualifies if it has:
-   - Its own section in the architecture doc (e.g., Database, Auth, Infrastructure, Real-time, API Gateway)
-   - Specific patterns, conventions, or configuration that an implementation agent needs to know
-   - Enough complexity that a generic agent would produce subpar results
-
-2. **Check for overlap** — skip creating an agent if an existing default agent already covers the domain well enough. The default agents cover: product strategy, system architecture, UX design, project planning, security review, QA/testing, code review, documentation, browser automation, and technical writing.
-
-3. **Name each agent** with a descriptive slug matching the domain (e.g., `db-architect`, `auth-builder`, `api-specialist`, `realtime-builder`, `state-manager`).
-
-#### Common Specializations (create when architecture doc has the section)
+Beyond the default agents (product strategy, architecture, UX, planning, security, QA, code review, documentation, browser automation, technical writing), create an agent for each technology domain that has its own architecture section, project-specific patterns or configuration an implementer must know, and enough complexity that a generic agent would do it poorly. Skip a domain a default agent already covers well. Name each with a descriptive slug (`db-architect`, `auth-builder`, `api-specialist`).
 
 | Architecture Section | Agent Name | Expertise | Skills |
 |---------------------|-----------|-----------|--------|
@@ -186,15 +129,12 @@ Analyze the extracted tech stack and architecture to determine which **additiona
 | ML / AI Integration | `ml-integrator` | Model serving, prompt engineering, embedding pipelines, {ML technology} | `[]` |
 | Monorepo / Build System | `build-engineer` | {Build tool} configuration, workspace management, dependency graph | `[]` |
 
-**This table is a starting point, not a ceiling.** If the architecture doc contains a significant technology domain not listed above, create an agent for it. Use your judgment — if a developer would seek specialized help for that domain, it deserves an agent.
+The table is a starting point, not a ceiling: a significant domain not listed still deserves an agent if a developer would seek specialized help for it.
 
-#### Frontend Skills Selection
+For `frontend-specialist`, include `brand-guidelines` when `docs/design/spec.md` exists, `tailwind-css-patterns` only when the project uses Tailwind, and any other installed skill matching the frontend stack.
 
-When creating `frontend-specialist`, include `brand-guidelines` if `docs/design/spec.md` exists, `tailwind-css-patterns` only if the project uses Tailwind CSS, and other installed skills that match the frontend stack.
+Create new shared roles in `.agents/roles/{agent-name}.md`; the renderer emits the native roles:
 
-#### Agent File Format
-
-Create new shared roles in `.agents/roles/{agent-name}.md` using this canonical format; the renderer emits native roles:
 ```yaml
 ---
 name: {agent-name}
@@ -204,23 +144,19 @@ skills: []  # Override per agent-specific needs above
 
 # {Agent Title}
 
-{System prompt with project-specific expertise. Include:
-- The specific technologies and versions from the architecture doc
-- Key patterns and conventions for this domain
-- Relevant ADRs that affect this domain
-- Common pitfalls and best practices
-- How this domain integrates with other parts of the system}
+{System prompt with project-specific expertise: the technologies and versions from the
+architecture doc, key patterns and conventions, relevant ADRs, common pitfalls, and how
+this domain integrates with the rest of the system}
 ```
 
-**Rules:**
-- Only create agents that don't already exist (check by `name` in frontmatter)
-- These agents are **project-specific** — they embed actual technology details in their prompt body, unlike default agents which get a `## Project Context` appendix
-- The `description` field must be specific enough for the runtime to select the role correctly (e.g., "PostgreSQL schema design, migrations, and query optimization" not just "database work")
-- Put runtime model/tool/memory settings in the corresponding native `shared-agents.json` adapter; for Claude, use `memory: project` there. Render after adding a role.
+- Create only agents that do not already exist (check by frontmatter `name`).
+- Unlike default agents, these are project-specific: they embed the actual technology details in the prompt body rather than getting a `## Project Context` appendix.
+- Make the `description` specific enough for role selection ("PostgreSQL schema design, migrations, and query optimization", not "database work").
+- Runtime model, tool and memory settings go in the native `shared-agents.json` adapter (for Claude, `memory: project`). Render after adding a role.
 
 ### 2c. Configure Build & Test Gate
 
-`gate.js` auto-detects the project's build system. If overrides are needed, author `.agents/gate.config.json`, then render the existing helper's `.claude/gate.config.json`. This project-owned configuration is used by either runtime. **The schema is nested** — `gate.js` reads `config.build.command` / `config.test.command` (NOT flat strings). A flat `{"build": "npm run build"}` makes the gate fail (C14):
+`gate.js` auto-detects the build system. Skip this step when detection already works for the stack (check with `node .claude/core/gate.js build`). When detection is wrong or incomplete, author `.agents/gate.config.json` and render the helper's `.claude/gate.config.json`; the config is project-owned and either runtime uses it. The schema is nested: `gate.js` reads `config.build.command` and `config.test.command`, and a flat `{"build": "npm run build"}` makes the gate fail (C14):
 
 ```json
 {
@@ -230,19 +166,15 @@ skills: []  # Override per agent-specific needs above
 }
 ```
 
-(For a Python project whose CI is ruff+pytest without mypy, e.g.: `"build": { "command": ".venv/bin/ruff check src tests" }`, `"test": { "command": ".venv/bin/pytest" }`, `"stack": "python"`.)
+(A Python project whose CI is ruff plus pytest without mypy, for example: `"build": { "command": ".venv/bin/ruff check src tests" }`, `"test": { "command": ".venv/bin/pytest" }`, `"stack": "python"`.)
 
-**Skip** if `gate.js` auto-detection already works for this stack (run `node .claude/core/gate.js build` to verify). Only create `gate.config.json` when the default detection is wrong or incomplete.
+Adopter build, test and PR gates run application checks only, including after agent-file edits. Never add an automatic or conditional toolkit suite. Mark an absent lint leg `"lint": { "missing": true }` and keep genuine application lint. Preserve application coverage, integration-isolation filters, security and preflight checks and gate locking. Application tests named Core remain application tests. Agent-system tests run in Domdhi.Agents only.
 
-Adopter build/test/PR gates run application checks only, including after agent-file edits. Never add an automatic or conditional toolkit suite. Mark an absent lint leg `"lint": { "missing": true }`; keep genuine application lint. Preserve application coverage, integration-isolation filters, security/preflight checks and gate locking. Application tests named Core remain application tests. Run agent-system tests in Domdhi.Agents only.
-
-**Runtime and verification.** In an adopter, the gate this step configures (`gate.js`) runs the application's own build, test and lint commands and never the Domdhi.Agents toolkit suite, including after the agent-file edits this workflow makes; in Domdhi.Agents itself it runs the toolkit's Node build and Vitest suite. In Codex, run each `.claude/core/` command in this workflow (telemetry, `gate.js`, `memory-manager.js`, `render-shared-agents.js`) as `.codex/core/` with the same arguments and delegate roles as `.agents/adapters/codex/execution.md` describes. Note that discovery alone (an installed skill, a listed command or a loaded file) never proves this workflow ran: claim completion only from the updated canonical roles and skills, a renderer run that leaves no drift, the Step 7 report and the Step 6 commit hash.
+**Runtime and verification.** In an adopter, `gate.js` runs the application's own build, test and lint commands and never the Domdhi.Agents toolkit suite; in Domdhi.Agents itself it runs the toolkit's Node build and Vitest suite. In Codex, run each `.claude/core/` command here (telemetry, `gate.js`, `memory-manager.js`, `render-shared-agents.js`) as `.codex/core/` with the same arguments, and delegate roles as `.agents/adapters/codex/execution.md` describes. Discovery alone (an installed skill, a listed command or a loaded file) never proves this workflow ran: claim completion only from the updated canonical roles and skills, a renderer run that leaves no drift, the Step 7 report and the Step 6 commit hash.
 
 ### 2d. Generate Risk Map for Code Reviewer
 
-Analyze the architecture document's **Component Architecture** and **Cross-Cutting Concerns** sections to generate a directory-level risk map. The risk map tells the `code-reviewer` agent which areas of the codebase require deep vs. light review.
-
-#### Risk Tier Definitions
+From the architecture doc's Component Architecture and Cross-Cutting Concerns, build a directory-level risk map that tells `code-reviewer` where to review deeply and where lightly. Classify each component by what it is responsible for, and map it to its directory path in the doc's project structure.
 
 | Tier | Criteria | Examples |
 |------|----------|---------|
@@ -250,27 +182,9 @@ Analyze the architecture document's **Component Architecture** and **Cross-Cutti
 | **MEDIUM** | Business logic, API controllers, state management, service layers, domain models | `services/`, `controllers/`, `api/`, `domain/`, `handlers/` |
 | **LOW** | Configuration, documentation, tests, utilities, static assets, build scripts, type definitions | `config/`, `docs/`, `tests/`, `utils/`, `assets/`, `types/` |
 
-#### Classification Algorithm
+Cross-cutting concerns follow the same logic: security and auth modules are HIGH, error handling and caching MEDIUM, logging LOW. Convert component paths to glob patterns (`src/auth/**` → HIGH).
 
-1. **Parse Component Architecture** — For each component in `## Component Architecture`:
-   - Extract the component's responsibility description
-   - Map to risk tier based on responsibility keywords:
-     - Contains "auth", "security", "credential", "permission", "encrypt", "payment", "sensitive data" → **HIGH**
-     - Contains "business logic", "api", "controller", "service", "handler", "state", "domain" → **MEDIUM**
-     - Contains "config", "utility", "helper", "test", "doc", "asset", "type", "build" → **LOW**
-   - Extract the component's directory path from the architecture doc's project structure
-
-2. **Parse Cross-Cutting Concerns** — For each concern:
-   - "Error handling" modules → **MEDIUM**
-   - "Logging" modules → **LOW**
-   - "Caching" modules → **MEDIUM**
-   - "Security" / "Auth" modules → **HIGH**
-
-3. **Generate path patterns** — Convert component paths to glob-style patterns for matching (e.g., `src/auth/**` → HIGH)
-
-#### Output Format
-
-Append a `### Risk Map` subsection inside the `code-reviewer` agent's `## Project Context` section:
+Append a `### Risk Map` subsection inside the `code-reviewer` agent's `## Project Context`, after `### Conventions` (create the Project Context with just the risk map if the agent has none yet):
 
 ```markdown
 ### Risk Map
@@ -285,17 +199,9 @@ Append a `### Risk Map` subsection inside the `code-reviewer` agent's `## Projec
 **Default tier**: MEDIUM (for files not matching any pattern)
 ```
 
-**Fast-iterating product (optional).** When the architecture doc or brief says the product is a game, prototype or other fast-iterating domain, add a `Fast-iterating: yes — {reason}` line to the Risk Map and list its contract surfaces (for a game: seeded RNG and determinism, update ordering, currency, pause and modal state, lifecycle and disposal, persistence). `/todo` keeps `deep` to those surfaces and treats tuning, content, layout and copy as `standard` (`/todo` Release Slices and Risk Tiers, Pin contracts, not tuning). Do not infer it from the stack alone; when the docs do not say, omit the line and note in the report that the owner can add it.
+**Fast-iterating product (optional).** When the architecture doc or brief says the product is a game, prototype or other fast-iterating domain, add a `Fast-iterating: yes — {reason}` line to the Risk Map and list its contract surfaces (for a game: seeded RNG and determinism, update ordering, currency, pause and modal state, lifecycle and disposal, persistence). The marker and its surfaces are advice for reviewers and people: `/todo` does not read it (its Pin contracts, not tuning rule applies in every project). Do not infer it from the stack alone; when the docs do not say, omit the line and note in the report that the owner can add it.
 
-**Placement:** The risk map is appended **within** the `code-reviewer` agent's `## Project Context` section (after `### Conventions`). If the agent has no `## Project Context` yet, create one with just the risk map.
-
-**Idempotency:** If `### Risk Map` already exists within the code-reviewer's Project Context, replace it. Do not duplicate.
-
-**`--dry-run` mode:** Report "Would generate risk map with {N} entries" without writing.
-
-#### Report Section
-
-Add a `### Risk Map` row to the Specialization Report:
+If `### Risk Map` already exists in the code-reviewer's Project Context, replace it. In `--dry-run`, report "Would generate risk map with {N} entries" without writing. Add this to the Specialization Report:
 
 ```markdown
 ### Risk Map
@@ -310,59 +216,31 @@ Add a `### Risk Map` row to the Specialization Report:
 
 ### 3. Audit & Generate Skills
 
-For each skill in `.agents/skills/*/SKILL.md`, plus legacy `.claude/skills/*/SKILL.md` without a canonical equivalent:
+For each skill in `.agents/skills/*/SKILL.md`, plus legacy `.claude/skills/*/SKILL.md` with no canonical equivalent, read its name and purpose and classify it against the extracted stack:
 
-**3a. Read the skill's description** (first 5-10 lines for name and purpose).
+- **relevant**: tech-agnostic (planning, review, `qa-engineer` and similar) or its technology is in the stack.
+- **not-applicable**: teaches a technology this project does not use (`tailwind-css-patterns` without Tailwind).
+- **needs-framework-skill**: the project uses a technology with no corresponding skill.
 
-**3b. Classify against the extracted tech stack:**
+Gap detection: for each technology in Backend, Frontend, Database and Testing, check whether any skill's name or description mentions it (case-insensitive). If none does and it is an implementation framework rather than just a language, flag a gap: `{tech-slug}-patterns` for `{technology} {version}`. This step classifies and finds gaps; it never modifies or deletes an existing skill.
 
-- **relevant** — Skill is tech-agnostic (planning/review skills like `project-planning`, `architecture`, `ux-design`, `code-review`, `qa-engineer`) OR skill's technology is in the project's tech stack
-- **not-applicable** — Skill teaches a specific technology NOT used in this project (e.g., `tailwind-css-patterns` when project doesn't use Tailwind)
-- **needs-framework-skill** — Project uses a technology that has no corresponding skill
-
-**3c. Gap detection:**
-
-For each technology in Backend, Frontend, Database, and Testing:
-1. Check if any skill's name or description mentions that technology (case-insensitive)
-2. If no skill covers it AND it's an implementation framework (not just a language):
-   - Flag as gap: `{tech-slug}-patterns` for `{technology} {version}`
-
-**This step does NOT modify or delete existing skills.** It classifies and identifies gaps.
-
-> **Marker rule.** If you ever add project-specific guidance to an existing *template* skill, edit its `.agents/skills` canonical source when present (otherwise the legacy `.claude/skills` source). Never edit its generated native copy. Every project-specific addition MUST use a project-additions sentinel — plain edits to template prose are clobbered on the next `template-updater`/`fleet:sync`. A whole new section appended at the end → `<!-- @@project-additions -->` (create it if absent), everything below preserved. A bullet or paragraph inserted INSIDE an existing section (e.g. adding a project-specific escalation rule to `code-review/SKILL.md`'s existing rule list, or a stack-specific test pattern to `qa-engineer/SKILL.md`'s existing patterns) → wrap it in an anchored `<!-- @@project-additions:start -->` / `:end` fence instead — the whole-tail marker cannot protect content injected mid-section. Prefer a brand-new project-added skill dir for substantial content; new skill dirs are never touched by sync. Full doctrine + rules: `skill-authoring`.
+> **Marker rule.** Project-specific guidance added to an existing template skill goes in its `.agents/skills` canonical source (the legacy `.claude/skills` source only when no canonical one exists), never its generated native copy, and must use a project-additions sentinel; plain edits to template prose are clobbered on the next `template-updater` or `fleet:sync`. A whole new section at the end uses `<!-- @@project-additions -->` (create it if absent; everything below is preserved). A bullet or paragraph inside an existing section (a project-specific escalation rule in `code-review/SKILL.md`'s rule list, a stack-specific test pattern in `qa-engineer/SKILL.md`'s patterns) is wrapped in an anchored `<!-- @@project-additions:start -->` / `:end` fence, because the whole-tail marker cannot protect mid-section content. Prefer a brand-new project-added skill directory for substantial content; sync never touches new skill directories. Full doctrine: `skill-authoring`.
 
 ### 3d. Generate Stack Skills
 
-For each gap identified in 3c, create a new skill. In `--dry-run` mode, report "Would create" and skip.
+Create a skill for each gap worth filling (in `--dry-run`, report "Would create" and skip). A technology earns a skill when it has framework-specific patterns a developer must learn (React hooks, Django views, EF Core migrations), configuration complexity that varies per project (Tailwind themes, Webpack, Docker Compose), or project-specific conventions the architecture doc sets that override defaults ("server components by default", "repository pattern for data access"). Skip plain languages, simple libraries with no project patterns (lodash, uuid), and infrastructure services the agent prompt already covers (Redis as a cache, S3 for storage) unless the architecture doc defines specific patterns.
 
-#### Discovery Rules
+Delegate each skill to the `architect` role through the runtime's delegation mechanism; if the role or delegation is unavailable, the main agent does the same work. The task prompt includes:
 
-Not every technology needs a skill. A skill is warranted when the technology has:
-- **Framework-specific patterns** — conventions that a developer needs to learn (e.g., React hooks, Django views, EF Core migrations)
-- **Configuration complexity** — non-trivial setup that varies per project (e.g., Tailwind themes, Webpack config, Docker Compose)
-- **Project-specific conventions** — patterns decided in the architecture doc that override defaults (e.g., "always use server components", "repository pattern for data access")
-
-Skip skill creation for:
-- **Languages** without a framework (plain TypeScript, Python, Go — the language itself doesn't need a skill)
-- **Simple libraries** with no project-specific patterns (lodash, moment, uuid)
-- **Infrastructure services** where the agent prompt covers it (Redis as cache, S3 for storage — unless the architecture doc defines specific patterns)
-
-#### Delegation
-
-For each skill to create, delegate to the `architect` role using the runtime's available delegation mechanism. If that role or delegation is unavailable, the main agent performs the same steps.
-
-**Task prompt must include:**
 1. Technology name and version from the architecture doc
-2. Output path: `.agents/skills/{tech-slug}-patterns/SKILL.md`
-3. Project-specific patterns and conventions from the architecture doc sections that mention this technology
-4. Relevant ADRs that affect this technology
-5. How this technology integrates with other parts of the stack
-6. Instruction to read an installed tech-specific skill under `.agents/skills/` (for example `tailwind-css-patterns` when installed) as a format exemplar
+2. Output path `.agents/skills/{tech-slug}-patterns/SKILL.md`
+3. The project-specific patterns and conventions from the architecture sections that mention the technology
+4. Relevant ADRs
+5. How the technology integrates with the rest of the stack
+6. An installed tech-specific skill under `.agents/skills/` (for example `tailwind-css-patterns` when installed) to read as a format exemplar
 7. The verified project constraints and architecture conventions loaded in Step 2, with the instruction to cite their source paths rather than restate them
 
-#### Skill File Format
-
-Every generated skill must follow this structure:
+Generated skills use this structure:
 
 ```yaml
 ---
@@ -408,27 +286,13 @@ description: "{Technology} {version} patterns, conventions, and best practices. 
 {Project-specific configuration — from architecture doc's infrastructure/setup sections}
 ```
 
-#### Quality Rules
+Project Conventions is the section that matters most: it captures the architecture doc's decisions, and generic framework knowledge is supplementary. Examples use the project's actual patterns (the repository pattern if that is the decision, not raw SQL), are version-aware for the exact version in the stack, cite the ADRs that shape usage ("Per ADR-003, use server components by default"), and do not duplicate an existing skill's ground.
 
-- **Project-specific > Generic**: The "Project Conventions" section is the most important — it captures decisions from the architecture doc. Generic framework knowledge is supplementary.
-- **Code examples must use the project's actual patterns**: If the architecture doc specifies repository pattern, show that — not raw SQL.
-- **Version-aware**: Include version-specific features and deprecation warnings for the exact version in the tech stack.
-- **Cross-reference ADRs**: If an ADR affects how this technology is used, cite it (e.g., "Per ADR-003, use server components by default").
-- **No overlap with existing skills**: If `tailwind-css-patterns` already exists, don't create a `css-patterns` skill that covers the same ground.
-
-#### Idempotency
-
-- Check if `.agents/skills/{tech-slug}-patterns/SKILL.md` already exists before creating
-- If it exists → skip (report "Already exists"). To regenerate, user must delete the skill directory first.
-- This prevents overwriting skills that have been manually customized during implementation.
+Idempotency: if `.agents/skills/{tech-slug}-patterns/SKILL.md` already exists, skip and report "Already exists". Regenerating requires the user to delete the directory first, which protects skills customized during implementation.
 
 ### 3e. Wire Skills into Agents
 
-After creating new skills, update the `skills:` frontmatter of relevant agents to reference them.
-
-**Matching rules:**
-- **Stack-specific agents** (created in step 2b) get skills for their domain automatically — the skill was created for the same technology
-- **Default agents** get new skills based on role relevance:
+Add each new skill name to the `skills:` frontmatter of the agents it serves, without duplicating an entry and without touching anything below the closing frontmatter `---`. Read the canonical role source if present, else the legacy native agent. Stack-specific agents from Step 2b get the skills for their own domain. Default agents get:
 
 | Agent | Gets Skills For |
 |-------|----------------|
@@ -438,49 +302,38 @@ After creating new skills, update the `skills:` frontmatter of relevant agents t
 | `frontend-specialist` | Frontend framework + CSS + state management skills |
 | `security-auditor` | Auth-related skills + backend framework skills |
 
-**Update process:**
-1. Read the canonical role source if present; otherwise read the legacy native agent
-2. Parse the `skills:` list from frontmatter
-3. Add new skill names (if not already present)
-4. Write the updated frontmatter
-5. **Do NOT touch** anything below the frontmatter closing `---`
+In `--dry-run`, report "Would add {skill} to {agent}" without writing.
 
-In `--dry-run` mode, report "Would add {skill} to {agent}" without writing.
 ### 4. Seed Memory System
 
 Follow `.agents/skills/review-specialize/references/seed-memory.md` for the existing five-category memory seeding workflow. Seed only empty categories; use the same memory-manager helpers.
+
 ### 5. Verify Command Integration
 
-Check each implementation command for proper memory API usage:
+Check that each implementation command uses the memory API rather than raw file access. For each command, grep for:
 
-**For each command, Grep for:**
-1. `memory-manager.js` — proper API usage (CLI calls)
-2. `Glob: docs/.output/.memory/` — raw Glob pattern (should prefer API)
-3. `Check docs/.output/.memory/` — vague text mention (should be actual CLI call)
+1. `memory-manager.js`: proper API usage (CLI calls)
+2. `Glob: docs/.output/.memory/`: a raw Glob pattern (should prefer the API)
+3. `Check docs/.output/.memory/`: a vague text mention (should be an actual CLI call)
 
-**Integration status:**
-- **INTEGRATED** — Uses `memory-manager.js` CLI for both reads and writes
-- **PARTIAL** — Has some API usage but also raw Glob or text mentions
-- **NOT_INTEGRATED** — No memory API usage at all
-
-**Commands to check:**
+Status: **INTEGRATED** uses the `memory-manager.js` CLI for reads and writes; **PARTIAL** has some API usage plus raw Glob or text mentions; **NOT_INTEGRATED** has no memory API usage.
 
 | Command | File | Should Read | Should Write |
 |---------|------|------------|-------------|
 | `/do` | `commands/do.md` | Yes (planning + pre-delegation) | Yes (post-implementation patterns) |
 | `/run-todo` | `commands/run-todo.md` | Yes (wave planning) | Yes (post-wave patterns) |
 | `/review:code-review` | `commands/review/code-review.md` | Yes (load standards) | No |
-| `/retro` | `commands/retro.md` | Yes (gather data) | Yes (extract patterns) |
+| `/retro` (if installed) | `commands/retro.md` | Yes (gather data) | Yes (extract patterns) |
 | `/prime` | `commands/prime.md` | Yes (load context) | No |
 | `/end` | `commands/end.md` | Yes (memory summary) | No |
 
-This step does NOT auto-fix command files — it flags issues for manual action.
+This step flags issues for manual action; it does not edit command files.
 
 ### 6. Render and Commit (main agent)
 
-After canonical changes run `node .claude/core/render-shared-agents.js`. Resolve any generated-output conflict by reviewing it and applying intended behavior to its canonical source; native metadata belongs in the adapter. Never reverse-import a generated file silently. In `--dry-run`, use the renderer's `--dry-run` flag and do not write or commit.
+After canonical changes run `node .claude/core/render-shared-agents.js`. Resolve any generated-output conflict by reviewing it and applying the intended behavior to its canonical source (native metadata belongs in the adapter); never reverse-import a generated file silently. In `--dry-run`, use the renderer's `--dry-run` flag and do not write or commit.
 
-Follow the **Post-Command Commit Convention** in `.agents/startup-reference.md`. Stage all files created or modified by this command and commit with a descriptive message.
+Follow the **Post-Command Commit Convention** in `.agents/startup-reference.md`: stage all files this command created or modified and commit with a descriptive message.
 
 ### 7. Report
 
@@ -488,7 +341,7 @@ Use the report template in `.agents/skills/review-specialize/references/speciali
 
 ## When to Run
 
-- **During project setup**: After `/check-readiness` passes
-- **After architecture changes**: When tech stack or ADRs are updated
-- **Before a new epic**: To refresh agent context with any architectural evolution
-- **On-demand**: When implementation feels misaligned with architecture
+- During project setup, after `/check-readiness` passes
+- After architecture changes (tech stack or ADRs updated)
+- Before a new epic, to refresh agent context with architectural evolution
+- On demand, when implementation feels misaligned with the architecture

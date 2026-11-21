@@ -3,7 +3,7 @@
 // (.playwright/cli.config.json and its templates/root copies). Evidence for the output
 // directory names: docs/.output/findings/investigations/261012-na717-evidence/.
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { createRequire } from 'node:module';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -38,6 +38,7 @@ const RELEASE_05_BLOCK = '# Runtime artifacts\n/.playwright*/\ntest-results/\npl
 
 let tmp;
 beforeEach(() => { tmp = createTmpDir({ prefix: 'na717-' }); });
+afterEach(() => { tmp.cleanup(); });
 
 function git(root, args) {
   return execFileSync('git', ['-C', root, ...args], {

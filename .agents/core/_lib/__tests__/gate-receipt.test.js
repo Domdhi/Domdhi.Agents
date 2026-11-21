@@ -2,12 +2,13 @@
 // decision, history, verification and the working-tree hash. Inputs are synthetic; every
 // instant is passed in as `now` (no test reads the clock to decide anything).
 
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { createRequire } from 'node:module';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const require = createRequire(import.meta.url);
 const gr = require('../gate-receipt');
@@ -472,5 +473,1057 @@ describe('verifyReceiptForRoot and checkReceiptForPr', () => {
     const pr = gr.checkReceiptForPr({ root: t.root });
     expect(pr.required).toBe(true);
     expect(pr.ok).toBe(false);
+  });
+});
+
+// ── SF-1.1: hashTreeEntries and codeTreeHash ────────────────────────
+//
+// Pinned contract (the implementer must match these names and shapes):
+//   hashTreeEntries(entries, { exclude } = {}) -> string (sha256 hex)
+//     entries : Map<repoRelativePath, { mode, blob }> (what treeSnapshot().entries returns)
+//     exclude : optional predicate (repoRelativePath) => boolean; true drops the entry.
+//               A non-function, non-undefined `exclude` throws (a mistyped exclusion must
+//               never silently hash everything).
+//     With no exclusion the output is byte-identical to the hash treeSnapshot already produced:
+//     sha256 over the entries sorted by path (UTF-16 code-unit order), one line per entry
+//     `${mode} ${blob}\t${path}\n`.
+//   codeTreeHash(root, { extraExclude } = {}) -> { ok:true, hash } | { ok:false, reason }
+//     Same snapshot rules as treeSnapshot, but the hash drops docs/.output/, docs/work/,
+//     docs/TODO_*.md (direct children of docs/ only) and every extraExclude path. An
+//     extraExclude entry is a repo-relative file or directory (trailing slash optional) that
+//     matches on a path-segment boundary; '', '.' and '/' are ignored (never "exclude all").
+//     A non-array extraExclude throws.
+
+// The 64-char hex of a golden recomputation, copied from the existing algorithm so a receipt
+// written before this change still verifies after it.
+const GOLDEN_ENTRIES = () => new Map([
+  ['src/b.txt', { mode: '100644', blob: 'b'.repeat(40) }],
+  ['a.txt', { mode: '100755', blob: 'a'.repeat(40) }],
+  ['dir/é.txt', { mode: '100644', blob: 'c'.repeat(40) }],
+  ['B.txt', { mode: '120000', blob: 'd'.repeat(40) }],
+]);
+const GOLDEN_HASH = '75dbd6303c78ddcf8c7906e056899da485dac37421c54a75a93b36b6bf520297';
+const GOLDEN_HASH_WITHOUT_SRC = 'c46c07c4765c4b76164e5da53b2d33f8592917e2ab7bff91439c5bf557f0d8ce';
+const EMPTY_HASH = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
+
+// An independent restatement of the pre-existing computation (not a call into the code under test).
+const legacyTreeHash = (entries) => {
+  const lines = [...entries.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([file, e]) => `${e.mode} ${e.blob}\t${file}\n`);
+  return require('node:crypto').createHash('sha256').update(lines.join('')).digest('hex');
+};
+
+describe('hashTreeEntries', () => {
+  it('is exported as a function', () => {
+    expect(typeof gr.hashTreeEntries).toBe('function');
+  });
+  it('with no exclusion is byte-identical to the pre-existing tree hash (golden value)', () => {
+    expect(gr.hashTreeEntries(GOLDEN_ENTRIES())).toBe(GOLDEN_HASH);
+    expect(legacyTreeHash(GOLDEN_ENTRIES())).toBe(GOLDEN_HASH);
+  });
+  it.each([
+    ['no options object', undefined],
+    ['an empty options object', {}],
+    ['an undefined exclude', { exclude: undefined }],
+  ])('treats %s as no exclusion', (_label, options) => {
+    expect(gr.hashTreeEntries(GOLDEN_ENTRIES(), options)).toBe(GOLDEN_HASH);
+  });
+  it('does not depend on the insertion order of the entries', () => {
+    const reversed = new Map([...GOLDEN_ENTRIES()].reverse());
+    expect(gr.hashTreeEntries(reversed)).toBe(GOLDEN_HASH);
+  });
+  it('an empty entry set hashes the empty string', () => {
+    expect(gr.hashTreeEntries(new Map())).toBe(EMPTY_HASH);
+  });
+  it('an exclude predicate drops matching entries and nothing else (golden value)', () => {
+    expect(gr.hashTreeEntries(GOLDEN_ENTRIES(), { exclude: (p) => p.startsWith('src/') })).toBe(GOLDEN_HASH_WITHOUT_SRC);
+  });
+  it('excluding every entry equals the empty hash', () => {
+    expect(gr.hashTreeEntries(GOLDEN_ENTRIES(), { exclude: () => true })).toBe(EMPTY_HASH);
+  });
+  it('an excluded entry no longer influences the hash, an included entry still does', () => {
+    const exclude = (p) => p.startsWith('src/');
+    const base = gr.hashTreeEntries(GOLDEN_ENTRIES(), { exclude });
+    const editedExcluded = GOLDEN_ENTRIES();
+    editedExcluded.set('src/b.txt', { mode: '100644', blob: 'e'.repeat(40) });
+    expect(gr.hashTreeEntries(editedExcluded, { exclude })).toBe(base);
+    const editedIncluded = GOLDEN_ENTRIES();
+    editedIncluded.set('a.txt', { mode: '100755', blob: 'e'.repeat(40) });
+    expect(gr.hashTreeEntries(editedIncluded, { exclude })).not.toBe(base);
+  });
+  it('the predicate sees each repo-relative path exactly once and the input map is not mutated', () => {
+    const seen = [];
+    const entries = GOLDEN_ENTRIES();
+    gr.hashTreeEntries(entries, { exclude: (p) => { seen.push(p); return false; } });
+    expect(seen.sort()).toEqual(['B.txt', 'a.txt', 'dir/é.txt', 'src/b.txt']);
+    expect(entries.size).toBe(4);
+  });
+  it.each(['src/', ['src/'], 7, {}])('a non-function exclude (%j) throws instead of silently hashing everything', (bad) => {
+    expect(typeof gr.hashTreeEntries).toBe('function');
+    expect(() => gr.hashTreeEntries(GOLDEN_ENTRIES(), { exclude: bad })).toThrow();
+  });
+  it('a real repository snapshot still hashes to the legacy value, so existing receipts verify', () => {
+    const t = tempRepo({ 'a.txt': 'a\n', 'src/b.txt': 'b\n', 'dir/é.txt': 'accent\n' });
+    t.write('untracked.txt', 'u\n');
+    const s = gr.treeSnapshot(t.root);
+    expect(s.ok, s.reason).toBe(true);
+    expect(s.hash).toBe(legacyTreeHash(s.entries));
+    expect(gr.hashTreeEntries(s.entries)).toBe(s.hash);
+  });
+});
+
+describe('codeTreeHash', () => {
+  const REPO_FILES = {
+    'a.txt': 'a\n',
+    'src/b.txt': 'b\n',
+    'docs/other.md': 'other\n',
+    'docs/.output/handoffs/h.md': 'handoff\n',
+    'docs/.output/.memory/patterns/p.json': '{}\n',
+    'docs/work/todo/t.md': 'todo\n',
+    'docs/TODO_software-factory.md': 'plan\n',
+    'docs/workbench/x.md': 'not under docs/work/\n',
+    'docs/.outputs/x.md': 'not under docs/.output/\n',
+    'docs/TODO_x.txt': 'not markdown\n',
+    'docs/TODO.md': 'no underscore\n',
+    'docs/sub/TODO_nested.md': 'nested, not a direct child of docs/\n',
+    'TODO_root.md': 'root level, not under docs/\n',
+    'gen/out.txt': 'generated\n',
+    'generated/out.txt': 'not gen/\n',
+    'gen.txt': 'not gen/\n',
+    'notes.txt': 'notes\n',
+  };
+  const codeHash = (root, options) => {
+    const r = gr.codeTreeHash(root, options);
+    expect(r.ok, r.reason).toBe(true);
+    expect(r.hash).toMatch(/^[0-9a-f]{64}$/);
+    return r.hash;
+  };
+
+  it('is exported as a function', () => {
+    expect(typeof gr.codeTreeHash).toBe('function');
+  });
+  it('is stable for an unchanged tree', () => {
+    const t = tempRepo(REPO_FILES);
+    expect(codeHash(t.root)).toBe(codeHash(t.root));
+  });
+  it('equals the plain tree hash when no excluded path exists in the repository', () => {
+    const t = tempRepo();
+    expect(codeHash(t.root)).toBe(hashOf(t.root));
+  });
+  it('is smaller than the plain tree hash domain: an excluded file moves treeSnapshot but not codeTreeHash', () => {
+    const t = tempRepo();
+    const code0 = codeHash(t.root);
+    const plain0 = hashOf(t.root);
+    t.write('docs/TODO_new.md', 'plan\n');
+    expect(codeHash(t.root)).toBe(code0);
+    expect(hashOf(t.root)).not.toBe(plain0);
+  });
+
+  it.each([
+    'docs/.output/handoffs/h.md',
+    'docs/.output/.memory/patterns/p.json',
+    'docs/work/todo/t.md',
+    'docs/TODO_software-factory.md',
+  ])('ignores an edit to the tracked excluded file %s', (rel) => {
+    const t = tempRepo(REPO_FILES);
+    const h0 = codeHash(t.root);
+    t.write(rel, 'edited after the gate\n');
+    expect(codeHash(t.root)).toBe(h0);
+  });
+  it.each([
+    'docs/.output/handoffs/h.md',
+    'docs/work/todo/t.md',
+    'docs/TODO_software-factory.md',
+  ])('ignores deleting the tracked excluded file %s', (rel) => {
+    const t = tempRepo(REPO_FILES);
+    const h0 = codeHash(t.root);
+    fs.rmSync(path.join(t.root, rel));
+    expect(codeHash(t.root)).toBe(h0);
+  });
+  it.each([
+    'docs/.output/findings/reviews/new.md',
+    'docs/work/new/x.md',
+    'docs/TODO_new.md',
+  ])('ignores a new untracked file at the excluded path %s', (rel) => {
+    const t = tempRepo(REPO_FILES);
+    const h0 = codeHash(t.root);
+    t.write(rel, 'new\n');
+    expect(codeHash(t.root)).toBe(h0);
+  });
+
+  it.each([
+    'a.txt',
+    'src/b.txt',
+    'docs/other.md',
+    'docs/workbench/x.md',
+    'docs/.outputs/x.md',
+    'docs/TODO_x.txt',
+    'docs/TODO.md',
+    'docs/sub/TODO_nested.md',
+    'TODO_root.md',
+    '.gitignore',
+  ])('changes when the non-excluded tracked file %s is edited', (rel) => {
+    const t = tempRepo(REPO_FILES);
+    const h0 = codeHash(t.root);
+    t.write(rel, 'edited\n');
+    expect(codeHash(t.root)).not.toBe(h0);
+  });
+  it('changes when a code file is deleted, renamed, or an untracked code file is added', () => {
+    const t = tempRepo(REPO_FILES);
+    const h0 = codeHash(t.root);
+    t.write('fresh.txt', 'new\n');
+    const added = codeHash(t.root);
+    expect(added).not.toBe(h0);
+    fs.renameSync(path.join(t.root, 'fresh.txt'), path.join(t.root, 'renamed.txt'));
+    const renamed = codeHash(t.root);
+    expect(renamed).not.toBe(added);
+    fs.rmSync(path.join(t.root, 'renamed.txt'));
+    fs.rmSync(path.join(t.root, 'a.txt'));
+    const deleted = codeHash(t.root);
+    expect(deleted).not.toBe(h0);
+    expect(deleted).not.toBe(renamed);
+  });
+  it('is unchanged by a commit of the same content (the seal survives the wave commit)', () => {
+    const t = tempRepo(REPO_FILES);
+    t.write('a.txt', 'edited\n');
+    t.write('fresh.txt', 'fresh\n');
+    t.write('docs/TODO_software-factory.md', 'ticked\n');
+    const dirty = codeHash(t.root);
+    t.git('add', '-A');
+    expect(codeHash(t.root)).toBe(dirty);
+    t.git('commit', '-q', '-m', 'wave');
+    expect(codeHash(t.root)).toBe(dirty);
+  });
+  it('still ignores gitignored files and the .state directory', () => {
+    const t = tempRepo(REPO_FILES);
+    const h0 = codeHash(t.root);
+    t.write('ignored.txt', 'x');
+    t.write('docs/.output/.state/telemetry/ac-verify/T-1.1.json', '[]');
+    expect(codeHash(t.root)).toBe(h0);
+  });
+
+  it.each([
+    ['a directory with a trailing slash', ['gen/'], 'gen/out.txt'],
+    ['a directory without a trailing slash', ['gen'], 'gen/out.txt'],
+    ['an exact file', ['notes.txt'], 'notes.txt'],
+  ])('extraExclude %s hides edits under that path', (_label, extraExclude, rel) => {
+    const t = tempRepo(REPO_FILES);
+    const h0 = codeHash(t.root, { extraExclude });
+    t.write(rel, 'edited\n');
+    expect(codeHash(t.root, { extraExclude })).toBe(h0);
+  });
+  it.each([
+    ['a sibling directory sharing the prefix', 'generated/out.txt'],
+    ['a sibling file sharing the prefix', 'gen.txt'],
+    ['an unrelated code file', 'a.txt'],
+  ])('extraExclude [gen] does not hide %s', (_label, rel) => {
+    const t = tempRepo(REPO_FILES);
+    const h0 = codeHash(t.root, { extraExclude: ['gen'] });
+    t.write(rel, 'edited\n');
+    expect(codeHash(t.root, { extraExclude: ['gen'] })).not.toBe(h0);
+  });
+  it('an extraExclude path makes the hash differ from the same tree without it', () => {
+    const t = tempRepo(REPO_FILES);
+    expect(codeHash(t.root, { extraExclude: ['gen/'] })).not.toBe(codeHash(t.root));
+  });
+  it.each(['', '.', '/'])('an extraExclude entry %j is ignored and never excludes the whole tree', (entry) => {
+    const t = tempRepo(REPO_FILES);
+    const h0 = codeHash(t.root, { extraExclude: [entry] });
+    expect(h0).toBe(codeHash(t.root));
+    t.write('a.txt', 'edited\n');
+    expect(codeHash(t.root, { extraExclude: [entry] })).not.toBe(h0);
+  });
+  it.each(['gen/', 7, {}])('a non-array extraExclude (%j) throws', (bad) => {
+    expect(typeof gr.codeTreeHash).toBe('function');
+    const t = tempRepo(REPO_FILES);
+    expect(() => gr.codeTreeHash(t.root, { extraExclude: bad })).toThrow();
+  });
+
+  it('is not computable (ok:false with a reason) outside a repository and from a subdirectory', () => {
+    const plain = fs.mkdtempSync(path.join(os.tmpdir(), 'gate-plain-'));
+    dirs.push(plain);
+    const outside = gr.codeTreeHash(plain);
+    expect(outside.ok).toBe(false);
+    expect(typeof outside.reason).toBe('string');
+    expect(outside.reason.length).toBeGreaterThan(0);
+    const t = tempRepo(REPO_FILES);
+    expect(gr.codeTreeHash(path.join(t.root, 'src'))).toMatchObject({ ok: false });
+  });
+});
+
+// ── Review fixes (wave 1): the code-hash exclusion set and its one definition ──
+
+describe('review fix M1: isCodeHashExcluded is the one definition of what the code hash does not cover', () => {
+  it('is exported as a function', () => {
+    expect(typeof gr.isCodeHashExcluded).toBe('function');
+  });
+
+  it.each([
+    'docs/.output/handoffs/h.md', 'docs/.output/.state/telemetry/a.json', 'docs/.output',
+    'docs/work/todo/t.md', 'docs/work',
+    'docs/TODO_software-factory.md', 'docs/TODO_x.md',
+    'Docs/.Output/x/notes.md', 'DOCS/WORK/x.json', 'docs/todo_lower.md',
+  ])('treats %s as excluded', (rel) => {
+    expect(gr.isCodeHashExcluded(rel)).toBe(true);
+  });
+
+  it.each(['docs/.output/x/check.js', 'docs/work/helper.js', 'Docs/.Output/x/check.js', 'DOCS/WORK/x.js'])(
+    'M1 part 2: keeps the code file %s in the hash, while isUnderExcludedDocs still flags its folder for ac-verify', (rel) => {
+      expect(gr.isCodeHashExcluded(rel)).toBe(false);
+      expect(gr.isUnderExcludedDocs(rel)).toBe(true);
+    });
+
+  it.each([
+    'a.txt', 'src/b.txt', 'docs/other.md', 'docs/workbench/x.md', 'docs/.outputs/x.md', 'docs/TODO_x.txt', 'docs/TODO.md',
+    'docs/sub/TODO_nested.md', 'TODO_root.md', '.agents/core/ac-verify.js', 'docs/.output-x/y.js', 'docs/worker.js',
+  ])('treats %s as covered', (rel) => {
+    expect(gr.isCodeHashExcluded(rel)).toBe(false);
+  });
+
+  it('agrees with codeTreeHash on every path of a real repository: an edit moves the hash exactly when the path is covered', () => {
+    const files = {
+      'a.txt': 'a\n', 'docs/other.md': 'o\n', 'docs/.output/x/check.js': 'x\n', 'docs/.output/handoffs/h.md': 'h\n', 'docs/work/todo/t.md': 't\n',
+      'docs/TODO_plan.md': 'p\n', 'docs/workbench/x.md': 'w\n', 'docs/sub/TODO_nested.md': 'n\n',
+    };
+    for (const rel of Object.keys(files)) {
+      const t = tempRepo(files);
+      const before = gr.codeTreeHash(t.root).hash;
+      t.write(rel, 'edited\n');
+      const moved = gr.codeTreeHash(t.root).hash !== before;
+      expect(moved, rel).toBe(!gr.isCodeHashExcluded(rel));
+    }
+  });
+
+  it('an executable file under docs/.output/ is part of the hash (M1 part 2 closed the earlier documented limit)', () => {
+    const t = tempRepo({ 'a.txt': 'a\n', 'docs/.output/x/check.js': 'console.log(1)\n' });
+    const before = gr.codeTreeHash(t.root).hash;
+    t.write('docs/.output/x/check.js', 'console.log(2)\n');
+    expect(gr.codeTreeHash(t.root).hash).not.toBe(before);
+    expect(gr.isCodeHashExcluded('docs/.output/x/check.js')).toBe(false);
+  });
+
+  it('a committed symlink is hashed as its link text, not its target: an edit behind a link to outside the tree does not move the hash', () => {
+    if (process.platform === 'win32') return;
+    const t = tempRepo({ 'a.txt': 'a\n' });
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'gate-receipt-outside-'));
+    dirs.push(outside);
+    fs.writeFileSync(path.join(outside, 'x.js'), 'one\n');
+    fs.symlinkSync(path.join(outside, 'x.js'), path.join(t.root, 'link.js'));
+    t.git('add', '-A');
+    t.git('commit', '-q', '-m', 'link');
+    const before = gr.codeTreeHash(t.root).hash;
+    fs.writeFileSync(path.join(outside, 'x.js'), 'two\n');
+    expect(gr.codeTreeHash(t.root).hash).toBe(before);
+  });
+});
+
+describe('review fix M1 (documentation pin): extraExclude is caller-supplied and drops whatever it names', () => {
+  it('an extraExclude of a code directory removes that code from the hash, which is why it must never come from the TODO', () => {
+    const t = tempRepo({ 'src/a.js': 'a\n', 'lib/b.js': 'b\n' });
+    const dropped = gr.codeTreeHash(t.root, { extraExclude: ['src'] }).hash;
+    t.write('src/a.js', 'edited\n');
+    expect(gr.codeTreeHash(t.root, { extraExclude: ['src'] }).hash).toBe(dropped);
+    expect(gr.codeTreeHash(t.root).hash).not.toBe(gr.codeTreeHash(t.root, { extraExclude: ['src'] }).hash);
+  });
+
+  it('the source states the rule next to the option', () => {
+    const source = fs.readFileSync(path.resolve(__dirname, '..', 'gate-receipt.js'), 'utf8');
+    expect(source).toMatch(/extraExclude` MUST come from tracked configuration/);
+  });
+});
+
+describe('review fix M1 part 2: code files inside the excluded docs folders stay in codeTreeHash', () => {
+  it.each([
+    'docs/.output/evolution/skills/fixture/lib/store.js',
+    'docs/work/helpers/check.cjs',
+    'docs/.output/tools/run.py',
+  ])('an edit to %s changes the code hash', (rel) => {
+    const t = tempRepo({ 'a.txt': 'a\n', [rel]: 'module.exports = 1;\n', 'docs/.output/plans/p.md': 'plan\n' });
+    const h0 = gr.codeTreeHash(t.root).hash;
+    t.write(rel, 'module.exports = 2;\n');
+    expect(gr.codeTreeHash(t.root).hash).not.toBe(h0);
+  });
+  it('prose and data beside them stay excluded', () => {
+    const t = tempRepo({ 'a.txt': 'a\n', 'docs/.output/tools/run.js': 'x\n', 'docs/.output/plans/p.md': 'plan\n', 'docs/.output/.memory/m.json': '{}\n' });
+    const h0 = gr.codeTreeHash(t.root).hash;
+    t.write('docs/.output/plans/p.md', 'edited\n');
+    t.write('docs/.output/.memory/m.json', '{"a":1}\n');
+    expect(gr.codeTreeHash(t.root).hash).toBe(h0);
+  });
+});
+
+// ── SF-1.3 review (security M3, review M1/m5): the receipt carries the code hash and is judged for CODE ──
+
+describe('evaluateReceipt: ignoreCurrentTree (security M3)', () => {
+  const receipt = (over = {}) => ({
+    schema: 1, status: 'passed', exitCode: 0, mode: 'normal', head: 'a'.repeat(40), treeHashStart: 'T'.repeat(64), treeHashEnd: 'T'.repeat(64),
+    engine: 'E', configHash: 'C', build: { status: 'passed' }, projects: [], ...over,
+  });
+  const current = (over = {}) => ({ treeHash: 'X'.repeat(64), head: 'a'.repeat(40), engine: 'E', configHash: 'C', ...over });
+  const checks = (r) => r.reasons.map((x) => x.check);
+
+  it('skips only the whole-tree comparison: a receipt for another tree passes, every other check still fails', () => {
+    expect(gr.evaluateReceipt({ receipt: receipt(), current: current(), mode: 'normal', projectNames: [] }).ok).toBe(false);
+    expect(gr.evaluateReceipt({ receipt: receipt(), current: current(), mode: 'normal', projectNames: [], ignoreCurrentTree: true })).toEqual({ ok: true, reasons: [] });
+    const bad = gr.evaluateReceipt({
+      receipt: receipt({ status: 'failed', exitCode: 1, changedOnly: true, build: { status: 'failed' } }),
+      current: current({ head: 'b'.repeat(40), engine: 'E2', configHash: 'C2' }), mode: 'normal', projectNames: [], ignoreCurrentTree: true,
+    });
+    expect(checks(bad).sort()).toEqual(['build', 'config', 'engine', 'exitCode', 'head', 'scope', 'status']);
+  });
+
+  it('still refuses a run during which the tree changed (start differs from end), and a receipt with no tree hash', () => {
+    expect(checks(gr.evaluateReceipt({ receipt: receipt({ treeHashEnd: 'Y'.repeat(64) }), current: current(), mode: 'normal', projectNames: [], ignoreCurrentTree: true }))).toEqual(['treeHash']);
+    expect(checks(gr.evaluateReceipt({ receipt: receipt({ treeHashStart: null, treeHashEnd: null }), current: current(), mode: 'normal', projectNames: [], ignoreCurrentTree: true }))).toEqual(['treeHash']);
+  });
+});
+
+describe('verifyReceiptEvidence: a receipt judged for the code hash (security M3, review M1/m5)', () => {
+  const makeReceipt = (t, over = {}) => {
+    const snap = gr.treeSnapshot(t.root);
+    return {
+      schema: gr.RECEIPT_SCHEMA, id: 'abc', status: 'passed', exitCode: 0, mode: 'normal', changedOnly: false, head: gr.headSha(t.root),
+      treeHashStart: snap.hash, treeHashEnd: snap.hash, engine: gr.engineIdentity(t.root), configHash: gr.readGateConfigFile(t.root).hash,
+      build: { status: 'passed' }, projects: [], test: { status: 'passed' }, codeHash: gr.codeTreeHash(t.root).hash, ...over,
+    };
+  };
+  const verdict = (t, receipt) => gr.verifyReceiptEvidence({ root: t.root, receipt, codeHash: gr.codeTreeHash(t.root).hash });
+  const checks = (v) => v.reasons.map((r) => r.check);
+
+  it('accepts a full, passed receipt whose code hash is the current one', () => {
+    const t = tempRepo();
+
+    expect(verdict(t, makeReceipt(t))).toEqual({ ok: true, reasons: [] });
+  });
+
+  it('accepts the receipt after docs the code hash excludes were edited (the whole-tree hash would not match)', () => {
+    const t = tempRepo({ 'a.txt': 'a\n', 'docs/.output/plans/p.md': 'plan\n' });
+    const receipt = makeReceipt(t);
+    t.write('docs/.output/plans/p.md', 'edited after the gate\n');
+    expect(gr.verifyReceiptForRoot({ root: t.root }).ok, 'control: the whole-tree verdict would refuse it').toBe(false);
+    gr.writeReceipt(t.root, receipt);
+
+    expect(verdict(t, receipt).ok).toBe(true);
+  });
+
+  it('refuses a receipt whose code hash is not the code hash it is judged against (code edited after the gate)', () => {
+    const t = tempRepo();
+    const receipt = makeReceipt(t);
+    t.write('src/late.txt', 'late\n');
+
+    const v = verdict(t, receipt);
+
+    expect(v.ok).toBe(false);
+    expect(checks(v)).toEqual(['codeHash']);
+    expect(v.reasons[0].message).toMatch(/code hash: the receipt covers/);
+  });
+
+  it.each([
+    ['no code hash at all (a receipt written by an older gate)', { codeHash: undefined }, 'codeHash'],
+    ['a malformed code hash', { codeHash: 'nope' }, 'codeHash'],
+    ['no test leg (a build-only run)', { test: undefined }, 'test'],
+    ['a test leg that failed', { test: { status: 'failed' } }, 'test'],
+    ['a change-scoped run', { changedOnly: true }, 'scope'],
+    ['a failed status', { status: 'failed', exitCode: 1 }, 'status'],
+    ['another head', { head: 'a'.repeat(40) }, 'head'],
+    ['another engine', { engine: 'other' }, 'engine'],
+    ['another config hash', { configHash: 'other' }, 'config'],
+  ])('refuses %s', (_label, over, check) => {
+    const t = tempRepo();
+
+    const v = verdict(t, makeReceipt(t, over));
+
+    expect(v.ok).toBe(false);
+    expect(checks(v)).toContain(check);
+  });
+
+  it('refuses a null receipt and a receipt of another schema without throwing', () => {
+    const t = tempRepo();
+
+    expect(checks(verdict(t, null))).toEqual(['receipt']);
+    expect(checks(verdict(t, { ...makeReceipt(t), schema: 99 }))).toEqual(['receipt']);
+  });
+});
+
+// ── SF-2.5: every receipt is also archived by id ──
+
+describe('SF-2.5 receipt archive by id', () => {
+  const rec = (id, over = {}) => ({ schema: gr.RECEIPT_SCHEMA, id, status: 'passed', exitCode: 0, mode: 'normal', projects: [], ...over });
+  const archiveDir = (t) => path.join(gr.historyDir(t.root), 'by-id');
+  const archiveFile = (t, id) => path.join(archiveDir(t), `${id}.json`);
+  const outside = () => {
+    const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'gate-archive-outside-')));
+    dirs.push(dir);
+    return dir;
+  };
+  const jsonFiles = (t) => fs.readdirSync(archiveDir(t)).filter((n) => n.endsWith('.json')).sort();
+
+  it('writeReceipt_alsoWritesTheSameReceiptToTheByIdArchive', () => {
+    const t = tempRepo();
+    const receipt = rec('aaaaaaaaaaaa', { head: 'h1' });
+
+    gr.writeReceipt(t.root, receipt);
+
+    expect(JSON.parse(fs.readFileSync(gr.receiptPath(t.root), 'utf8'))).toEqual(receipt);
+    expect(JSON.parse(fs.readFileSync(archiveFile(t, 'aaaaaaaaaaaa'), 'utf8'))).toEqual(receipt);
+    expect(gr.archivedReceipt(t.root, 'aaaaaaaaaaaa')).toEqual(receipt);
+  });
+
+  it('writeReceipt_calledAgainWithTheSameId_replacesTheArchiveWithTheLatestWrite', () => {
+    const t = tempRepo();
+    gr.writeReceipt(t.root, rec('aaaaaaaaaaaa', { status: 'running' }));
+    gr.writeReceipt(t.root, rec('aaaaaaaaaaaa', { status: 'passed' }));
+
+    expect(gr.archivedReceipt(t.root, 'aaaaaaaaaaaa').status).toBe('passed');
+    expect(jsonFiles(t)).toEqual(['aaaaaaaaaaaa.json']);
+  });
+
+  it('writeReceipt_olderReceiptsSurviveLaterRuns_whileTheCurrentFileHoldsOnlyTheLast', () => {
+    const t = tempRepo();
+    for (const id of ['aaaaaaaaaaaa', 'bbbbbbbbbbbb', 'cccccccccccc']) gr.writeReceipt(t.root, rec(id));
+
+    expect(gr.readReceipt(t.root).id).toBe('cccccccccccc');
+    expect(gr.archivedReceipt(t.root, 'aaaaaaaaaaaa').id).toBe('aaaaaaaaaaaa');
+    expect(gr.archivedReceipt(t.root, 'bbbbbbbbbbbb').id).toBe('bbbbbbbbbbbb');
+    expect(jsonFiles(t)).toEqual(['aaaaaaaaaaaa.json', 'bbbbbbbbbbbb.json', 'cccccccccccc.json']);
+  });
+
+  it('writeReceipt_archivesNothingOnTheHistoryRowPath_soReadHistoryNeverSeesTheArchive', () => {
+    const t = tempRepo();
+    gr.writeReceipt(t.root, rec('aaaaaaaaaaaa'));
+
+    expect(fs.readdirSync(gr.historyDir(t.root)).filter((n) => n.endsWith('.json'))).toEqual([]);
+  });
+
+  it.each([
+    ['a path traversal', '../escape'],
+    ['a nested path', 'a/b'],
+    ['a backslash path', 'a\\b'],
+    ['a dot-dot id', '..'],
+    ['an id with a dot', 'abc.json'],
+    ['an id with a space', 'abc def'],
+    ['an empty id', ''],
+    ['an id over 64 characters', 'a'.repeat(65)],
+    ['a NUL byte', 'abc\0def'],
+  ])('writeReceipt_%s_isNeverArchived_andTheMainReceiptStillWrites', (_label, id) => {
+    const t = tempRepo();
+    const receipt = rec(id);
+
+    expect(() => gr.writeReceipt(t.root, receipt)).not.toThrow();
+
+    expect(gr.readReceipt(t.root)).toEqual(receipt);
+    expect(fs.existsSync(archiveDir(t)) ? fs.readdirSync(archiveDir(t)) : []).toEqual([]);
+    expect(fs.existsSync(path.join(gr.historyDir(t.root), 'escape.json'))).toBe(false);
+    expect(gr.archivedReceipt(t.root, id)).toBeNull();
+  });
+
+  it.each([[undefined], [null], [42], [{}], [['a']]])('writeReceipt_receiptIdOf_%j_isNeverArchived', (id) => {
+    const t = tempRepo();
+    gr.writeReceipt(t.root, { schema: gr.RECEIPT_SCHEMA, id, status: 'passed' });
+
+    expect(fs.existsSync(archiveDir(t))).toBe(false);
+    expect(gr.archivedReceipt(t.root, id)).toBeNull();
+  });
+
+  it('writeReceipt_prunesTheArchiveToTheNewest200ByMtime_keepingTheJustWrittenOne', () => {
+    const t = tempRepo();
+    fs.mkdirSync(archiveDir(t), { recursive: true });
+    const base = Date.now() / 1000 - 100000;
+    // 200 seeded files, i = 0 oldest .. 199 newest.
+    for (let i = 0; i < 200; i += 1) {
+      const id = `seed${String(i).padStart(4, '0')}`;
+      fs.writeFileSync(archiveFile(t, id), JSON.stringify(rec(id)));
+      fs.utimesSync(archiveFile(t, id), base + i, base + i);
+    }
+    fs.writeFileSync(path.join(archiveDir(t), 'notes.txt'), 'not a receipt');
+
+    gr.writeReceipt(t.root, rec('freshfresh01'));
+
+    const kept = jsonFiles(t);
+    expect(kept).toHaveLength(200);
+    expect(kept).toContain('freshfresh01.json');
+    expect(kept).not.toContain('seed0000.json');
+    expect(kept).toContain('seed0001.json');
+    expect(kept).toContain('seed0199.json');
+    expect(fs.existsSync(path.join(archiveDir(t), 'notes.txt'))).toBe(true);
+  });
+
+  it('writeReceipt_atExactlyTheCapDoesNotPruneAnything', () => {
+    const t = tempRepo();
+    fs.mkdirSync(archiveDir(t), { recursive: true });
+    for (let i = 0; i < 199; i += 1) {
+      const id = `seed${String(i).padStart(4, '0')}`;
+      fs.writeFileSync(archiveFile(t, id), JSON.stringify(rec(id)));
+    }
+
+    gr.writeReceipt(t.root, rec('freshfresh01'));
+
+    expect(jsonFiles(t)).toHaveLength(200);
+    expect(jsonFiles(t)).toContain('seed0000.json');
+  });
+
+  it('writeReceipt_archiveFailure_neverThrows_andTheMainReceiptIsIntact', () => {
+    const t = tempRepo();
+    // A regular file where the by-id directory must be: the archive cannot be created.
+    fs.mkdirSync(gr.historyDir(t.root), { recursive: true });
+    fs.writeFileSync(archiveDir(t), 'blocker');
+    const receipt = rec('aaaaaaaaaaaa');
+
+    let result;
+    expect(() => { result = gr.writeReceipt(t.root, receipt); }).not.toThrow();
+
+    expect(result).toBeUndefined();
+    expect(JSON.parse(fs.readFileSync(gr.receiptPath(t.root), 'utf8'))).toEqual(receipt);
+    expect(gr.archivedReceipt(t.root, 'aaaaaaaaaaaa')).toBeNull();
+  });
+
+  it('writeReceipt_mainWriteFailure_stillThrows_theArchiveDoesNotMaskIt', () => {
+    const t = tempRepo();
+    fs.mkdirSync(path.dirname(gr.receiptPath(t.root)), { recursive: true });
+    fs.mkdirSync(gr.receiptPath(t.root)); // a directory where the receipt file must be: the rename fails
+
+    expect(() => gr.writeReceipt(t.root, rec('aaaaaaaaaaaa'))).toThrow();
+  });
+
+  it('writeReceipt_leavesNoTempFileInTheArchive', () => {
+    const t = tempRepo();
+    gr.writeReceipt(t.root, rec('aaaaaaaaaaaa'));
+
+    expect(fs.readdirSync(archiveDir(t))).toEqual(['aaaaaaaaaaaa.json']);
+  });
+
+  describe.skipIf(process.platform === 'win32')('symlink refusal', () => {
+    it('writeReceipt_archiveLeafThatIsASymlink_isNotWrittenThrough', () => {
+      const t = tempRepo();
+      const out = outside();
+      const target = path.join(out, 'victim.json');
+      fs.writeFileSync(target, 'original');
+      fs.mkdirSync(archiveDir(t), { recursive: true });
+      fs.symlinkSync(target, archiveFile(t, 'aaaaaaaaaaaa'));
+
+      expect(() => gr.writeReceipt(t.root, rec('aaaaaaaaaaaa'))).not.toThrow();
+
+      expect(fs.readFileSync(target, 'utf8')).toBe('original');
+      expect(gr.readReceipt(t.root).id).toBe('aaaaaaaaaaaa');
+    });
+
+    it('writeReceipt_byIdDirectoryThatIsASymlink_writesNothingThroughIt', () => {
+      const t = tempRepo();
+      const out = outside();
+      fs.mkdirSync(gr.historyDir(t.root), { recursive: true });
+      fs.symlinkSync(out, archiveDir(t));
+
+      expect(() => gr.writeReceipt(t.root, rec('aaaaaaaaaaaa'))).not.toThrow();
+
+      expect(fs.readdirSync(out)).toEqual([]);
+      expect(gr.readReceipt(t.root).id).toBe('aaaaaaaaaaaa');
+    });
+
+    it('archivedReceipt_symlinkedFile_isRefused', () => {
+      const t = tempRepo();
+      const out = outside();
+      const target = path.join(out, 'real.json');
+      fs.writeFileSync(target, JSON.stringify(rec('aaaaaaaaaaaa')));
+      fs.mkdirSync(archiveDir(t), { recursive: true });
+      fs.symlinkSync(target, archiveFile(t, 'aaaaaaaaaaaa'));
+
+      expect(gr.archivedReceipt(t.root, 'aaaaaaaaaaaa')).toBeNull();
+    });
+
+    it('archivedReceipt_symlinkedByIdDirectory_isRefused', () => {
+      const t = tempRepo();
+      const out = outside();
+      fs.writeFileSync(path.join(out, 'aaaaaaaaaaaa.json'), JSON.stringify(rec('aaaaaaaaaaaa')));
+      fs.mkdirSync(gr.historyDir(t.root), { recursive: true });
+      fs.symlinkSync(out, archiveDir(t));
+
+      expect(gr.archivedReceipt(t.root, 'aaaaaaaaaaaa')).toBeNull();
+    });
+
+    it('writeReceipt_pruneNeverFollowsOrDeletesThroughASymlinkedEntry', () => {
+      const t = tempRepo();
+      const out = outside();
+      const target = path.join(out, 'keep.json');
+      fs.writeFileSync(target, 'precious');
+      fs.mkdirSync(archiveDir(t), { recursive: true });
+      for (let i = 0; i < 200; i += 1) {
+        const id = `seed${String(i).padStart(4, '0')}`;
+        fs.writeFileSync(archiveFile(t, id), JSON.stringify(rec(id)));
+      }
+      fs.symlinkSync(target, archiveFile(t, 'linked000001'));
+
+      gr.writeReceipt(t.root, rec('freshfresh01'));
+
+      expect(fs.readFileSync(target, 'utf8')).toBe('precious');
+      expect(jsonFiles(t).filter((n) => n !== 'linked000001.json')).toHaveLength(200);
+    });
+  });
+
+  describe('archivedReceipt', () => {
+    it('returnsNullForAnIdThatWasNeverArchived', () => {
+      const t = tempRepo();
+      gr.writeReceipt(t.root, rec('aaaaaaaaaaaa'));
+
+      expect(gr.archivedReceipt(t.root, 'bbbbbbbbbbbb')).toBeNull();
+    });
+
+    it('returnsNullWhenTheArchiveDirectoryDoesNotExist', () => {
+      expect(gr.archivedReceipt(tempRepo().root, 'aaaaaaaaaaaa')).toBeNull();
+    });
+
+    it.each([
+      ['not JSON', '{ not json'],
+      ['a JSON array', '[1,2]'],
+      ['JSON null', 'null'],
+      ['a JSON string', '"abc"'],
+    ])('returnsNullForAFileThatIs_%s', (_label, text) => {
+      const t = tempRepo();
+      fs.mkdirSync(archiveDir(t), { recursive: true });
+      fs.writeFileSync(archiveFile(t, 'aaaaaaaaaaaa'), text);
+
+      expect(gr.archivedReceipt(t.root, 'aaaaaaaaaaaa')).toBeNull();
+    });
+
+    it('returnsNullForAFileWhoseOwnIdIsAnotherId_aCopiedFileProvesNothing', () => {
+      const t = tempRepo();
+      fs.mkdirSync(archiveDir(t), { recursive: true });
+      fs.writeFileSync(archiveFile(t, 'aaaaaaaaaaaa'), JSON.stringify(rec('bbbbbbbbbbbb')));
+
+      expect(gr.archivedReceipt(t.root, 'aaaaaaaaaaaa')).toBeNull();
+    });
+
+    it('returnsNullForADirectoryNamedLikeTheReceiptFile', () => {
+      const t = tempRepo();
+      fs.mkdirSync(archiveFile(t, 'aaaaaaaaaaaa'), { recursive: true });
+
+      expect(gr.archivedReceipt(t.root, 'aaaaaaaaaaaa')).toBeNull();
+    });
+
+    it('returnsNullForAFileOverTheSizeCap_butReadsOneJustUnderIt', () => {
+      const t = tempRepo();
+      fs.mkdirSync(archiveDir(t), { recursive: true });
+      const pad = (id, bytes) => JSON.stringify({ ...rec(id), pad: 'x'.repeat(bytes) });
+      fs.writeFileSync(archiveFile(t, 'aaaaaaaaaaaa'), pad('aaaaaaaaaaaa', 5 * 1024 * 1024));
+      fs.writeFileSync(archiveFile(t, 'bbbbbbbbbbbb'), pad('bbbbbbbbbbbb', 1024 * 1024));
+
+      expect(gr.archivedReceipt(t.root, 'aaaaaaaaaaaa')).toBeNull();
+      expect(gr.archivedReceipt(t.root, 'bbbbbbbbbbbb').id).toBe('bbbbbbbbbbbb');
+    });
+
+    it.each([[undefined], [null], [7], ['../x'], ['']])('returnsNullForTheIdArgument_%j', (id) => {
+      expect(gr.archivedReceipt(tempRepo().root, id)).toBeNull();
+    });
+  });
+});
+
+// ── SF-2.5 review m8: the archive's two rings, its loud failure and its presence probe ──
+
+describe('m8 receipt archive: the failure ring, the warning and hasArchive', () => {
+  const rec = (id, over = {}) => ({ schema: gr.RECEIPT_SCHEMA, id, status: 'passed', exitCode: 0, mode: 'normal', projects: [], ...over });
+  const archiveDir = (t) => path.join(gr.historyDir(t.root), 'by-id');
+  const failedDir = (t) => path.join(archiveDir(t), 'failed');
+  const names = (dir) => fs.readdirSync(dir).filter((n) => n.endsWith('.json')).sort();
+  const seed = (dir, count, prefix) => {
+    fs.mkdirSync(dir, { recursive: true });
+    const base = Date.now() / 1000 - 100000;
+    for (let i = 0; i < count; i += 1) {
+      const id = `${prefix}${String(i).padStart(4, '0')}`;
+      fs.writeFileSync(path.join(dir, `${id}.json`), JSON.stringify(rec(id)));
+      fs.utimesSync(path.join(dir, `${id}.json`), base + i, base + i);
+    }
+  };
+
+  it.each([
+    ['failed', { status: 'failed', exitCode: 1 }],
+    ['running', { status: 'running' }],
+    ['interrupted', { status: 'interrupted' }],
+    ['filtered', { filter: 'unit' }],
+    ['change-scoped', { changedOnly: true }],
+    ['passed with a non-zero exit', { exitCode: 1 }],
+  ])('writeReceipt_%sReceipt_goesToTheFailureRingNotThePassingRing', (_label, over) => {
+    const t = tempRepo();
+
+    gr.writeReceipt(t.root, rec('aaaaaaaaaaaa', over));
+
+    expect(names(failedDir(t))).toEqual(['aaaaaaaaaaaa.json']);
+    expect(names(archiveDir(t))).toEqual([]);
+    expect(gr.archivedReceipt(t.root, 'aaaaaaaaaaaa').id).toBe('aaaaaaaaaaaa');
+  });
+
+  it('writeReceipt_aPlainPassGoesToThePassingRing', () => {
+    const t = tempRepo();
+
+    gr.writeReceipt(t.root, rec('aaaaaaaaaaaa'));
+
+    expect(names(archiveDir(t))).toEqual(['aaaaaaaaaaaa.json']);
+    expect(fs.existsSync(failedDir(t))).toBe(false);
+  });
+
+  it('writeReceipt_theSameIdRunningThenPassed_leavesOneCopyInThePassingRing', () => {
+    const t = tempRepo();
+    gr.writeReceipt(t.root, rec('aaaaaaaaaaaa', { status: 'running' }));
+    expect(names(failedDir(t))).toEqual(['aaaaaaaaaaaa.json']);
+
+    gr.writeReceipt(t.root, rec('aaaaaaaaaaaa'));
+
+    expect(names(archiveDir(t))).toEqual(['aaaaaaaaaaaa.json']);
+    expect(names(failedDir(t))).toEqual([]);
+    expect(gr.archivedReceipt(t.root, 'aaaaaaaaaaaa').status).toBe('passed');
+  });
+
+  it('writeReceipt_theSameIdPassedThenFailed_leavesOneCopyInTheFailureRing', () => {
+    const t = tempRepo();
+    gr.writeReceipt(t.root, rec('aaaaaaaaaaaa'));
+
+    gr.writeReceipt(t.root, rec('aaaaaaaaaaaa', { status: 'failed', exitCode: 1 }));
+
+    expect(names(archiveDir(t))).toEqual([]);
+    expect(names(failedDir(t))).toEqual(['aaaaaaaaaaaa.json']);
+    expect(gr.archivedReceipt(t.root, 'aaaaaaaaaaaa').status).toBe('failed');
+  });
+
+  it('writeReceipt_manyFailedAndFilteredRuns_neverEvictAnEarlyPassingReceipt', () => {
+    const t = tempRepo();
+    gr.writeReceipt(t.root, rec('earlywave001'));
+    for (let i = 0; i < 230; i += 1) gr.writeReceipt(t.root, rec(`noise${String(i).padStart(4, '0')}`, { status: 'failed', exitCode: 1 }));
+
+    expect(gr.archivedReceipt(t.root, 'earlywave001').status).toBe('passed');
+    expect(names(failedDir(t))).toHaveLength(20);
+    expect(names(failedDir(t))).toContain('noise0229.json');
+    expect(names(failedDir(t))).not.toContain('noise0000.json');
+  });
+
+  it('writeReceipt_theFailureRingKeepsTheNewest20ByMtimeAndTheJustWrittenOne', () => {
+    const t = tempRepo();
+    seed(failedDir(t), 20, 'oldfail');
+
+    gr.writeReceipt(t.root, rec('newfail00001', { status: 'failed', exitCode: 1 }));
+
+    const kept = names(failedDir(t));
+    expect(kept).toHaveLength(20);
+    expect(kept).toContain('newfail00001.json');
+    expect(kept).not.toContain('oldfail0000.json');
+    expect(kept).toContain('oldfail0019.json');
+  });
+
+  it('writeReceipt_thePassingRingCapIsStill200_andIgnoresTheFailureFolder', () => {
+    const t = tempRepo();
+    seed(archiveDir(t), 200, 'seed');
+    seed(failedDir(t), 5, 'failx');
+
+    gr.writeReceipt(t.root, rec('freshfresh01'));
+
+    expect(names(archiveDir(t))).toHaveLength(200);
+    expect(names(archiveDir(t))).not.toContain('seed0000.json');
+    expect(names(failedDir(t))).toHaveLength(5);
+  });
+
+  it('archivedReceipt_readsThePassingRingFirstThenTheFailureRing', () => {
+    const t = tempRepo();
+    gr.writeReceipt(t.root, rec('aaaaaaaaaaaa'));
+    gr.writeReceipt(t.root, rec('bbbbbbbbbbbb', { status: 'failed', exitCode: 1 }));
+
+    expect(gr.archivedReceipt(t.root, 'aaaaaaaaaaaa').status).toBe('passed');
+    expect(gr.archivedReceipt(t.root, 'bbbbbbbbbbbb').status).toBe('failed');
+    expect(gr.archivedReceipt(t.root, 'cccccccccccc')).toBeNull();
+  });
+
+  describe.skipIf(process.platform === 'win32')('the failure ring refuses symlinks too', () => {
+    it('archivedReceipt_symlinkedFailureFile_isRefused', () => {
+      const t = tempRepo();
+      const outsideDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'gate-failed-outside-')));
+      dirs.push(outsideDir);
+      const target = path.join(outsideDir, 'victim.json');
+      fs.writeFileSync(target, JSON.stringify(rec('aaaaaaaaaaaa', { status: 'failed', exitCode: 1 })));
+      fs.mkdirSync(failedDir(t), { recursive: true });
+      fs.symlinkSync(target, path.join(failedDir(t), 'aaaaaaaaaaaa.json'));
+
+      expect(gr.archivedReceipt(t.root, 'aaaaaaaaaaaa')).toBeNull();
+    });
+
+    it('writeReceipt_symlinkedFailureFolder_isNotWrittenThrough', () => {
+      const t = tempRepo();
+      const outsideDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'gate-failed-dir-outside-')));
+      dirs.push(outsideDir);
+      fs.mkdirSync(archiveDir(t), { recursive: true });
+      fs.symlinkSync(outsideDir, failedDir(t));
+      const warn = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+      try { gr.writeReceipt(t.root, rec('aaaaaaaaaaaa', { status: 'failed', exitCode: 1 })); } finally { warn.mockRestore(); }
+
+      expect(fs.readdirSync(outsideDir)).toEqual([]);
+      expect(gr.archivedReceipt(t.root, 'aaaaaaaaaaaa')).toBeNull();
+    });
+  });
+
+  it('writeReceipt_archiveFailure_printsOneWarningLineNamingTheReceipt_andDoesNotThrow', () => {
+    const t = tempRepo();
+    fs.mkdirSync(gr.historyDir(t.root), { recursive: true });
+    fs.writeFileSync(archiveDir(t), 'blocker');
+    const warn = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    let lines;
+
+    try { gr.writeReceipt(t.root, rec('aaaaaaaaaaaa')); lines = warn.mock.calls.map((c) => String(c[0])); } finally { warn.mockRestore(); }
+
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatch(/^\[gate-receipt\] warning: receipt aaaaaaaaaaaa was not archived by id \(.+\); a story checkpoint naming it will rerun\n$/);
+    expect(JSON.parse(fs.readFileSync(gr.receiptPath(t.root), 'utf8')).id).toBe('aaaaaaaaaaaa');
+  });
+
+  it('writeReceipt_archiveSuccess_printsNothing', () => {
+    const t = tempRepo();
+    const warn = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    let written;
+
+    try { gr.writeReceipt(t.root, rec('aaaaaaaaaaaa')); written = warn.mock.calls.length; } finally { warn.mockRestore(); }
+
+    expect(written).toBe(0);
+  });
+
+  it('hasArchive_isFalseWithoutTheFolder_trueAfterAnyArchiveWrite_falseForAFileOrSymlink', () => {
+    const t = tempRepo();
+    expect(gr.hasArchive(t.root)).toBe(false);
+
+    gr.writeReceipt(t.root, rec('aaaaaaaaaaaa'));
+    expect(gr.hasArchive(t.root)).toBe(true);
+
+    const blocked = tempRepo();
+    fs.mkdirSync(gr.historyDir(blocked.root), { recursive: true });
+    fs.writeFileSync(archiveDir(blocked), 'blocker');
+    expect(gr.hasArchive(blocked.root)).toBe(false);
+
+    if (process.platform !== 'win32') {
+      const linked = tempRepo();
+      const outsideDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'gate-has-archive-')));
+      dirs.push(outsideDir);
+      fs.mkdirSync(gr.historyDir(linked.root), { recursive: true });
+      fs.symlinkSync(outsideDir, archiveDir(linked));
+      expect(gr.hasArchive(linked.root)).toBe(false);
+    }
+  });
+});
+
+// Security M3: the test runner lives in node_modules/, which the code hash never covers. The engine identity
+// folds in a content hash of the runner (vitest, vite and their runtime dependencies), so a changed runner
+// makes every receipt written by the old one stale.
+describe('engineIdentity / runnerIdentity (test runner content)', () => {
+  const pkg = (t, name, files = {}, deps = {}, version = '1.0.0') => {
+    t.write(`node_modules/${name}/package.json`, JSON.stringify({ name, version, dependencies: deps }));
+    for (const [rel, content] of Object.entries(files)) t.write(`node_modules/${name}/${rel}`, content);
+  };
+  const runnerRepo = () => {
+    const t = tempRepo();
+    pkg(t, 'vitest', { 'vitest.mjs': 'run();\n', 'dist/reporter.js': 'report();\n' }, { tinyexec: '^1.0.0' });
+    pkg(t, 'vite', { 'dist/index.js': 'vite();\n' });
+    pkg(t, 'tinyexec', { 'dist/index.js': 'exec();\n' });
+    return t;
+  };
+
+  it('is stable for an unchanged runner and is a 64-hex digest', () => {
+    const t = runnerRepo();
+    const first = gr.runnerIdentity(t.root);
+    expect(first).toMatch(/^[0-9a-f]{64}$/);
+    expect(gr.runnerIdentity(t.root)).toBe(first);
+    expect(gr.engineIdentity(t.root)).toBe(gr.engineIdentity(t.root));
+  });
+
+  it.each([
+    ['a patched vitest dist file', 'vitest', 'dist/reporter.js', 'report(); /* every test passes */\n'],
+    ['a patched vitest entry point', 'vitest', 'vitest.mjs', 'process.exit(0);\n'],
+    ['a patched vite file (vitest host)', 'vite', 'dist/index.js', 'vite(); evil();\n'],
+    ['a patched transitive runtime dependency', 'tinyexec', 'dist/index.js', 'exec(); evil();\n'],
+  ])('changes the engine identity when %s is rewritten', (_label, name, rel, content) => {
+    const t = runnerRepo();
+    const runnerBefore = gr.runnerIdentity(t.root);
+    const engineBefore = gr.engineIdentity(t.root);
+
+    t.write(`node_modules/${name}/${rel}`, content);
+
+    expect(gr.runnerIdentity(t.root)).not.toBe(runnerBefore);
+    expect(gr.engineIdentity(t.root)).not.toBe(engineBefore);
+  });
+
+  it('changes when a new file appears in the runner package or the version changes', () => {
+    const t = runnerRepo();
+    const before = gr.runnerIdentity(t.root);
+    t.write('node_modules/vitest/dist/extra.js', 'x\n');
+    const withExtra = gr.runnerIdentity(t.root);
+    expect(withExtra).not.toBe(before);
+    pkg(t, 'vitest', { 'vitest.mjs': 'run();\n', 'dist/reporter.js': 'report();\n', 'dist/extra.js': 'x\n' }, { tinyexec: '^1.0.0' }, '1.0.1');
+    expect(gr.runnerIdentity(t.root)).not.toBe(withExtra);
+  });
+
+  it('ignores a file the runner never executes (a type declaration) so a harmless install tweak is not a change', () => {
+    const t = runnerRepo();
+    const before = gr.runnerIdentity(t.root);
+    t.write('node_modules/vitest/dist/index.d.ts', 'export {};\n');
+    expect(gr.runnerIdentity(t.root)).toBe(before);
+  });
+
+  it('prefers a nested dependency copy and reflects a rewrite of it', () => {
+    const t = runnerRepo();
+    t.write('node_modules/vitest/node_modules/tinyexec/package.json', JSON.stringify({ name: 'tinyexec', version: '2.0.0' }));
+    t.write('node_modules/vitest/node_modules/tinyexec/index.js', 'nested();\n');
+    const before = gr.runnerIdentity(t.root);
+    t.write('node_modules/vitest/node_modules/tinyexec/index.js', 'nested(); evil();\n');
+    expect(gr.runnerIdentity(t.root)).not.toBe(before);
+  });
+
+  it('is a fixed marker when no runner is installed, and never flips on its own', () => {
+    const t = tempRepo();
+    expect(gr.runnerIdentity(t.root)).toBe(gr.NO_RUNNER);
+    expect(gr.engineIdentity(t.root)).toBe(gr.engineIdentity(t.root));
+    expect(gr.engineIdentity(t.root)).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('is unknown (null) when a runner file cannot be read, so an unknown is never a pass', () => {
+    const t = runnerRepo();
+    const real = fs.readFileSync;
+    const spy = vi.spyOn(fs, 'readFileSync').mockImplementation((file, ...rest) => {
+      if (String(file).endsWith(`${path.sep}reporter.js`)) throw new Error('EACCES');
+      return real(file, ...rest);
+    });
+    try {
+      expect(gr.runnerIdentity(t.root)).toBeNull();
+      expect(gr.engineIdentity(t.root)).toBeNull();
+    } finally { spy.mockRestore(); }
+  });
+
+  it('is unknown (null) on a malformed runner manifest', () => {
+    const t = runnerRepo();
+    t.write('node_modules/vitest/package.json', '{ not json');
+    expect(gr.runnerIdentity(t.root)).toBeNull();
+  });
+
+  it('hashes the runner once per call and stays fast on the real installed runner', () => {
+    const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
+    const started = process.hrtime.bigint();
+    const digest = gr.runnerIdentity(repoRoot);
+    const ms = Number(process.hrtime.bigint() - started) / 1e6;
+    expect(digest).toMatch(/^[0-9a-f]{64}$/);
+    expect(ms, 'one gate run pays this once; keep it well under a second').toBeLessThan(2000);
+  });
+
+  describe('a receipt written by the old runner is stale for the patched one', () => {
+    const makeReceipt = (t) => {
+      const snap = gr.treeSnapshot(t.root);
+      return {
+        schema: gr.RECEIPT_SCHEMA, id: 'abc', status: 'passed', exitCode: 0, mode: 'normal', changedOnly: false, head: gr.headSha(t.root),
+        treeHashStart: snap.hash, treeHashEnd: snap.hash, engine: gr.engineIdentity(t.root), configHash: gr.readGateConfigFile(t.root).hash,
+        build: { status: 'passed' }, projects: [], test: { status: 'passed' }, codeHash: 'C'.repeat(64),
+      };
+    };
+    const checksOf = (t, receipt) => gr.verifyReceiptEvidence({ root: t.root, receipt, codeHash: receipt.codeHash }).reasons.map((r) => r.check);
+
+    it('accepts the receipt while the runner is unchanged (control)', () => {
+      const t = runnerRepo();
+      expect(checksOf(t, makeReceipt(t))).not.toContain('engine');
+    });
+
+    it('refuses the receipt on the engine check once the runner is patched', () => {
+      const t = runnerRepo();
+      const receipt = makeReceipt(t);
+      t.write('node_modules/vitest/dist/reporter.js', 'report(); /* forged green */\n');
+      expect(checksOf(t, receipt)).toContain('engine');
+    });
   });
 });

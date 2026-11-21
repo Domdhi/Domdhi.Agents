@@ -6,8 +6,8 @@
 
 ## When to Request Review
 
-**Mandatory:**
-- After each task in subagent-driven development
+**Mandatory** (the cadence is in [review-cadence.md](review-cadence.md); this checklist covers how to ask for one review):
+- After each wave of stories in a planned run, not after each story
 - After completing a major feature
 - Before merge to main
 
@@ -162,7 +162,7 @@ A confidential file-serving feature can ship with the read-side authorizer fully
 
 (Field-proven on an adopter project, 2026-07: config keys and the project's uploader/storage-mapping architecture live in that project's own skill — this section is the project-agnostic technique.)
 
-## Red Flags — Never Do These
+## Red Flags
 
 - Skip review because "it's simple"
 - Ignore Critical issues

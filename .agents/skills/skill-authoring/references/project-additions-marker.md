@@ -41,7 +41,7 @@ re-homes it.
   template-owned prose in place (those edits are lost on sync). Prefer a brand-new
   **project-added skill dir** when the content is substantial — entirely new skill dirs
   are never touched by sync.
-- Commands that customize template skills (`/review:specialize`, `/sweep`,
+- Commands that customize template skills (`/review:specialize`,
   `/review:evolve-skills`) — and any agent hand-adding a field-proven review/test rule to
   a shared skill during normal work — MUST use one of the two forms, creating the
   sentinel if absent. A whole-new top-level section → Form 1. A bullet inserted into an

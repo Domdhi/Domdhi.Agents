@@ -2,7 +2,7 @@
 // (and in fleet status, see tools/__tests__/fleet.test.js), and an adopter that carries Platform's
 // unanchored .playwright*/ line still installs, updates and repeats cleanly without organization flags.
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { createRequire } from 'node:module';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -23,6 +23,7 @@ const AGENTS_COPY = '.agents/templates/root/.playwright/cli.config.json';
 
 let tmp;
 beforeEach(() => { tmp = createTmpDir({ prefix: 'na718-' }); });
+afterEach(() => { tmp.cleanup(); });
 
 function cliEnv(extra = {}) {
   const env = { ...process.env };

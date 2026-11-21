@@ -766,3 +766,594 @@ describe('mergeSettingsFile — PowerShell coverage notice for adopter-owned she
         expect(again.detail).toContain('PowerShell not covered');
     });
 });
+
+// ── SF-1.9: template-owned permissions.deny union ─────────────────────────────
+//
+// PINNED NAMES / BEHAVIOUR (the implementation must match; the tests must not be edited to fit it):
+//   - `permissions` stays PROJECT-owned: TEMPLATE_OWNED_KEYS does NOT gain 'permissions', so adopter
+//     `allow` and `ask` (and unknown permissions keys such as defaultMode) are never touched.
+//   - `mergeSettingsFile(src, dest, options, containRoot)` additionally UNIONS the template's
+//     `permissions.deny` into the adopter's `permissions.deny`: result = the adopter's own valid entries
+//     (strings only, first occurrence kept, original order) followed by each template entry the adopter
+//     does not already have (template order). Template entries are added, never a replacement.
+//   - A non-array adopter `deny`, and non-string entries inside it, are dropped (they cannot be valid
+//     Claude Code rules); the merge never throws. A non-object adopter `permissions` is replaced by an
+//     object whose `deny` is the template deny.
+//   - An adopter with no `permissions` gets the template's block (existing fallback); an adopter
+//     `permissions` without `deny` gets `deny` = the template deny.
+//   - New pure export `unionDenyList(templateDeny, adopterDeny) -> string[]` implements the rule above
+//     (fresh array; non-array / non-string input tolerated on both sides).
+//   - `detail` of a merged or dry-run result names `permissions.deny` when the union changed the list.
+//   - Idempotent: a second merge returns action 'unchanged' and leaves the file byte-identical.
+//   - Dry run writes nothing.
+describe('SF-1.9 deny union — adopter files the merger must read or refuse loudly', () => {
+    const DENY_TEMPLATE_FILE = {
+        ...TEMPLATE_SETTINGS,
+        permissions: { allow: ['Bash(git status)'], deny: ['Read(**/.env)', 'Edit(**/.env)'] },
+    };
+    const writeSrc = () => tmp.write('src/settings.json', JSON.stringify(DENY_TEMPLATE_FILE, null, 2) + '\n');
+    const adopterJson = JSON.stringify({ ...ADOPTER_SETTINGS, permissions: { allow: ['Bash(npm:*)'], deny: ['Bash(rm:*)'] } }, null, 2) + '\n';
+
+    it('bomPrefixedAdopterFile_mergesAndGainsTheDeny_writtenBackWithoutTheBom', () => {
+        const srcPath = writeSrc();
+        const destPath = tmp.write('dest/settings.json', '\uFEFF' + adopterJson);
+
+        const result = mergeSettingsFile(srcPath, destPath);
+
+        expect(result.action).toBe('merged');
+        expect(result.detail).toContain('removed the UTF-8 BOM');
+        const text = fs.readFileSync(destPath, 'utf8');
+        expect(text.charCodeAt(0)).not.toBe(0xFEFF);
+        expect(JSON.parse(text).permissions.deny).toEqual(['Bash(rm:*)', 'Read(**/.env)', 'Edit(**/.env)']);
+        expect(mergeSettingsFile(srcPath, destPath).action).toBe('unchanged');
+    });
+
+    it('bomPrefixedAdopterFileAlreadyHoldingEveryRule_isStillRewrittenWithoutTheBom', () => {
+        const srcPath = writeSrc();
+        const destPath = tmp.write('dest/settings.json', adopterJson);
+        mergeSettingsFile(srcPath, destPath);
+        fs.writeFileSync(destPath, '\uFEFF' + fs.readFileSync(destPath, 'utf8'));
+
+        const result = mergeSettingsFile(srcPath, destPath);
+
+        expect(result.action).toBe('merged');
+        expect(fs.readFileSync(destPath, 'utf8').charCodeAt(0)).not.toBe(0xFEFF);
+    });
+
+    it('adopterFileWithALineComment_isSkippedLoudly_leftByteIdentical_andFlaggedDenyUnionSkipped', () => {
+        const srcPath = writeSrc();
+        const text = '{\n  // my own note\n  "permissions": { "deny": [] }\n}\n';
+        const destPath = tmp.write('dest/settings.json', text);
+
+        const result = mergeSettingsFile(srcPath, destPath);
+
+        expect(result.action).toBe('skipped');
+        expect(result.denyUnionSkipped).toBe(true);
+        expect(result.detail).toContain('contains // or /* */ comments');
+        expect(result.detail).toContain('permissions.deny union NOT applied');
+        expect(fs.readFileSync(destPath, 'utf8')).toBe(text);
+    });
+
+    it('adopterFileWithABlockComment_isRefusedTheSameWay', () => {
+        const srcPath = writeSrc();
+        const destPath = tmp.write('dest/settings.json', '{ /* note */ "permissions": { "deny": [] } }\n');
+
+        const result = mergeSettingsFile(srcPath, destPath);
+
+        expect(result.action).toBe('skipped');
+        expect(result.detail).toContain('contains // or /* */ comments');
+    });
+
+    it('urlInsideAStringIsNotMistakenForAComment_aBrokenFileGetsTheGenericReason', () => {
+        const srcPath = writeSrc();
+        const destPath = tmp.write('dest/settings.json', '{ "$schema": "https://example.test/x.json", broken }\n');
+
+        const result = mergeSettingsFile(srcPath, destPath);
+
+        expect(result.action).toBe('skipped');
+        expect(result.denyUnionSkipped).toBe(true);
+        expect(result.detail).not.toContain('contains // or');
+        expect(result.detail).toContain('permissions.deny union NOT applied');
+    });
+
+    it('anAdopterFileWithAUrlInAStringAndNoCommentsStillMerges', () => {
+        const srcPath = writeSrc();
+        const destPath = tmp.write('dest/settings.json', JSON.stringify({ $schema: 'https://example.test/x.json', permissions: { deny: [] } }, null, 2) + '\n');
+
+        expect(mergeSettingsFile(srcPath, destPath).action).toBe('merged');
+    });
+
+    it('updaterMergeRun_countsACommentedSettingsFileAsMergeWarned_soFleetSurfacesIt', () => {
+        tmp.write('src/.claude/settings.json', JSON.stringify(DENY_TEMPLATE_FILE, null, 2) + '\n');
+        tmp.mkdir('target/.claude');
+        tmp.write('target/.claude/settings.json', '{ // note\n "permissions": { "deny": [] } }\n');
+        const originalDir = process.env.CLAUDE_PROJECT_DIR;
+        process.env.CLAUDE_PROJECT_DIR = path.join(tmp.root, 'src');
+        const lines = [];
+        const spy = vi.spyOn(console, 'log').mockImplementation((msg) => { lines.push(String(msg)); });
+        try { runUpdate(path.join(tmp.root, 'target'), { merge: true }); } finally {
+            spy.mockRestore();
+            if (originalDir === undefined) delete process.env.CLAUDE_PROJECT_DIR;
+            else process.env.CLAUDE_PROJECT_DIR = originalDir;
+        }
+
+        expect(lines.join('\n')).toMatch(/MergeWarned : 1\b/);
+        expect(lines.join('\n')).toContain('permissions.deny union NOT applied');
+    });
+
+    it('updaterWithoutMerge_saysTheDenyUnionWasNotApplied_onTheSettingsSkipLine', () => {
+        tmp.write('src/.claude/settings.json', JSON.stringify(DENY_TEMPLATE_FILE, null, 2) + '\n');
+        tmp.mkdir('target/.claude');
+        tmp.write('target/.claude/settings.json', adopterJson);
+        const originalDir = process.env.CLAUDE_PROJECT_DIR;
+        process.env.CLAUDE_PROJECT_DIR = path.join(tmp.root, 'src');
+        const lines = [];
+        const spy = vi.spyOn(console, 'log').mockImplementation((msg) => { lines.push(String(msg)); });
+        try { runUpdate(path.join(tmp.root, 'target'), {}); } finally {
+            spy.mockRestore();
+            if (originalDir === undefined) delete process.env.CLAUDE_PROJECT_DIR;
+            else process.env.CLAUDE_PROJECT_DIR = originalDir;
+        }
+
+        expect(lines.some(l => /SKIP\s+\.claude\/settings\.json \(project zone; permissions\.deny union not applied\)/.test(l))).toBe(true);
+    });
+});
+
+describe('SF-1.9 deny union', () => {
+    const { unionDenyList } = require('../../../.agents/core/_lib/settings-merger');
+
+    const DENY_A = 'Read(**/.env)';
+    const DENY_B = 'Edit(**/.env)';
+    const DENY_C = 'Bash(git push *--force*)';
+    const TEMPLATE_DENY = [DENY_A, DENY_B, DENY_C];
+
+    const DENY_TEMPLATE = {
+        ...TEMPLATE_SETTINGS,
+        permissions: {
+            allow: ['Bash(git status)', 'Bash(node:*)'],
+            ask: ['Bash(git push*)'],
+            deny: TEMPLATE_DENY,
+        },
+    };
+
+    /** Write template + adopter settings and return the paths. */
+    const setup = (adopter, template = DENY_TEMPLATE) => {
+        const srcPath = tmp.write('src/settings.json', JSON.stringify(template, null, 2) + '\n');
+        const destPath = tmp.write('dest/settings.json', JSON.stringify(adopter, null, 2) + '\n');
+        return { srcPath, destPath };
+    };
+    const readOut = destPath => JSON.parse(fs.readFileSync(destPath, 'utf8'));
+    const adopterWith = permissions => ({ ...ADOPTER_SETTINGS, permissions });
+
+    it('TEMPLATE_OWNED_KEYS_stillExcludesPermissions_soAllowAndAskStayProjectOwned', () => {
+        expect(TEMPLATE_OWNED_KEYS).not.toContain('permissions');
+        expect(PROJECT_OWNED_KEYS).toContain('permissions');
+    });
+
+    describe('merge result', () => {
+        it('templateDeny_isAddedAfterTheAdoptersOwnDenyEntries_neverReplacingThem', () => {
+            const { srcPath, destPath } = setup(adopterWith({ allow: ['Bash(npm:*)'], deny: ['Bash(rm:*)'] }));
+
+            const result = mergeSettingsFile(srcPath, destPath);
+
+            expect(result.action).toBe('merged');
+            expect(readOut(destPath).permissions.deny).toEqual(['Bash(rm:*)', DENY_A, DENY_B, DENY_C]);
+        });
+
+        it('adopterAllow_isUntouched_andTemplateAllowIsNotAddedToIt', () => {
+            const adopterAllow = ['Bash(npm:*)', 'Bash(git status)', 'WebFetch'];
+            const { srcPath, destPath } = setup(adopterWith({ allow: adopterAllow, deny: [] }));
+
+            mergeSettingsFile(srcPath, destPath);
+
+            expect(readOut(destPath).permissions.allow).toEqual(adopterAllow);
+        });
+
+        it('adopterAsk_isUntouched_andTemplateAskIsNotAddedToIt', () => {
+            const adopterAsk = ['Bash(npm publish*)'];
+            const { srcPath, destPath } = setup(adopterWith({ allow: [], ask: adopterAsk, deny: [] }));
+
+            mergeSettingsFile(srcPath, destPath);
+
+            expect(readOut(destPath).permissions.ask).toEqual(adopterAsk);
+        });
+
+        it('adopterWithoutAsk_doesNotGainTheTemplateAsk', () => {
+            const { srcPath, destPath } = setup(adopterWith({ allow: ['Bash(npm:*)'], deny: [] }));
+
+            mergeSettingsFile(srcPath, destPath);
+
+            expect(Object.prototype.hasOwnProperty.call(readOut(destPath).permissions, 'ask')).toBe(false);
+        });
+
+        it('unknownPermissionsKeys_surviveTheUnion', () => {
+            const { srcPath, destPath } = setup(adopterWith({
+                allow: [], deny: ['Bash(rm:*)'], defaultMode: 'acceptEdits', additionalDirectories: ['../shared'],
+            }));
+
+            mergeSettingsFile(srcPath, destPath);
+
+            const out = readOut(destPath).permissions;
+            expect(out.defaultMode).toBe('acceptEdits');
+            expect(out.additionalDirectories).toEqual(['../shared']);
+        });
+
+        it('adopterWithNoPermissionsBlock_getsTheTemplateAllowAndDeny', () => {
+            const { permissions: _drop, ...noPermissions } = ADOPTER_SETTINGS;
+            const { srcPath, destPath } = setup(noPermissions);
+
+            mergeSettingsFile(srcPath, destPath);
+
+            const out = readOut(destPath).permissions;
+            expect(out.deny).toEqual(TEMPLATE_DENY);
+            expect(out.allow).toEqual(['Bash(git status)', 'Bash(node:*)']);
+        });
+
+        it('adopterPermissionsWithoutDenyKey_getsTheTemplateDeny_andKeepsItsAllow', () => {
+            const { srcPath, destPath } = setup(adopterWith({ allow: ['Bash(npm:*)'] }));
+
+            mergeSettingsFile(srcPath, destPath);
+
+            const out = readOut(destPath).permissions;
+            expect(out.deny).toEqual(TEMPLATE_DENY);
+            expect(out.allow).toEqual(['Bash(npm:*)']);
+        });
+
+        it('adopterAlreadyHoldingEveryTemplateDenyEntry_isUnchanged', () => {
+            const adopter = {
+                ...adopterWith({ allow: ['Bash(npm:*)'], deny: [...TEMPLATE_DENY] }),
+                hooks: DENY_TEMPLATE.hooks,
+                plansDirectory: DENY_TEMPLATE.plansDirectory,
+                statusLine: DENY_TEMPLATE.statusLine,
+            };
+            const { srcPath, destPath } = setup(adopter);
+            const before = fs.readFileSync(destPath, 'utf8');
+
+            const result = mergeSettingsFile(srcPath, destPath);
+
+            expect(result.action).toBe('unchanged');
+            expect(fs.readFileSync(destPath, 'utf8')).toBe(before);
+        });
+
+        it('mergedDenyEntry_namedInDetail_whenTheUnionChangedTheList', () => {
+            const { srcPath, destPath } = setup(adopterWith({ allow: [], deny: [] }));
+
+            const result = mergeSettingsFile(srcPath, destPath);
+
+            expect(result.detail).toContain('permissions.deny');
+        });
+
+        it('adopterDeny_isKeptAsIs_whenTheTemplateShipsAnEmptyDeny', () => {
+            const template = { ...DENY_TEMPLATE, permissions: { allow: ['Bash(git status)'], deny: [] } };
+            const { srcPath, destPath } = setup(adopterWith({ allow: ['Bash(npm:*)'], deny: ['Bash(rm:*)'] }), template);
+
+            mergeSettingsFile(srcPath, destPath);
+
+            expect(readOut(destPath).permissions.deny).toEqual(['Bash(rm:*)']);
+        });
+
+        it('adopterPermissions_areKeptAsIs_whenTheTemplateShipsNoPermissionsBlock', () => {
+            const { permissions: _drop, ...noPermissions } = DENY_TEMPLATE;
+            const { srcPath, destPath } = setup(adopterWith({ allow: ['Bash(npm:*)'], deny: ['Bash(rm:*)'] }), noPermissions);
+
+            mergeSettingsFile(srcPath, destPath);
+
+            expect(readOut(destPath).permissions).toEqual({ allow: ['Bash(npm:*)'], deny: ['Bash(rm:*)'] });
+        });
+
+        it('templateSource_isNeverMutatedByTheUnion', () => {
+            const { srcPath, destPath } = setup(adopterWith({ allow: [], deny: ['Bash(rm:*)'] }));
+            const before = fs.readFileSync(srcPath, 'utf8');
+
+            mergeSettingsFile(srcPath, destPath);
+
+            expect(fs.readFileSync(srcPath, 'utf8')).toBe(before);
+        });
+    });
+
+    describe('order and duplicates', () => {
+        it('adopterEntryAlsoInTemplate_keepsItsAdopterPosition_andIsNotDuplicated', () => {
+            const { srcPath, destPath } = setup(adopterWith({ allow: [], deny: ['Bash(rm:*)', DENY_B, 'Bash(dd:*)'] }));
+
+            mergeSettingsFile(srcPath, destPath);
+
+            expect(readOut(destPath).permissions.deny).toEqual(['Bash(rm:*)', DENY_B, 'Bash(dd:*)', DENY_A, DENY_C]);
+        });
+
+        it('duplicatesInsideTheAdopterDeny_collapseToTheirFirstOccurrence', () => {
+            const { srcPath, destPath } = setup(adopterWith({ allow: [], deny: ['Bash(rm:*)', 'Bash(dd:*)', 'Bash(rm:*)', DENY_A, DENY_A] }));
+
+            mergeSettingsFile(srcPath, destPath);
+
+            expect(readOut(destPath).permissions.deny).toEqual(['Bash(rm:*)', 'Bash(dd:*)', DENY_A, DENY_B, DENY_C]);
+        });
+
+        it('templateEntriesKeepTemplateOrder_whenTheAdopterHoldsNoneOfThem', () => {
+            const { srcPath, destPath } = setup(adopterWith({ allow: [], deny: [] }));
+
+            mergeSettingsFile(srcPath, destPath);
+
+            expect(readOut(destPath).permissions.deny).toEqual([DENY_A, DENY_B, DENY_C]);
+        });
+
+        it('denyComparison_isCaseExact_soANearMissIsKeptAndTheRealEntryIsStillAdded', () => {
+            const nearMiss = 'read(**/.env)';
+            const { srcPath, destPath } = setup(adopterWith({ allow: [], deny: [nearMiss] }));
+
+            mergeSettingsFile(srcPath, destPath);
+
+            expect(readOut(destPath).permissions.deny).toEqual([nearMiss, DENY_A, DENY_B, DENY_C]);
+        });
+    });
+
+    describe('malformed adopter permissions', () => {
+        it.each([
+            ['an object', { 'Bash(rm:*)': true }],
+            ['null', null],
+            ['a number', 7],
+            ['a boolean', true],
+        ])('denyThatIs_%s_isReplacedByTheTemplateDeny_withoutThrowing', (_label, badDeny) => {
+            const { srcPath, destPath } = setup(adopterWith({ allow: ['Bash(npm:*)'], deny: badDeny }));
+
+            const result = mergeSettingsFile(srcPath, destPath);
+
+            expect(result.action).toBe('merged');
+            const out = readOut(destPath).permissions;
+            expect(out.deny).toEqual(TEMPLATE_DENY);
+            expect(out.allow).toEqual(['Bash(npm:*)']);
+        });
+
+        it('denyThatIsAString_isWrappedIntoAOneRuleList_notDiscarded', () => {
+            // SF-1.9 review M-5: "deny": "Bash(rm *)" used to be dropped, leaving the adopter believing rm was denied.
+            const { srcPath, destPath } = setup(adopterWith({ allow: ['Bash(npm:*)'], deny: 'Bash(rm:*)' }));
+
+            const result = mergeSettingsFile(srcPath, destPath);
+
+            expect(result.action).toBe('merged');
+            const out = readOut(destPath).permissions;
+            expect(out.deny).toEqual(['Bash(rm:*)', ...TEMPLATE_DENY]);
+            expect(out.allow).toEqual(['Bash(npm:*)']);
+            expect(result.detail).not.toContain('dropped');
+        });
+
+        it('stringDenyThatDuplicatesATemplateRule_isNotDuplicated', () => {
+            const { srcPath, destPath } = setup(adopterWith({ allow: [], deny: DENY_B }));
+
+            mergeSettingsFile(srcPath, destPath);
+
+            expect(readOut(destPath).permissions.deny).toEqual([DENY_B, DENY_A, DENY_C]);
+        });
+
+        it('droppedNonStringEntries_areCountedInTheMergeDetail_notSilent', () => {
+            const { srcPath, destPath } = setup(adopterWith({
+                allow: [], deny: ['Bash(rm:*)', 42, null, { rule: 'x' }],
+            }));
+
+            const result = mergeSettingsFile(srcPath, destPath);
+
+            expect(result.detail).toContain('dropped 3 non-string permissions.deny entries');
+        });
+
+        it('aSingleDroppedEntry_isReportedInTheSingular', () => {
+            const { srcPath, destPath } = setup(adopterWith({ allow: [], deny: ['Bash(rm:*)', 7] }));
+
+            expect(mergeSettingsFile(srcPath, destPath).detail).toContain('dropped 1 non-string permissions.deny entry (');
+        });
+
+        it('aNonListNonStringDeny_isReportedAsOneDroppedValue', () => {
+            const { srcPath, destPath } = setup(adopterWith({ allow: [], deny: { 'Bash(rm:*)': true } }));
+
+            expect(mergeSettingsFile(srcPath, destPath).detail).toContain('dropped 1 non-string permissions.deny entry (');
+        });
+
+        it('dropNotice_appearsOnlyOnTheRunThatDroppedAnEntry_theCleanedFileIsUnchangedAfterwards', () => {
+            const { srcPath, destPath } = setup(adopterWith({ allow: [], deny: ['Bash(rm:*)', 7] }));
+            mergeSettingsFile(srcPath, destPath);
+
+            const second = mergeSettingsFile(srcPath, destPath);
+
+            expect(second.action).toBe('unchanged');
+            expect(second.detail).not.toContain('dropped');
+        });
+
+        it('nonStringEntriesInsideDeny_areDroppedAndValidStringsAreKept', () => {
+            const { srcPath, destPath } = setup(adopterWith({
+                allow: [], deny: ['Bash(rm:*)', 42, null, { rule: 'x' }, ['nested'], true, 'Bash(dd:*)'],
+            }));
+
+            mergeSettingsFile(srcPath, destPath);
+
+            expect(readOut(destPath).permissions.deny).toEqual(['Bash(rm:*)', 'Bash(dd:*)', DENY_A, DENY_B, DENY_C]);
+        });
+
+        it('denyHoldingOnlyGarbage_endsAsExactlyTheTemplateDeny', () => {
+            const { srcPath, destPath } = setup(adopterWith({ allow: [], deny: [1, 2, null, {}] }));
+
+            mergeSettingsFile(srcPath, destPath);
+
+            expect(readOut(destPath).permissions.deny).toEqual(TEMPLATE_DENY);
+        });
+
+        it.each([
+            ['null', null],
+            ['a string', 'allow everything'],
+            ['an array', ['Bash(rm:*)']],
+            ['a number', 3],
+        ])('permissionsThatIs_%s_becomesAnObjectCarryingTheTemplateDeny_withoutThrowing', (_label, badPermissions) => {
+            const { srcPath, destPath } = setup({ ...ADOPTER_SETTINGS, permissions: badPermissions });
+
+            const result = mergeSettingsFile(srcPath, destPath);
+
+            expect(result.action).toBe('merged');
+            const out = readOut(destPath).permissions;
+            expect(out !== null && typeof out === 'object' && !Array.isArray(out)).toBe(true);
+            expect(out.deny).toEqual(TEMPLATE_DENY);
+        });
+
+        it('hostileProtoKeyInsidePermissions_doesNotPolluteThePrototypeOrTheMergedDeny', () => {
+            const srcPath = tmp.write('src/settings.json', JSON.stringify(DENY_TEMPLATE, null, 2) + '\n');
+            const destPath = tmp.write(
+                'dest/settings.json',
+                '{\n  "permissions": { "allow": [], "deny": ["Bash(rm:*)"], "__proto__": { "deny": ["polluted"] } }\n}\n'
+            );
+
+            mergeSettingsFile(srcPath, destPath);
+
+            expect(({}).deny).toBeUndefined();
+            expect(readOut(destPath).permissions.deny).toEqual(['Bash(rm:*)', DENY_A, DENY_B, DENY_C]);
+        });
+    });
+
+    describe('idempotency', () => {
+        it.each([
+            ['a clean adopter deny', { allow: ['Bash(npm:*)'], deny: ['Bash(rm:*)'] }],
+            ['an empty adopter deny', { allow: [], deny: [] }],
+            ['an adopter deny with duplicates', { allow: [], deny: ['Bash(rm:*)', 'Bash(rm:*)', DENY_A, DENY_A] }],
+            ['an adopter deny with garbage entries', { allow: [], deny: ['Bash(rm:*)', 1, null, {}] }],
+            ['a non-array adopter deny', { allow: [], deny: 'Bash(rm:*)' }],
+            ['an adopter permissions with no deny key', { allow: ['Bash(npm:*)'] }],
+        ])('secondMerge_with_%s_changesNothing', (_label, permissions) => {
+            const { srcPath, destPath } = setup(adopterWith(permissions));
+            mergeSettingsFile(srcPath, destPath);
+            const afterFirst = fs.readFileSync(destPath, 'utf8');
+
+            const second = mergeSettingsFile(srcPath, destPath);
+
+            expect(second.action).toBe('unchanged');
+            expect(fs.readFileSync(destPath, 'utf8')).toBe(afterFirst);
+        });
+
+        it('thirdMerge_afterTwoMerges_stillChangesNothing', () => {
+            const { srcPath, destPath } = setup(adopterWith({ allow: [], deny: ['Bash(rm:*)', 'Bash(rm:*)', 5] }));
+            mergeSettingsFile(srcPath, destPath);
+            mergeSettingsFile(srcPath, destPath);
+            const afterSecond = fs.readFileSync(destPath, 'utf8');
+
+            const third = mergeSettingsFile(srcPath, destPath);
+
+            expect(third.action).toBe('unchanged');
+            expect(fs.readFileSync(destPath, 'utf8')).toBe(afterSecond);
+        });
+
+        it('freshInstallCopy_thenAnotherMerge_isUnchanged', () => {
+            const srcPath = tmp.write('src/settings.json', JSON.stringify(DENY_TEMPLATE, null, 2) + '\n');
+            const destPath = path.join(tmp.root, 'dest', 'settings.json');
+            const first = mergeSettingsFile(srcPath, destPath);
+
+            const second = mergeSettingsFile(srcPath, destPath);
+
+            expect(first.action).toBe('copied');
+            expect(readOut(destPath).permissions.deny).toEqual(TEMPLATE_DENY);
+            expect(second.action).toBe('unchanged');
+        });
+
+        it('aTemplateThatLaterGainsAnEntry_addsOnlyThatEntryOnTheNextMerge', () => {
+            const { srcPath, destPath } = setup(adopterWith({ allow: [], deny: ['Bash(rm:*)'] }));
+            mergeSettingsFile(srcPath, destPath);
+            const grown = { ...DENY_TEMPLATE, permissions: { ...DENY_TEMPLATE.permissions, deny: [...TEMPLATE_DENY, 'Edit(**/.env.local)'] } };
+            fs.writeFileSync(srcPath, JSON.stringify(grown, null, 2) + '\n');
+
+            const result = mergeSettingsFile(srcPath, destPath);
+
+            expect(result.action).toBe('merged');
+            expect(readOut(destPath).permissions.deny).toEqual(['Bash(rm:*)', DENY_A, DENY_B, DENY_C, 'Edit(**/.env.local)']);
+        });
+    });
+
+    describe('dry run', () => {
+        it('dryRun_reportsAMergeThatNamesDeny_andWritesNothing', () => {
+            const { srcPath, destPath } = setup(adopterWith({ allow: [], deny: ['Bash(rm:*)'] }));
+            const before = fs.readFileSync(destPath, 'utf8');
+
+            const result = mergeSettingsFile(srcPath, destPath, { dryRun: true });
+
+            expect(result.action).toBe('merged');
+            expect(result.detail).toContain('permissions.deny');
+            expect(fs.readFileSync(destPath, 'utf8')).toBe(before);
+        });
+    });
+
+    describe('unionDenyList', () => {
+        it.each([
+            ['adopter list is empty', ['a', 'b'], [], ['a', 'b']],
+            ['template list is empty', [], ['x'], ['x']],
+            ['both empty', [], [], []],
+            ['adopter first then template', ['a', 'b'], ['x', 'y'], ['x', 'y', 'a', 'b']],
+            ['overlap keeps adopter position', ['a', 'b', 'c'], ['b', 'x'], ['b', 'x', 'a', 'c']],
+            ['adopter duplicates collapse', ['a'], ['x', 'x', 'y', 'x'], ['x', 'y', 'a']],
+            ['template duplicates collapse', ['a', 'a', 'b'], [], ['a', 'b']],
+            ['adopter string is wrapped', ['a'], 'x', ['x', 'a']],
+            ['template string is wrapped', 'a', ['x'], ['x', 'a']],
+            ['adopter undefined', ['a'], undefined, ['a']],
+            ['adopter null', ['a'], null, ['a']],
+            ['adopter object', ['a'], { 0: 'x' }, ['a']],
+            ['non-string adopter entries dropped', ['a'], ['x', 1, null, {}, undefined, ['n']], ['x', 'a']],
+            ['template not an array', undefined, ['x'], ['x']],
+            ['template null', null, ['x'], ['x']],
+            ['template with garbage entries', ['a', 2, null], ['x'], ['x', 'a']],
+        ])('unionDenyList_%s', (_label, template, adopter, expected) => {
+            expect(unionDenyList(template, adopter)).toEqual(expected);
+        });
+
+        it('unionDenyList_returnsAFreshArray_neverTheTemplateOrAdopterReference', () => {
+            const template = ['a'];
+            const adopter = ['x'];
+
+            const out = unionDenyList(template, adopter);
+            out.push('mutated');
+
+            expect(template).toEqual(['a']);
+            expect(adopter).toEqual(['x']);
+        });
+
+        it('unionDenyList_appliedTwice_equalsAppliedOnce', () => {
+            const once = unionDenyList(['a', 'b'], ['b', 'x', 'x', 9]);
+
+            expect(unionDenyList(['a', 'b'], once)).toEqual(once);
+        });
+    });
+
+    describe('through runUpdate --merge', () => {
+        const run = (opts) => {
+            process.env.CLAUDE_PROJECT_DIR = path.join(tmp.root, 'src');
+            const spy = vi.spyOn(console, 'log').mockImplementation(() => { });
+            runUpdate(path.join(tmp.root, 'target'), opts || {});
+            spy.mockRestore();
+        };
+
+        it('mergeRun_addsTemplateDenyToTheAdopterFile_keepingTheAdopterEntriesAndAllow', () => {
+            tmp.write('src/.claude/settings.json', JSON.stringify(DENY_TEMPLATE, null, 2) + '\n');
+            tmp.mkdir('target/.claude');
+            tmp.write('target/.claude/settings.json', JSON.stringify(ADOPTER_SETTINGS, null, 2) + '\n');
+
+            run({ merge: true });
+
+            const out = JSON.parse(fs.readFileSync(path.join(tmp.root, 'target/.claude/settings.json'), 'utf8'));
+            expect(out.permissions.deny).toEqual(['Bash(rm:*)', DENY_A, DENY_B, DENY_C]);
+            expect(out.permissions.allow).toEqual(['Bash(npm:*)', 'Bash(git status)']);
+        });
+
+        it('withoutMerge_theAdopterFileStaysByteIdentical_noDenyIsInjected', () => {
+            tmp.write('src/.claude/settings.json', JSON.stringify(DENY_TEMPLATE, null, 2) + '\n');
+            tmp.mkdir('target/.claude');
+            const before = JSON.stringify(ADOPTER_SETTINGS, null, 2) + '\n';
+            tmp.write('target/.claude/settings.json', before);
+
+            run({});
+
+            expect(fs.readFileSync(path.join(tmp.root, 'target/.claude/settings.json'), 'utf8')).toBe(before);
+        });
+
+        it('secondMergeRun_leavesTheFileByteIdentical', () => {
+            tmp.write('src/.claude/settings.json', JSON.stringify(DENY_TEMPLATE, null, 2) + '\n');
+            tmp.mkdir('target/.claude');
+            tmp.write('target/.claude/settings.json', JSON.stringify(adopterWith({ allow: [], deny: ['Bash(rm:*)', 'Bash(rm:*)', 3] }), null, 2) + '\n');
+            run({ merge: true });
+            const afterFirst = fs.readFileSync(path.join(tmp.root, 'target/.claude/settings.json'), 'utf8');
+
+            run({ merge: true });
+
+            expect(fs.readFileSync(path.join(tmp.root, 'target/.claude/settings.json'), 'utf8')).toBe(afterFirst);
+        });
+    });
+});

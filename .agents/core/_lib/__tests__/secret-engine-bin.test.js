@@ -21,7 +21,7 @@ const sha = text => crypto.createHash('sha256').update(text).digest('hex');
 const GOOD = '#!/bin/sh\n# the pinned build\n';
 
 const file = (target, text = GOOD) => {
-    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o755 });
     fs.writeFileSync(target, text, { mode: 0o755 });
     fs.chmodSync(target, 0o755);
     return target;

@@ -47,4 +47,5 @@ Read the needed section of `.agents/startup-reference.md` only if the current ta
 | Write docs, reports, handoffs or commits | `Document Naming`, `Output Persistence Convention`, `Post-Command Commit Convention`; applicable `docs/CLAUDE.md` |
 | Modify memory/hook behavior or investigate startup injection | `Memory System`, `Hooks`; actual configured hook and helper source |
 | Install/update, customize or publish the toolkit | `Publishing`, `Template Marker Convention`; existing install/updater/publish instructions, with outward actions authorized separately |
+| Take an outward, irreversible or approval-gated action (push, PR, publish, deploy, fleet sync, permissions, secrets) | `Action authority` |
 | Change/test Domdhi.Agents itself | `Build & Test Gate`, `Build & Test`, `Key File Paths`; toolkit tests here only |

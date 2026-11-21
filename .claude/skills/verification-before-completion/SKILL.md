@@ -15,69 +15,41 @@ allowed-tools: Read Bash
 
 ## Overview
 
-Claiming work is complete without verification is dishonesty, not efficiency.
-
-**Core principle:** Evidence before claims, always.
-
-**Violating the letter of this rule is violating the spirit of this rule.**
-
-## The Iron Law
+Claiming work is complete without verification is dishonesty, not efficiency. Evidence comes before claims.
 
 ```
-NO COMPLETION CLAIMS WITHOUT FRESH VERIFICATION EVIDENCE
+No completion claim without fresh verification evidence
 ```
 
-If you haven't run the verification command in this message, you cannot claim it passes.
+A claim that something passes needs a verification command run in this message.
 
 ## The Gate Function
 
-```
-BEFORE claiming any status or expressing satisfaction:
+Before claiming any status or expressing satisfaction:
 
-1. IDENTIFY: What command proves this claim?
-2. RUN: Execute the FULL command (fresh, complete)
-3. READ: Full output, check exit code, count failures
-4. VERIFY: Does output confirm the claim?
-   - If NO: State actual status with evidence
-   - If YES: State claim WITH evidence
-5. ONLY THEN: Make the claim
-6. EMIT THE SHIP TOKEN: emit the literal `SHIP_CHECK_OK` once — and only once —
-   BOTH of these hold in this message:
-     (a) a fresh verification command ran THIS message and its output was read, AND
-     (b) every acceptance-criteria bullet is checked off (verified, not assumed).
-   The token is the deterministic signal that the work passed the gate. Downstream
-   steps (commit, wave-close) look for this exact literal before they proceed.
-
-Skip any step = lying, not verifying
-```
+1. Identify the command that proves the claim.
+2. Run the full command, fresh.
+3. Read the full output, check the exit code, count failures.
+4. Compare the output to the claim. If it does not confirm it, state the actual status with evidence. If it does, state the claim with the evidence.
+5. Only then make the claim.
+6. Emit the ship token: write the literal `SHIP_CHECK_OK` once, and only when both hold in this message: (a) a fresh verification command ran this message and its output was read, and (b) every acceptance-criteria bullet is checked off (verified, not assumed). Downstream steps (commit, wave-close) look for this exact literal before they proceed.
 
 ### Emitting `SHIP_CHECK_OK`
 
-`SHIP_CHECK_OK` is a textual contract, not a parser: emit the bare literal once the two
-preconditions above are both true. It means "fresh verification passed AND all AC are
-checked." Do not emit it speculatively, and do not emit it when verification was skipped
-or any AC is unchecked.
+`SHIP_CHECK_OK` is a textual contract, not a parser: it means "fresh verification passed and all AC are checked." Do not emit it speculatively, and do not emit it when verification was skipped or any AC is unchecked.
 
-**Audited override — `SHIP_CHECK_SKIP: <reason>`.** When verification genuinely cannot
-run (no local runner, CI-only matrix job, manual/UI-only AC), emit `SHIP_CHECK_SKIP: <reason>`
-instead — the literal followed by a one-line reason. This is the one path that lets work
-proceed without `SHIP_CHECK_OK`, and it is audited: the reason is the record of why the
-gate was bypassed. Use it for true cannot-verify cases, never as a shortcut to skip a
-verification that could have run.
+**Audited override: `SHIP_CHECK_SKIP: <reason>`.** When verification genuinely cannot run (no local runner, CI-only matrix job, manual or UI-only AC), emit the literal followed by a one-line reason instead. It is the one path that lets work proceed without `SHIP_CHECK_OK`, and the reason is the audit record of why the gate was bypassed. Use it only when verification could not run, never to skip one that could have.
 
-**Consumers.** The emit contract lives here; the commands that check for the token are `/do` (Step 8c, per-task precondition for commit) and `/run-todo` (per-wave ship-token gate before the wave commit). Keep this list current when a new command starts gating on the token, so the full producer→consumer contract is findable from one place.
+**Consumers.** The emit contract lives here; the commands that check for the token are `/do` (Step 8c, per-task precondition for commit) and `/run-todo` (per-wave ship-token gate before the wave commit). Keep this list current when a new command starts gating on the token.
+
+`ship-check.js` is the tool enforcement behind `SHIP_CHECK_OK` and `SHIP_CHECK_SKIP`, enforced when the commit goes through `commit.js --ship-check`, which both commands always pass: it refuses the commit unless the sealed evidence verifies (or the audited skip applies). No hook forces the flag, so a plain `commit.js` skips the check; passing it is part of those workflows.
 
 ## Critic vs Judge
 
-Two distinct layers govern whether work ships. Keep them separate:
+Two layers govern whether work ships:
 
-- **Critic** — the **review** layer. It advises and diagnoses; it can be wrong, over-confident,
-  or under-confident. Code-reviewer findings are critic output: signal to weigh, not a verdict
-  that blocks on its own.
-- **Judge** — the **gate** layer. It is the deterministic pass/fail that actually blocks: the
-  build/test gate (exit code), the line-by-line AC verification, and the `SHIP_CHECK_OK` ship
-  token that records both passed. A critic can advise "this looks fine"; only the judge's
-  evidence lets the work ship.
+- **Critic** (the review layer) advises and diagnoses, and can be wrong or over- or under-confident. Code-reviewer findings are critic output: signal to weigh, not a verdict that blocks on its own.
+- **Judge** (the gate layer) is the deterministic pass/fail that blocks: the build/test gate (exit code), line-by-line AC verification, and the `SHIP_CHECK_OK` token that records both passed.
 
 The token belongs to the judge: it is emitted by evidence, not by opinion.
 
@@ -93,7 +65,7 @@ The token belongs to the judge: it is emitted by evidence, not by opinion.
 | Agent completed | VCS diff shows changes | Agent reports "success" |
 | Requirements met | Line-by-line checklist | Tests passing |
 | Symbol exists (enum/icon/method/path) | Grep finds its definition | "Confirmed present", remembering it |
-| Edit to existing component is safe | Grep tests that render/construct it — all pass | The component's own test passes |
+| Edit to existing component is safe | Grep tests that render/construct it: all pass | The component's own test passes |
 | Symbol/file safe to delete | Grep all consumers (src/tests/js/barrels): none | The AC says "delete X" |
 | Files I claimed to create exist | Re-read each created file: present + correct content | "I wrote it", no write error shown |
 | Fix is in the build I tested | The artifact that ran carries the edit: rebuilt after the change, or a timestamp, hash or marker check | A green run from output built before the edit (a stale binary fakes a green) |
@@ -102,62 +74,48 @@ The token belongs to the judge: it is emitted by evidence, not by opinion.
 | The gate failed | The gate's verdict line says FAILED | A non-zero exit alone: KILLED and TIMED OUT runs say nothing about the code |
 | A sweep is complete | State the unit counted (files, call sites, rows, entry points) and that it is the unit the defect lives in | "All 40 files checked" when the defect lives per call site |
 | A delegated agent's work is lost | Its status or output shows it failed or stopped | No report yet: a late report is not a lost one, so check before redoing its work |
-| Guard/hook/gate/release path is safe | Adversarial test: malformed input, a thrown exception, and a failed sub-step each → fails CLOSED **and** exits non-zero | The happy-path test passed |
+| Guard/hook/gate/release path is safe | Adversarial test: malformed input, a thrown exception, and a failed sub-step each fail closed and exit non-zero | The happy-path test passed |
 
-## Resolve, Don't Defer — the other half of the gate
+## Resolve, Don't Defer
 
-Verification finds problems. The job is not done when you've *found* them — it's done when they're *fixed and re-verified*. **Resolve it or don't report it.**
+Verification finds problems. The job is done when they are fixed and re-verified. **Resolve it or don't report it.**
 
-- A failing test, a broken parser, a typo, dead code, a flaky path — fix it in the same pass. Diagnose → fix → re-run the verification → report what you did.
-- A report that ends in "want me to fix it?" for an obviously-worthwhile fix is an **incomplete job**, not a courtesy.
-- "Pre-existing" and "unrelated" describe a bug's *origin* — they are not a license to leave it broken. Broken is broken.
-- If a fix exposes a new failure, follow the thread to green. Completing every task down to the last detail is how quality is built — perfection is not an accident.
-- **Only** stop to ask on a genuine fork: mutually-exclusive approaches, an irreversible/outward action, or scope that materially expands the task. A clear bug is never a fork.
+- A failing test, a broken parser, a typo, dead code, a flaky path: fix it in the same pass. Diagnose, fix, re-run the verification, report what you did.
+- A report that ends in "want me to fix it?" for an obviously worthwhile fix is an incomplete job.
+- "Pre-existing" and "unrelated" describe a bug's origin, not a license to leave it broken.
+- If a fix exposes a new failure, follow the thread to green.
+- Stop to ask only on a genuine fork: mutually-exclusive approaches, an irreversible or outward action, or scope that materially expands the task. A clear bug is never a fork.
 
-### Autonomous & batch commands: fix-in-pass, surface forks ONLY
+### Autonomous and batch commands: fix in the pass, surface forks only
 
-Autonomous / auto-approved commands — `/sweep`, `/retro`, `/run-todo`, `/do` — are bound by this standard at full strength. Their default is **resolve, not report**:
+Autonomous commands (`/run-todo`, `/do`) are bound by this standard at full strength. Their default is resolve, not report:
 
-- **Every finding, NIT-level and up, gets resolved in the same pass, then re-verified — no skipping.** There is no "MINOR/NIT logged for the user" tier and no "too small to bother" tier. A report line that says "consider running X", "you should fix Y", or "Z still needs attention" for something the command *could have done itself* is a standard violation, not a courtesy. Don't hand the human a to-do list of things the command was capable of resolving. Perfect means perfect: fix the nit too.
-- **One approved exception: coverage-only `TEST-GAP` findings** (another test demanded, no defect or failing input shown) on a `standard`-tier story with no named `deep` trigger are recorded as deferred, not written (`code-review` skill, "Label coverage-only findings"). A gap on a named trigger, a shown failing input, or a wrong or false-green existing test is not coverage-only and is fixed.
-- **The only carve-out is SCOPE, not severity.** Fix everything within what the pass is examining; don't *expand scope* to churn unrelated already-merged code the review isn't looking at (a security review of auth code doesn't reformat an untouched module), and don't review generated/vendored artifacts (lockfiles, `dist/`, `*.min.*`, snapshots). A genuinely unrelated pre-existing issue *outside* the pass's scope may be surfaced as a residual follow-up. But an in-scope nit is fixed like anything else — "already-merged" and "pre-existing" describe a finding's origin, never a license to leave it.
-- **Role translation — fixing vs read-only.** Acting passes that *edit* (`/sweep`, `/retro` resolution, `/run-todo`, `/do`) **fix** every in-scope finding nits-and-up in-pass. Read-only reviews that only report (`/review:code-review`, a `security-auditor`/`code-reviewer` dispatch) **surface** every finding nits-and-up — never filter nits out of the findings — so the acting pass or human resolves them all. Both honor "no skipping," each in its nature.
-- **A human-facing report section in an autonomous command is for GENUINE FORKS ONLY** — mutually-exclusive approaches the user must choose between, irreversible/outward actions (push, publish, delete), work that genuinely cannot be auto-resolved (needs a credential, an external decision, a human judgment call), or a phase that halted. Nothing else earns a line.
-- **Default posture is autonomous.** Assume the user wants the run to resolve everything it can without pausing. Reserve interruption for the forks above. "Almost always, autonomous" is the rule — perfectionism means *being* awesome by default, not narrating a punch-list of what awesome would require.
+- Every finding, nit and up, gets resolved and re-verified. In the pass, by default; `/run-todo` may defer polish to its scheduled mid-epic or final review (`code-review` skill, `references/review-cadence.md`), which then fixes it, so nothing is left unresolved at the end of the run. There is no "logged for the user" tier and no "too small to bother" tier. A report line such as "consider running X" or "Z still needs attention" for something the command could have done itself is a standard violation.
+- **One approved exception: coverage-only `TEST-GAP` findings** (another test demanded, no defect or failing input shown) on a `standard`-tier story are recorded, not written, at every review (`code-review` skill, "Label coverage-only findings"). A gap on a high-stakes surface, a shown failing input, or a wrong or false-green existing test is not coverage-only and is fixed.
+- The only carve-out is scope, not severity. Fix everything within what the pass is examining; do not expand into unrelated already-merged code the review is not looking at, and do not review generated or vendored artifacts (lockfiles, `dist/`, `*.min.*`, snapshots). A genuinely unrelated pre-existing issue outside the pass's scope may be surfaced as a residual follow-up. An in-scope nit is fixed like anything else.
+- **Fixing vs read-only.** Acting passes that edit (`/run-todo`, `/do`) fix every in-scope finding nit and up (`/run-todo` by the end of the run, as above; `/do` in its one pass). Read-only reviews (`/review:code-review`, a `security-auditor` or `code-reviewer` dispatch) surface every finding nit and up, never filtering nits out, so the acting pass or the human resolves them all.
+- A human-facing report section in an autonomous command is for genuine forks only: mutually-exclusive approaches the user must choose between, irreversible or outward actions (push, publish, delete), work that cannot be auto-resolved (needs a credential, an external decision, a human judgment call), or a phase that halted.
+- The default posture is autonomous: resolve everything that can be resolved, and interrupt only for the forks above.
 
-This is the same standard, applied to the command layer: the canonical statement is above; commands enforce it by auto-resolving and keeping their report sections fork-only.
+## The Operating Standard: two role translations
 
-## The Operating Standard — two role translations
+This skill is the canonical home of the project's operating standard (the mission at the top of `CLAUDE.md`). "Resolve it or don't report it" is literal for roles that act and figurative for roles that only report. It binds both.
 
-This skill is the canonical home of the project's operating standard (the mission at the top of `CLAUDE.md`). "Resolve it or don't report it" is literal for roles that act and figurative for roles that only report — but it **binds both**; it never relaxes for either.
+- **Acting roles** (any agent that writes code or docs: `general-purpose`, `architect`, `doc-writer`, `project-planner`, `qa-engineer`, `playwright`, `product-strategist`, `ux-designer`, `shadow`): fix what you touch, resolve to green, leave the file cleaner than you found it, and verify before you claim done. The gate above applies literally.
+- **Report-only roles** (read-only or write-scoped to reviews: `code-reviewer`, `security-auditor`, `Explore`): the extra mile is exhaustive, precise, immediately actionable findings. No hand-waving ("looks fine"), no truncation, and every finding carries `file:line` and a concrete fix. You do not write the fix, which would exceed your write scope; you hand the orchestrator a fix-ready report so resolution still happens in one pass.
+- **The orchestrator** (main session) closes the loop: when a report-only agent surfaces an obviously worthwhile fix, the orchestrator resolves it rather than deferring.
 
-- **Acting roles** — any agent that writes code or docs (`general-purpose`, `architect`, `doc-writer`, `project-planner`, `qa-engineer`, `playwright`, `product-strategist`, `ux-designer`, `shadow`): fix what you touch, resolve to green, leave the file cleaner than you found it, and verify before you claim done. The gate above is yours, literally.
-- **Report-only roles** — read-only or write-scoped-to-reviews (`code-reviewer`, `security-auditor`, `Explore`): the "extra mile" is **exhaustive, precise, immediately-actionable** findings — no hand-waving ("looks fine"), no truncation, every finding carries `file:line` and a concrete fix. You do **not** write the fix — that would violate your write scope — you hand the orchestrator a fix-ready report so resolution still happens in one pass. Read-only-by-design is how you comply with the standard, never a license to dead-end in a report.
-- **The orchestrator** (main session) closes the loop: when a report-only agent surfaces an obviously-worthwhile fix, the orchestrator resolves it rather than deferring. This is where "resolve it or don't report it" bites hardest — a report that ends in "want me to fix it?" for an obvious fix is an incomplete job.
-
-## Red Flags - STOP
+## Red Flags: STOP
 
 - Using "should", "probably", "seems to"
-- Expressing satisfaction before verification ("Great!", "Perfect!", "Done!", etc.)
-- About to commit/push/PR without verification
+- Expressing satisfaction before verification ("Great!", "Perfect!", "Done!")
+- About to commit, push or open a PR without verification
 - Trusting agent success reports
 - Relying on partial verification
-- Thinking "just this once"
-- Tired and wanting work over
-- **ANY wording implying success without having run verification**
+- Wanting the work over
+- Any wording that implies success without a verification run
 
-## Rationalization Prevention
-
-| Excuse | Reality |
-|--------|---------|
-| "Should work now" | RUN the verification |
-| "I'm confident" | Confidence ≠ evidence |
-| "Just this once" | No exceptions |
-| "Linter passed" | Linter ≠ compiler |
-| "Agent said success" | Verify independently |
-| "I'm tired" | Exhaustion ≠ excuse |
-| "Partial check is enough" | Partial proves nothing |
-| "Different words so rule doesn't apply" | Spirit over letter |
+Rationalizations such as "I'm confident", "just this once", "the linter passed" (a linter is not a compiler) or "the agent said success" are not evidence. Run the check.
 
 ## Key Patterns
 
@@ -165,88 +123,33 @@ This skill is the canonical home of the project's operating standard (the missio
 
 **Discovery is not execution.** An installed skill, a listed command or a loaded file proves availability, not that a workflow ran. A completion claim cites that run's own gate output, AC table and commit.
 
-**Tests:**
-```
-✅ [Run test command] [See: 34/34 pass] "All tests pass"
-❌ "Should pass now" / "Looks correct"
-```
+**Tests.** Run the test command, see "34/34 pass", then say "all tests pass". "Should pass now" and "looks correct" are not claims.
 
-**Regression tests (TDD Red-Green):**
-```
-✅ Write → Run (pass) → Revert fix → Run (MUST FAIL) → Restore → Run (pass)
-❌ "I've written a regression test" (without red-green verification)
-```
+**Regression tests (red-green).** Write the test, run it (pass), revert the fix, run it (it must fail), restore, run it (pass). "I've written a regression test" without the red-green cycle is unverified.
 
-**Build:**
-```
-✅ [Run build] [See: exit 0] "Build passes"
-❌ "Linter passed" (linter doesn't check compilation)
-```
+**Build.** Run the build and see exit 0. A passing linter does not check compilation.
 
-**Requirements:**
-```
-✅ Re-read plan → Create checklist → Verify each → Report gaps or completion
-❌ "Tests pass, phase complete"
-```
+**Requirements.** Re-read the plan, create a checklist, verify each item, report gaps or completion. "Tests pass, phase complete" is not a requirements check.
 
-**Agent delegation:**
-```
-✅ Agent reports success → Check VCS diff → Verify changes → Report actual state
-❌ Trust agent report
-```
+**Agent delegation.** When an agent reports success, check the VCS diff, verify the changes, and report the actual state.
 
-**Fail-closed / surface-non-zero (guards, gates, hooks, release pipelines):**
-```
-✅ On ANY unexpected error or failed sub-step → block/abort AND exit non-zero → test it (throw an exception, pass malformed input, fail a sub-step)
-❌ try/catch that swallows and continues; a sub-step failure printed but not folded into the exit code; "the happy path works"
-```
-A guard that only WARNS is not a guard, and a pipeline that prints an error but exits 0 is a false-green. Fixing one instance does not inoculate the class — after closing a fail-open, grep its sibling call sites for the same shape. (Evidence: 2026-07-09 sweep found the secret-scanner exit-1 fix reappearing as an uncaught-exception fail-open, plus a false-green `fleet release` and a crash-after-success `metrics report` — same class, three mechanisms. See memory `fail-open-recurs-as-a-class-not-an-instance`.)
+**Fail-closed / surface-non-zero (guards, gates, hooks, release pipelines).** On any unexpected error or failed sub-step, block or abort and exit non-zero, and test it: throw an exception, pass malformed input, fail a sub-step. A guard that only warns is not a guard, and a pipeline that prints an error but exits 0 is a false green. A try/catch that swallows and continues, or a sub-step failure printed but not folded into the exit code, is the failure to look for. Fixing one instance does not inoculate the class: after closing a fail-open, grep its sibling call sites for the same shape. (Evidence: the 2026-07-09 sweep found the secret-scanner exit-1 fix reappearing as an uncaught-exception fail-open, a false-green `fleet release` and a crash-after-success `metrics report`. See memory `fail-open-recurs-as-a-class-not-an-instance`.)
 
-**Fix-site enumeration (any guard/validation/data-model fix):**
-```
-✅ Fix the named site → enumerate EVERY entry point on the runtime surface (siblings in the same file, shadow/duplicate implementations in hooks/CLIs, twin writers/readers of the same shared file) → confirm the fix reaches each → "done"
-❌ Fix the sites the finding (or the tests) named; ship green
-```
-The fix must reach the runtime surface, not just the named function. (Evidence: the 2026-07-16 remediation epic hit this class in ALL THREE waves — inbox siblings of guarded CRUD verbs, a hook's shadow `loadRules()` that never called the fixed `_lib`, a telemetry file's twin in-session writer left on the old path — and green unit tests caught none of them; only adversarial review with independent repros did. See memories `shadow-loader-defeats-lib-security-fix`, `worktree-root-retrofit-must-sweep-all-callsites`.)
+**Fix-site enumeration (any guard, validation or data-model fix).** Fix the named site, then enumerate every entry point on the runtime surface (siblings in the same file, shadow or duplicate implementations in hooks and CLIs, twin writers and readers of the same shared file) and confirm the fix reaches each. Fixing only the sites the finding or the tests named leaves the runtime surface exposed. (Evidence: the 2026-07-16 remediation epic hit this in all three waves: inbox siblings of guarded CRUD verbs, a hook's shadow `loadRules()` that never called the fixed `_lib`, a telemetry file's twin writer left on the old path. Green unit tests caught none; adversarial review with independent repros did. See memories `shadow-loader-defeats-lib-security-fix`, `worktree-root-retrofit-must-sweep-all-callsites`.)
 
-**Merge/parser fixes (mergers, syncers, format parsers):**
-```
-✅ Unit tests pass → dogfood against one real, messy input (an actual adopter checkout, a real log, real divergent content) → observe output → "done"
-❌ "All fixture tests pass" on synthetic fixtures alone
-```
-For code whose job is reconciling real-world messy content, passing unit tests is necessary but not sufficient — synthetic fixtures encode the author's assumptions, and the gap lives outside them. (Evidence: skill-merger's anchored-fence rewrite `a0cb9c6` passed its full test suite, then produced Form-1 duplication bugs on its first real application to an adopter project — `8715e9d`.)
+**Merge/parser fixes (mergers, syncers, format parsers).** Passing unit tests is necessary but not sufficient: dogfood against one real, messy input (an actual adopter checkout, a real log, real divergent content) and observe the output. Synthetic fixtures encode the author's assumptions, and the gap lives outside them. (Evidence: skill-merger's anchored-fence rewrite `a0cb9c6` passed its full suite, then produced Form-1 duplication bugs on its first real application to an adopter project, fixed in `8715e9d`.)
 
 ## Why This Matters
 
-False completion claims produce compounding failures:
+- **Trust.** Repeated unverified success claims make every later claim suspect and erase the value of delegation.
+- **Crash-path shipping.** Undefined functions, missing imports and broken contract assumptions reach review or production when success is claimed without running the code.
+- **AC gap masking.** Tests shaped to pass rather than to verify the acceptance criterion hide the gap between "tests pass" and "requirement met".
+- **Rework.** Redirecting after a false completion claim costs more than the verification step would have.
 
-- **Trust destruction** — Repeated unverified success claims make every subsequent claim suspect, requiring the reviewer to independently verify everything the agent says. This eliminates the value of delegation.
-- **Crash-path shipping** — Undefined functions, missing imports, and broken contract assumptions reach review or production when the agent claims success without running the code.
-- **AC gap masking** — When tests are shaped to pass rather than to verify the acceptance criterion, the gap between "tests pass" and "requirement met" is invisible until integration or production.
-- **Rework cycles** — Time spent on redirecting after a false completion claim exceeds the time the verification step would have taken. False completion is not a time savings — it is a time debt.
-
-Verification gates exist to make the agent's claims checkable. A claim without evidence is not a completion — it is a hypothesis.
+A claim without evidence is a hypothesis, not a completion.
 
 ## When To Apply
 
-**ALWAYS before:**
-- ANY variation of success/completion claims
-- ANY expression of satisfaction
-- ANY positive statement about work state
-- Committing, PR creation, task completion
-- Moving to next task
-- Delegating to agents
+Before any success or completion claim, any expression of satisfaction, committing, PR creation, task completion, moving to the next task, or delegating to agents, including paraphrases and implied success.
 
-**Rule applies to:**
-- Exact phrases
-- Paraphrases and synonyms
-- Implications of success
-- ANY communication suggesting completion/correctness
-
-## The Bottom Line
-
-**No shortcuts for verification.**
-
-Run the command. Read the output. THEN claim the result.
-
-This is non-negotiable.
+Run the command, read the output, then claim the result.

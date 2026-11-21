@@ -512,3 +512,107 @@ describe('shipped rules — pattern-based process kills nudge', () => {
         expect(run(command, rules).decision).toBe('pass');
     });
 });
+
+// ── SF-1.8: override union and except lift for the subagentReadOnlyPaths tier ──
+
+describe('SF-1.8 project override — subagentReadOnlyPaths', () => {
+    const fs = require('node:fs');
+    const { checkPathAccess } = require('../../../../.agents/core/_lib/guardrail-rules');
+    let tmp;
+    let warnings;
+
+    beforeEach(() => {
+        tmp = createTmpDir({ prefix: 'sf18-override-' });
+        warnings = [];
+        vi.spyOn(console, 'error').mockImplementation((message) => { warnings.push(String(message)); });
+    });
+    afterEach(() => { vi.restoreAllMocks(); tmp.cleanup(); });
+
+    const SHIPPED = `
+zeroAccessPaths:
+  - secrets.txt
+readOnlyPaths:
+  - .editorconfig
+noDeletePaths:
+subagentReadOnlyPaths:
+  - .agents/core/gate.js
+  - .agents/hooks/
+  - .claude/settings.json
+`;
+    const shippedPath = () => tmp.write('.claude/guardrail-rules.yaml', SHIPPED);
+    const override = (text) => tmp.write('.claude/guardrail-rules.project.yaml', text);
+    const SUBAGENT = { agentId: 'agent-1', agentType: 'implementer' };
+
+    it('loadRules_noOverride_keepsTheShippedSubagentEntries', () => {
+        expect(loadRules(shippedPath()).subagentReadOnlyPaths).toEqual(['.agents/core/gate.js', '.agents/hooks/', '.claude/settings.json']);
+    });
+
+    it('loadRules_overrideAdditionToTheSubagentTier_isUnionedWithoutDuplicates', () => {
+        const yamlPath = shippedPath();
+        override('subagentReadOnlyPaths:\n  - .agents/core/gate.js\n  - infra/deploy.sh\n');
+        const rules = loadRules(yamlPath);
+        expect(rules.subagentReadOnlyPaths).toEqual(['.agents/core/gate.js', '.agents/hooks/', '.claude/settings.json', 'infra/deploy.sh']);
+        expect(checkPathAccess('/repo/infra/deploy.sh', 'write', rules, SUBAGENT).allowed).toBe(false);
+        expect(checkPathAccess('/repo/infra/deploy.sh', 'write', rules).allowed).toBe(true);
+    });
+
+    it('loadRules_exceptLiftsAnExactSubagentEntry_otherEntriesStayAndOtherTiersAreUntouched', () => {
+        const yamlPath = shippedPath();
+        override('except:\n  subagentReadOnlyPaths:\n    - .claude/settings.json\n');
+        const rules = loadRules(yamlPath);
+        expect(rules.subagentReadOnlyPaths).toEqual(['.agents/core/gate.js', '.agents/hooks/']);
+        expect(rules.readOnlyPaths).toEqual(['.editorconfig']);
+        expect(checkPathAccess('/repo/.claude/settings.json', 'write', rules, SUBAGENT).allowed).toBe(true);
+        expect(checkPathAccess('/repo/.agents/core/gate.js', 'write', rules, SUBAGENT).allowed).toBe(false);
+        expect(warnings).toEqual([]);
+        // The shipped file itself is never rewritten.
+        expect(fs.readFileSync(yamlPath, 'utf8')).toBe(SHIPPED);
+    });
+
+    it('loadRules_exceptForTheSubagentTier_doesNotLiftTheSameEntryFromReadOnlyPaths', () => {
+        const yamlPath = tmp.write('.claude/guardrail-rules.yaml', 'readOnlyPaths:\n  - .claude/settings.json\nsubagentReadOnlyPaths:\n  - .claude/settings.json\n');
+        override('except:\n  subagentReadOnlyPaths:\n    - .claude/settings.json\n');
+        const rules = loadRules(yamlPath);
+        expect(rules.subagentReadOnlyPaths).toEqual([]);
+        expect(rules.readOnlyPaths).toEqual(['.claude/settings.json']);
+    });
+
+    it('loadRules_staleSubagentException_warnsNamingTheEntryAndTheTier_andStillAppliesTheOthers', () => {
+        const yamlPath = shippedPath();
+        override('except:\n  subagentReadOnlyPaths:\n    - .claude/settings.json\n    - .not-in-shipped\n');
+        const rules = loadRules(yamlPath);
+        expect(rules.subagentReadOnlyPaths).toEqual(['.agents/core/gate.js', '.agents/hooks/']);
+        const text = warnings.join('\n');
+        expect(text).toMatch(/\.not-in-shipped/);
+        expect(text).toMatch(/subagentReadOnlyPaths/);
+    });
+
+    it('loadRules_exceptMatchesExactEntriesOnly_aNearMissDoesNotLiftTheDirectoryEntry', () => {
+        const yamlPath = shippedPath();
+        override('except:\n  subagentReadOnlyPaths:\n    - .agents/hooks\n');
+        const rules = loadRules(yamlPath);
+        expect(rules.subagentReadOnlyPaths).toContain('.agents/hooks/');
+        expect(warnings.join('\n')).toMatch(/\.agents\/hooks/);
+    });
+
+    it.each([
+        ['a non-list subagent tier', 'subagentReadOnlyPaths: .agents/hooks/\n'],
+        ['a non-list subagent exception', 'except:\n  subagentReadOnlyPaths: .claude/settings.json\nreadOnlyPaths:\n  - extra.cfg\n'],
+    ])('loadRules_override_%s_isRefusedWithAWarningAndTheShippedRulesStand', (_label, text) => {
+        const yamlPath = shippedPath();
+        const baseline = loadRules(yamlPath);
+        warnings.length = 0;
+        override(text);
+        expect(loadRules(yamlPath)).toEqual(baseline);
+        expect(warnings.join('\n')).toMatch(/project override/i);
+    });
+
+    it('loadRules_exceptStillRefusesTheZeroAccessTier_afterTheNewTierJoinsTheLiftableKeys', () => {
+        const yamlPath = shippedPath();
+        const baseline = loadRules(yamlPath);
+        warnings.length = 0;
+        override('except:\n  zeroAccessPaths:\n    - secrets.txt\n  subagentReadOnlyPaths:\n    - .claude/settings.json\n');
+        expect(loadRules(yamlPath)).toEqual(baseline);
+        expect(warnings.join('\n')).toMatch(/project override/i);
+    });
+});

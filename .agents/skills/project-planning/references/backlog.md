@@ -1,24 +1,19 @@
 # Backlog — Epics & Stories
 
-Breaking requirements into implementable work. Creates epics (logical feature groupings) and stories (single-session implementable units) with proper dependency ordering.
+Turns requirements into implementable work: epics (coherent feature groupings) and stories (single-session units) in dependency order. A good backlog can be built in sequence by whoever picks it up: every story has testable acceptance criteria, an estimate, a domain tag and the files it touches.
 
 ## Document Template
 
-The document you produce — the canonical, scaffold-blessed template — lives in `../assets/backlog.md` (raw, with the `<!-- @@template -->` first-line marker). It carries both the epic/phase structure and the `## Story Index` section. Read it to know the artifact's structure; `scaffold.js` seeds `docs/work/backlog.md` from the same file.
+The artifact's canonical, scaffold-blessed template is `../assets/backlog.md` (raw, with the `<!-- @@template -->` first-line marker). It carries the epic/phase structure and the `## Story Index` section; `scaffold.js` seeds `docs/work/backlog.md` from it.
 
-## Breakdown Rules
+## Sizing and ordering
 
-### Epic Sizing
-- An epic represents a **coherent feature area** (e.g., "Authentication", "Dashboard", "User Management")
-- An epic should have 3-8 stories
-- If an epic has >8 stories, split it into sub-epics
+- An epic is a coherent feature area ("Authentication", "Dashboard") of roughly 3-8 stories; split a bigger one into sub-epics.
+- A story fits one coding session (1-4 hours) and is independently testable. Past about 5 files, consider splitting.
+- Order stories by dependency within an epic, call out cross-epic dependencies, and phase the work Foundation → Data → Backend → Frontend → Integration → Polish. The first phase is always foundation/infrastructure.
 
-### Story Sizing
-- A story should be completable in **one coding session** (1-4 hours)
-- If a story requires touching more than 5 files, consider splitting
-- Each story must be independently testable
+Size guide:
 
-### Estimation Guide
 | Size | Effort | Files Changed | Complexity |
 |------|--------|---------------|------------|
 | S | < 1 hour | 1-2 files | Configuration, simple CRUD |
@@ -26,54 +21,19 @@ The document you produce — the canonical, scaffold-blessed template — lives 
 | L | 2-4 hours | 4-6 files | Feature with multiple pieces |
 | XL | 4+ hours | 6+ files | Complex feature, should consider splitting |
 
-### Domain Tags
-Use domain tags to help `/do` select the right implementation agent:
-- `(Backend)` — API, services, data access
-- `(Frontend)` — Components, pages, styling
-- `(DevOps)` — Build, deploy, infrastructure
-- `(Database)` — Schema, migrations, queries
-- `(Auth)` — Authentication, authorization
-- `(Test)` — Test creation, test infrastructure
-- `(Config)` — Configuration, settings, feature flags
-- `(Docs)` — Documentation, API docs
+Domain tags help `/do` pick the implementation agent: `(Backend)`, `(Frontend)`, `(DevOps)`, `(Database)`, `(Auth)`, `(Test)`, `(Config)`, `(Docs)`.
 
-### Dependency Ordering
-- Stories within an epic should be ordered by dependency
-- Cross-epic dependencies should be explicitly called out
-- Phase ordering: Foundation → Data → Backend → Frontend → Integration → Polish
+## Acceptance criteria
 
-### Acceptance Criteria Patterns
+Write criteria that name an observable result: "Script generates `appsettings.Production.json` from template", "API returns 403 when user lacks required role", "Dashboard loads in under 2 seconds with 1000 records". "Works correctly", "User can do stuff" and "System is fast" are not criteria.
 
-**Good AC:**
-- "Script generates `appsettings.Production.json` from template"
-- "Login page redirects to dashboard after successful auth"
-- "API returns 403 when user lacks required role"
-- "Dashboard loads in under 2 seconds with 1000 records"
+## What a good breakdown has
 
-**Bad AC:**
-- "Works correctly"
-- "User can do stuff"
-- "System is fast"
-
-## Quality Criteria
-
-### Good Epic Breakdown
-- Clear phase ordering (foundation → features → polish)
-- Stories have dependencies explicitly noted
-- Every story has acceptance criteria (not just a title)
-- Estimates are present and realistic
-- Domain tags help route to correct implementation agent
-- First phase is always foundation/infrastructure
-- Each story lists the files it touches in a `**Files:**` block — `epic-overlap.js` parses these to flag epics that claim the same file, which would cause silent merge conflicts when `/run-todo` dispatches them in parallel waves
-
-### Bad Epic Breakdown
-- No dependency ordering (stories can't be built in sequence)
-- Missing acceptance criteria
-- Stories are too large (XL without split recommendation)
-- No domain tags
-- Phase 1 jumps straight to features without foundation
+- Phase ordering and explicit dependencies, so stories can be built in sequence.
+- Acceptance criteria and a realistic estimate on every story (an XL carries a split recommendation).
+- A `**Files:**` block per story listing the files it touches: `epic-overlap.js` parses these to flag epics that claim the same file, which would cause silent merge conflicts when `/run-todo` dispatches them in parallel waves.
 
 ## Cross-References
 - Reads from: `docs/architecture/overview.md` (required), `docs/product/requirements.md` (required)
 - Produces: `docs/work/backlog.md`
-- Feeds into: `/do`, `/run-todo` (for implementation)
+- Feeds into: `/do`, `/run-todo`

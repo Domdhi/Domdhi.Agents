@@ -77,7 +77,8 @@ block_patterns:
 
   # --- Git: Force push (overwrites remote history, cannot be undone) ---
   # Regex (not plain string). A negative lookahead keeps `--force-with-lease`
-  # EXCLUDED so it falls through to its confirm rule below (hooks-m1). The rule
+  # EXCLUDED so it falls through to its confirm rule below (hooks-m1) — in Claude Code
+  # `permissions.deny` hard-denies it before that confirm can run (see the DECISION there). The rule
   # tolerates INTERVENING TOKENS between `git` and `push` — the old contiguous
   # `git push --force` was trivially evaded by a global option before `push`
   # (`git -c k=v push --force`) or another flag after it (`git push --quiet
@@ -109,11 +110,106 @@ block_patterns:
   # global-option evasion)
   - /git\b(?:\s+\S+)*?\s+push\b[^;&|\n]*\s\+[A-Za-z_/][^\s:]*(?::[^\s:]+)?(?:\s|$)/
 
+  # `git push --mirror` is a force form with no force flag: it overwrites every remote ref (rewritten
+  # history included) and DELETES remote refs the local repo lacks, and the rules above never see it
+  # (SF-1.9 review J-3; executed against a bare remote, rc 0, history replaced). git accepts any unambiguous
+  # prefix of a long option, and `--m`, `--mi`, `--mir`, `--mirr` and `--mirro` all select it (verified
+  # against git on a local bare remote, 2026-11-18; `--forc`/`--for` are ambiguous and rejected), so the
+  # rule matches `--m` plus an optional run of the rest of the word. Same global-option tolerance and
+  # single-command bound as the force-flag rule. `--no-mirror` is not matched (the `--` must be followed by `m`).
+  - /git\b(?:\s+\S+)*?\s+push\b[^;&|\n]*\s--m(?:i(?:r(?:r(?:o(?:r)?)?)?)?)?(?=[\s'"=]|$)/
+
+  # --- Git: config- and alias-injected force pushes (SF-1.9 review J-4) ---
+  # A force push needs no flag on the `git push` command line when the forcing is injected through git
+  # configuration, so none of the rules above (and no `permissions.deny` glob, which needs the literal
+  # `git push ` text) sees it. Each form below was executed against a bare remote and replaced its history:
+  #   git -c alias.x='push -f' x origin main            inline alias whose body pushes
+  #   git -c remote.origin.push=+refs/heads/main:refs/heads/main push     forced refspec from config
+  #   git -c remote.origin.mirror=true push             mirror from config
+  #   git config alias.p 'push -f' ; git p              persisted alias (and the persisted refspec/mirror twins)
+  # Alias bodies are matched on the word `push`, not on a force flag: the body can reach the flag through a
+  # shell function or a second alias, so any alias that pushes is refused here (a push alias is rare and is
+  # easy to add by hand). `git config alias.st status` and an unforced `remote.origin.push` refspec pass.
+  - /git\b[^;&|\n]*(?:-c\s*|config\b[^;&|\n]*\s)["']?alias\.[^\s=]+[=\s]["']?!?[^;&|\n]*\bpush\b/
+  - /git\b[^;&|\n]*(?:-c\s*|config\b[^;&|\n]*\s)["']?remote\.[^\s=]+\.(?:push[=\s]["']?\+|mirror\b)/
+  # `--config-env=alias.x=VAR` is the same injection with the value read from an environment variable, so
+  # the alias body is not in the command text: any alias or push/mirror key set that way is refused.
+  - /git\b[^;&|\n]*--config-env[=\s]\s*["']?(?:alias\.|remote\.[^\s=]+\.(?:push|mirror)\b)/
+  # The same keys injected through the environment (GIT_CONFIG_COUNT/KEY_n/VALUE_n or the older
+  # GIT_CONFIG_PARAMETERS) never appear on the command line at all.
+  - /\bGIT_CONFIG_(?:PARAMETERS|COUNT|KEY_\d+)\s*=/
+
+  # --- Git: remaining config-sourced and plumbing routes to a mirror, force or prune push (final-core security M1) ---
+  # Each form below changes what a plain `git push` does (or pushes without `git push`) and none of them
+  # carries a force flag, so no rule above and no `permissions.deny` glob sees it. All were reproduced
+  # against a bare remote. The structural control is the managed pre-push hook's refusal of every
+  # non-fast-forward update and every ref deletion (`.agents/core/git-hooks.js`); these rules stop the
+  # routes the hook cannot see and the setup of the others. Text rules cannot list git's config sources.
+  #   git config include.path /x, git -c include.path=/x push, includeIf.<cond>.path, --config-env
+  #                                        the included file sets remote.<name>.mirror or a forced refspec
+  - /git\b[^;&|\n]*(?:-c\s*|config\b[^;&|\n]*\s)["']?include(?:if\.[^\s=]+)?\.path\b/
+  - /git\b[^;&|\n]*--config-env[=\s]\s*["']?include/
+  #   GIT_CONFIG_GLOBAL=/x git push (also GIT_CONFIG_SYSTEM, HOME, XDG_CONFIG_HOME)
+  #                                        points git at an attacker-chosen global config; bounded to one
+  #                                        command so `HOME=/x npm test && git push` does not match. An
+  #                                        `export` in an earlier command is not followed (a known limit).
+  - /(?:^|[\s;&|(])(?:GIT_CONFIG_GLOBAL|GIT_CONFIG_SYSTEM|HOME|XDG_CONFIG_HOME)=\S*[^;&|\n]*\bgit\b[^;&|\n]*\bpush\b/
+  #   git remote add --mirror[=push|fetch] <name> <url> (and every abbreviation git accepts, `--mi` to `--mirror`:
+  #   `--m` is ambiguous with `--master` and refused), then git push <name>
+  - /git\b[^;&|\n]*\bremote\s+add\b[^;&|\n]*\s--mi(?:r(?:r(?:o(?:r)?)?)?)?(?=[\s'"=]|$)/
+  #   git send-pack / git-send-pack: plumbing push that runs no pre-push hook
+  - /\bgit(?:-|\b[^;&|\n]*\s)send-pack\b/
+  #   AGENTS_ALLOW_FORCE_PUSH=...: the owner-only override of the managed pre-push refusal of
+  #   deletions, non-fast-forward updates and mirror pushes (git-hooks.js); an agent never sets it
+  - /\bAGENTS_ALLOW_FORCE_PUSH\s*=/
+  #   AGENTS_ALLOW_AUTO_PUSH=...: the owner-only override of the managed pre-push refusal of any push to
+  #   refs/heads/auto/* (git-hooks.js): an auto/* branch is the self-improvement cycle's model-written change and
+  #   is reviewed and merged locally, never published by an agent
+  - /\bAGENTS_ALLOW_AUTO_PUSH\s*=/
+  #   AGENTS_ALLOW_IMPROVEMENT_CONFIG=...: the owner-only override of commit.js's refusal of a staged change to
+  #   improvement.autoApply, .graduation, .watch or .budget in .claude/gate.config.json (the switch and thresholds of the
+  #   unattended apply); an agent never sets it
+  - /\bAGENTS_ALLOW_IMPROVEMENT_CONFIG\s*=/
+  #   git push ... auto/<name> (a bare name, HEAD:auto/<name>, refs/heads/auto/<name>, quoted or not): the text-level
+  #   twin of the pre-push auto/* refusal, for a checkout whose managed hooks are not active. Best effort like the
+  #   rules above (a refspec built from a variable is not seen); the hook reads git's own ref lines and is the wall.
+  - /git\b(?:\s+\S+)*?\s+push\b[^;&|\n]*[\s:'"](?:refs\/heads\/)?auto\/\S/
+
+  # --- Secret files: shell reads and copies of the six Owner Decision 4 names (SF-1.9 review J-2) ---
+  # `permissions.deny` Read/Edit rules gate the built-in file tools only; a Bash or PowerShell subprocess
+  # (`cat .env`, `grep -r KEY .env.production`, `cp .env /tmp/x`, `node -e "...readFileSync('.env')..."`,
+  # `python -c`, `base64 .env`, `Get-Content .env`) never reaches them. This is the speed bump behind the
+  # wall, and a hard block, not an escalatable nudge, so "told to proceed" cannot waive it. It matches the
+  # NAME as a whole path segment (preceded by start, whitespace, a quote, `=`, `:`, `/`, `<`, `>` or `(`,
+  # followed by end, whitespace, a quote, `;`, `&`, `|`, `)`, `<`, `>` or a glob character), so the
+  # names `.env`, `.env.local`, `.env.production`, `.env.development`, `.env.staging` and `.env.<name>.local`
+  # are caught and `.env.example`, `.env.sample`, `.env.template`, `.env.test` and `.envrc` stay free.
+  # A mention that only names the file (`echo .env >> .gitignore`) is blocked too: the cost is one rerun by
+  # hand, which is what a hard wall on secrets should cost. The real boundary for unattended runs is the
+  # sandbox (`sandbox.filesystem.denyRead`, SF-3.8); this hook is advisory like every rule in this file.
+  - /(?:^|[\s'"=:\/<>(])\.env(?:\.local|\.production|\.development|\.staging|\.[A-Za-z0-9_-]+\.local|\.[*?])?(?=$|[\s'"`;&|)<>*?])/
+
+  # --- Session and scheduled-run credentials: shell reads, copies and sends (final-core security M2) ---
+  # `~/.config/claude/` holds the unattended-run token (SF-3.8's oauth-token.conf) and `.credentials.json`
+  # is Claude Code's own login file. `permissions.deny` gates the built-in Read and Edit tools for both;
+  # `cat`, `base64`, `curl -d @file`, `grep -r` and a script never reach it, so this is the speed bump behind
+  # it, a hard block like the `.env` rule above and best-effort in the same way (a path built from a variable
+  # or a symlink is not seen). The name is matched as a whole path segment: `.config/claude` itself or
+  # anything below it, and the file `.credentials.json`. `.config/claudette` and `my.credentials.json.bak` stay free.
+  - /(?:^|[\s'"=:\/<>(~])\.config\/claude(?=$|[\s'"`;&|)<>*?\/])/
+  - /(?:^|[\s'"=:\/<>(])\.credentials\.json(?=$|[\s'"`;&|)<>*?])/
+
   # --- Database: Schema destruction ---
   # Anchored regexes prevent false positives on echo/grep commands that
   # mention these SQL keywords in strings or test names.
-  - /^\s*(DROP\s+TABLE|DROP\s+DATABASE|DROP\s+SCHEMA)/i   # destroys tables, databases, or schemas
-  - /^\s*TRUNCATE\s+/i                                     # empties all rows (no rollback without explicit txn)
+  # No trailing `/i`: matchesPattern only accepts the bare `/expr/` form and is already case-insensitive
+  # (a flagged entry silently never matched — SF-1.10 wave 8 review M3).
+  # Destroys tables, databases or schemas; empties all rows:
+  - /^\s*(DROP\s+TABLE|DROP\s+DATABASE|DROP\s+SCHEMA)\b/
+  # (not followed by a dash option: the shell `truncate -s 0 file` is a different command)
+  - /^\s*TRUNCATE\s+(?!-)/
+  # The same statements passed to a SQL client on the command line (`psql -c "DROP TABLE x"`):
+  - /^\s*(?:psql|mysql|mariadb|sqlite3|sqlcmd|duckdb)\b[^\n]*\b(?:DROP\s+(?:TABLE|DATABASE|SCHEMA)|TRUNCATE\s+(?:TABLE\s+)?\w)/
 
   # --- Disk / OS: Low-level format commands ---
   - format c:                          # Windows disk format
@@ -292,7 +388,19 @@ confirm_patterns:
   # rule (`git -c k=v push --force-with-lease` used to fall through to a bare
   # pass — no confirm at all — since `git\s+push\s+` required the two tokens
   # contiguous). (M — global-option evasion, sibling of the force-push fix)
-  - /git\b(?:\s+\S+)*?\s+push\b[^;&|\n]*--force-with-lease/ # safer force push, but still rewrites remote (reachable now the block rule excludes it — hooks-m1)
+  # DECISION (SF-1.9, Owner Decision 4 "the force forms of git push"): in Claude Code a lease push is a force
+  # form and is HARD-DENIED by `permissions.deny` (`Bash(git push *--force*)`, which `--force-with-lease`
+  # matches, plus the `git -C`/`git -c` twins). A deny wins over a hook `ask`, so this confirm never runs there:
+  # nobody can approve a lease push in Claude Code. The rule stays for Codex, which does not read
+  # `.claude/settings.json` and so has no deny set (the hook is its only layer for this), and as the backstop if
+  # the deny set regresses in a Claude Code upgrade. `claude-permissions.test.js` pins both halves.
+  - /git\b(?:\s+\S+)*?\s+push\b[^;&|\n]*--force-with-lease/ # safer force push, still rewrites remote: user confirm where no deny exists (Codex); hard-denied in Claude Code (see DECISION above)
+
+  # `git push --prune` deletes every remote ref that has no local counterpart under the pushed refspecs
+  # (`git push --prune origin 'refs/heads/*:refs/heads/*'` removed a remote branch in a bare-remote probe), the
+  # same effect as `--delete` above with no deletion flag, so it asks the same way. git accepts `--pru` and `--prun`
+  # (`--p` and `--pr` are ambiguous and refused).
+  - /git\b(?:\s+\S+)*?\s+push\b[^;&|\n]*\s--pru(?:n(?:e)?)?(?=[\s'"=]|$)/
 
   # --- Secret-scan bypass: the audited bypass is the USER's decision, never the agent's ---
   # CLAUDE_COMMIT_NO_SCAN=1 (and commit.js --no-scan, which sets it) makes the managed git hooks and commit.js
@@ -339,8 +447,13 @@ zeroAccessPaths:
   - .env                               # root .env (local secrets)
   - .env.local                         # local override secrets
   - .env.production                    # production secrets
+  - .env.development                   # development secrets (Owner Decision 4 name; SF-1.9 review M-2)
+  - .env.staging                       # staging secrets (Owner Decision 4 name)
+  - .env.*.local                       # per-environment local overrides, e.g. .env.test.local (single-segment * only)
   - .git                               # deleting .git destroys all VCS history — catastrophic + irreversible
   - .git/                              # ...and its internals; non-escalatable so `rm -rf .git # guardrail:confirm` can't downgrade to a user-confirm (sweep C-followup: .git was demonstrated as a chained bypass but was never a protected tier). Segment-anchored matching keeps .gitignore/.github/.gitattributes clear.
+  - .config/claude/                    # the unattended-run token directory (SF-3.8) and the user-level Claude Code settings; a Write or Edit here is blocked for everyone (final-core security M2)
+  - .credentials.json                  # Claude Code's own login file
 # .githooks/ removed 2026-05-09 — no tracked git hook directory is scaffolded
 # by adopters, so a tier-1 rule here would be defending an empty boundary. The
 # secret scan's git hooks (git-hooks.js) are untracked files in the git dir.
@@ -384,6 +497,201 @@ readOnlyPaths:
 # `noDeletePaths: []`, or `noDeletePaths: {}`. See `_lib/yaml-parser.js` header.
 noDeletePaths:
 
+# Tier 4 — subagent read-only (SF-1.8): writes and deletes by a SUBAGENT are blocked; the main
+# thread (a hook payload with no `agent_id`) and reads are unaffected. The protected set is the
+# gate, its judges and their whole require() closure, the hooks, the guardrail rules and settings,
+# the files that register or configure the hooks, and the judge's evidence and state files, so an
+# implementer cannot weaken the judge that grades it. Plain `readOnlyPaths` cannot hold these: it
+# also blocks the Main Agent, who edits hook sources and tests every wave.
+#
+# What this tier is and is not:
+#   - It gates the Write, Edit, MultiEdit and NotebookEdit tools (`path-guardrail.cjs`) and, as a
+#     best-effort layer, the Bash guard (`guardrail.cjs`): `rm`/`del`, redirects, `tee`, `cp`/`mv`/
+#     `install`/`ln` destinations, `dd of=`, `sed -i`/`perl -i`, `git restore`/`git checkout -- <file>`/
+#     `git rm`/`git mv` (also under `git -C`), `tar -C`/`unzip -d` destinations, `patch`/`git apply`/
+#     `git am` of a patch that targets this tier (the Main Agent applies those) and a write call in an
+#     inline `node -e`/`python -c` script. Relative targets resolve against the payload `cwd` and any
+#     earlier `cd`/`pushd`/`popd` in the command. Bash coverage is NOT a wall: an interpreter script, a
+#     variable-built path or a `claude -p` / `codex exec` subprocess (a new main thread with no
+#     `agent_id`) writes anywhere. The backstop for those is the ship seal's code hash, which
+#     covers the code tree including these files, plus review of the diff.
+#   - It applies only to a payload that carries `agent_id` (a subagent of the session). A headless
+#     main-thread run (`claude -p`, a scheduled run), an agent-team teammate or thread without an
+#     `agent_id`, and Codex payloads that carry none are main threads to the hook: the tier is
+#     inert there.
+#   - Fail closed: when this file is missing, unusable, or parses without this key, the hooks hold
+#     a subagent to the built-in copy of this list instead (`BUILTIN_SUBAGENT_READ_ONLY_PATHS` in
+#     `_lib/guardrail-rules.js`, pinned equal to this list by a test).
+#   - The entries are matched by a lexical, case-folded, UNANCHORED suffix/substring glob
+#     (`gate.config.json` also matches `x-gate.config.json`, and `.agents/hooks/` also covers
+#     `.agents/hooks/__tests__/`): harmless for a deny list, never reuse the matcher for an
+#     allow list. A subagent test author cannot write hook tests; the Main Agent writes them.
+# Why each family is listed:
+#   gate and judge code ... gate.js and the receipt/ledger/freeze/rules libraries, ac-verify.js,
+#                           ship-check.js, commit.js (runs the ship check), todo-completion.js,
+#                           story-checkpoint.js (reuse decisions), plan-check.js and release-slice.js
+#                           (read by the checkpoint and wave logic)
+#   require() closure ..... every module the hooks and the judges load: a subagent that edits
+#                           `hook-input.js` or `yaml-parser.js` switches the hooks off from the
+#                           inside, and `gate-summary.js` turns test output into pass/fail counts,
+#                           `telemetry-paths.js` decides where the seal is read from. A test walks the
+#                           static require() graph from the judges and from EVERY hook registered for
+#                           ANY event (Claude settings and the Codex adapter's hook registration) and
+#                           fails when a reachable file is not matched by this list, so the list
+#                           cannot rot when a helper is extracted; this list is the closure, kept
+#                           honest by that test.
+#   non-blocking hooks .... the memory, session and capture libraries (`memory-context.js`,
+#                           `memory-notes.js`, `memory-recall.js`, `memory-paths.js`, `memory-manager.js`,
+#                           `memory-capture.js`, `memory-sync.js`, `memory-decay.js`, `memory-ingest.js`,
+#                           `sqlite-backend.js`, `hook-spawners.js`, `profile.js`, `constants.js`,
+#                           `daily-log.js`, `handoff-path.js`, `run-stamp.js`, `output-paths.js`,
+#                           `doc-drift.js`, `frontmatter.js` and the rest of that walk). The
+#                           UserPromptSubmit and SessionStart hooks run as the main thread, outside any
+#                           `agent_id` check, and their stdout is injected into the Main Agent's context:
+#                           a subagent that edits a library they load plants persistent instructions
+#                           there before any review sees the diff. The Main Agent edits these files.
+#   the hook layer ........ .agents/hooks/, .claude/hooks/, .codex/hooks/ (the hooks themselves)
+#   rules and settings .... the authored rules file, its rendered copy `.claude/guardrail-rules.yaml`
+#                           (matched by the bare name), the authored settings file and the generated
+#                           `.claude/settings.json` (a different path: the two never match each other)
+#   hook registration ..... `.claude/settings.local.json` (gitignored, so no diff review sees it, and
+#                           it can switch every hook off), the Codex adapter `.agents/adapters/codex/`
+#                           and its generated `.codex/hooks.json` and `.codex/hook-identities.json`
+#   generated wrappers .... `.claude/core/` and `.codex/core/` hold generated entry points that
+#                           require() the authored files above; a subagent that repoints one runs
+#                           a weakened gate while the authored file stays untouched
+#   judge evidence ........ ac-verify records (freeze baselines) and the ship seal; a rewrite of
+#                           either is caught only after the fact by the seal's records hash
+#   judge state ........... the failure ledger (truncating it resets streaks and the budget counter),
+#                           the gate receipt and its history, and the investigate freeze state (an
+#                           emptied lock list unfreezes paths); all are written by CLIs run by the
+#                           Main Agent
+#   gate inputs ........... `vitest.config.mjs` and `tools/run-toolkit-tests.cjs` (this workshop's
+#                           test leg: an `exclude` or a fake runner passes without testing), and every
+#                           other name vitest or vite loads a config from (`vitest.config.ts`, `.mts`,
+#                           `.cts`, `.js`, `.cjs` and the `vite.config.*` set): vitest ranks them above
+#                           the walled `.mjs`, so the runner passes `--config` explicitly and refuses to
+#                           run when another config exists. The names are listed one by one, not as a
+#                           `vitest.config.*` wildcard, so a project can lift exactly the config file it
+#                           owns (`except:`) without lifting the family.
+#   test runner package ... `node_modules/`: the gate executes `node_modules/vitest`, and the ship seal's
+#                           code hash never covers it (it is ignored). A subagent that patches the
+#                           reporter makes every test pass and leaves no trace in any diff. No subagent
+#                           has a legitimate Edit or Write there; `npm install` names no path, so the
+#                           Bash guard does not fire on it. The gate also folds a hash of the runner
+#                           package into the receipt's engine hash, so a changed runner invalidates
+#                           the receipt even when the write came from a main thread or a script.
+#                           `package.json` is deliberately NOT listed: ordinary dependency work edits it
+#                           in every adopter. A weakened `scripts.test` is still caught by the ship
+#                           seal's code hash (package.json is code) and by review. A project that wants
+#                           it walled adds `package.json` to this tier in its project override.
+# Glob rules are the same as the tiers above. A project lifts one entry with `except:
+#   subagentReadOnlyPaths:` in the project-owned .claude/guardrail-rules.project.yaml.
+subagentReadOnlyPaths:
+  - gate.config.json
+  - .agents/core/gate.js
+  - .agents/core/_lib/gate-receipt.js
+  - .agents/core/_lib/failure-ledger.js
+  - .agents/core/_lib/freeze-state.js
+  - .agents/core/_lib/guardrail-rules.js
+  - .agents/core/ac-verify.js
+  - .agents/core/ship-check.js
+  - .agents/core/commit.js
+  - .agents/core/todo-completion.js
+  - .agents/core/story-checkpoint.js
+  - .agents/core/plan-check.js
+  - .agents/core/release-slice.js
+  - .agents/core/runtime-context.js
+  - .agents/core/git-hooks.js
+  - .agents/core/build-lock-recovery.js
+  - .agents/core/_lib/attribution-ledger.js
+  - .agents/core/_lib/command-blocker.js
+  - .agents/core/_lib/fs-safe.js
+  - .agents/core/_lib/gate-summary.js
+  - .agents/core/_lib/git-hook-protocol.js
+  - .agents/core/_lib/git.js
+  - .agents/core/_lib/hook-input.js
+  - .agents/core/_lib/hook-telemetry.js
+  - .agents/core/_lib/jsonl-writer.js
+  - .agents/core/_lib/owned-process-tree.js
+  - .agents/core/_lib/project-root.js
+  - .agents/core/_lib/run-pointer.js
+  - .agents/core/_lib/secret-engine-bin.js
+  - .agents/core/_lib/shell-command-split.js
+  - .agents/core/_lib/telemetry-paths.js
+  - .agents/core/_lib/yaml-parser.js
+  - .agents/core/_lib/daily-log-paths.js
+  - .agents/core/_lib/doc-drift.js
+  - .agents/core/_lib/frontmatter.js
+  - .agents/core/_lib/hook-spawners.js
+  - .agents/core/_lib/jaccard.js
+  - .agents/core/_lib/memory-context.js
+  - .agents/core/_lib/memory-decay.js
+  - .agents/core/_lib/memory-extract.js
+  - .agents/core/_lib/memory-index-divergence.js
+  - .agents/core/_lib/memory-ingest.js
+  - .agents/core/_lib/memory-lint.js
+  - .agents/core/_lib/memory-notes.js
+  - .agents/core/_lib/memory-paths.js
+  - .agents/core/_lib/memory-recall.js
+  - .agents/core/_lib/memory-sync.js
+  - .agents/core/_lib/output-paths.js
+  - .agents/core/_lib/run-stamp.js
+  - .agents/core/_lib/sqlite-backend.js
+  - .agents/core/constants.js
+  - .agents/core/daily-log.js
+  - .agents/core/handoff-path.js
+  - .agents/core/memory-capture.js
+  - .agents/core/memory-manager-cli.js
+  - .agents/core/memory-manager.js
+  - .agents/core/profile.js
+  - .agents/hooks/
+  - .claude/hooks/
+  - .codex/hooks/
+  - .claude/core/
+  - .codex/core/
+  - .agents/config/guardrail-rules.yaml
+  - guardrail-rules.yaml
+  - .agents/adapters/claude/settings.json
+  - .claude/settings.json
+  - .claude/settings.local.json
+  - .agents/adapters/codex/
+  - .codex/hooks.json
+  - .codex/hook-identities.json
+  - docs/.output/.state/telemetry/ac-verify/
+  - docs/.output/.state/telemetry/ship-seal.json
+  - docs/.output/.state/telemetry/gate-failures.jsonl
+  - docs/.output/.state/telemetry/gate-receipt.json
+  - docs/.output/.state/telemetry/gate-receipts/
+  - docs/.output/.state/freeze-state.json
+  - vitest.config.mjs
+  - tools/run-toolkit-tests.cjs
+  - .agents/core/__tests__/_helpers/vitest-tmp-sandbox.setup.mjs   # vitest setupFiles: runs inside every test file (gate input)
+  - .agents/core/__tests__/_helpers/tmp-sandbox.js                 # required by the setup file above
+  - vitest.config.ts
+  - vitest.config.mts
+  - vitest.config.cts
+  - vitest.config.js
+  - vitest.config.cjs
+  - vite.config.ts
+  - vite.config.mts
+  - vite.config.cts
+  - vite.config.js
+  - vite.config.mjs
+  - vite.config.cjs
+  - node_modules/
+  # SF-4.3: the improvement loop's judges and test data (grader prompts, eval scripts, eval tasks, holdout)
+  - .agents/skills/skill-creator/agents/
+  - .agents/skills/skill-creator/scripts/
+  - evals/
+  - tools/harness-eval-tasks/
+  - holdout/
+  - tools/skill-holdout/               # SF-4.6 holdout fixtures: the `holdout/` entry does not match this path
+  # SF-4.10: the self-modification audit trail (the helpers run as the Main Agent, so a subagent tier entry does not block them)
+  - docs/.output/evolution/skills/*/ledger.json
+  - docs/.output/evolution/skills/revert-candidates.json
+  - docs/.output/evolution/skills/_decisions.md
+
 # ============================================================
 # DANGEROUS PATTERNS (A3 — bash-level hard block)
 # ============================================================
@@ -413,6 +721,9 @@ path_rules:
     - .env                             # root .env (local secrets)
     - .env.local                       # local override secrets
     - .env.production                  # production secrets
+    - .env.development                 # development secrets
+    - .env.staging                     # staging secrets
+    - .env.*.local                     # per-environment local overrides
 # .githooks/ removed 2026-05-09 — see zeroAccessPaths comment above.
 
   # Paths that can be read but must not be overwritten or deleted.

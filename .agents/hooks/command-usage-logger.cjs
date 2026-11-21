@@ -52,6 +52,15 @@
  *   Retro reference: `docs/.output/findings/reviews/retro-platform-alignment-may-2026.md`
  *   System Improvements row "Telemetry coverage".
  *
+ * RUN ID ON ROWS (SF-3.2): `command_invocation` and `gate_run` rows carry `run_id` and `wave`
+ *   when this session's run pointer (`current-run-{session}.json`, written by run-record.js) is
+ *   usable; otherwise the two keys are absent and the row is unchanged. The pointer is read by
+ *   `_lib/run-pointer.js`, which never throws and never blocks, under `pointerRoot()` (the main worktree, the
+ *   root run-record.js writes under, so a linked-worktree session is stamped too). The self-instrumented
+ *   `telemetry-log.js` start rows (a user-typed `/do` or `/run-todo`) are written before the
+ *   pointer exists, so they cannot carry `run_id`; they join the run by `session_id` and
+ *   `timestamp` (documented here, not changed).
+ *
  * Event schema (A4 enrichment — adopted from gstack:
  *   docs/.output/findings/research/competitive/_hooks-and-core-scripts-comparison.md A4):
  *
@@ -66,6 +75,8 @@
  *   `CLAUDE_CODE_SESSION_ID` (set by Claude Code in every spawned subprocess's env, hooks included),
  *   falling back to the hook JSON payload's own `session_id` field if the env var is absent. Null
  *   only if neither source is available.
+ * @property {string} [run_id] - SF-3.2: the session's run id; present only when the run pointer is usable
+ * @property {number|null} [wave] - SF-3.2: the pointer's wave (null just after a run starts); present with run_id
  */
 
 const fs = require('fs');
@@ -75,6 +86,7 @@ const { readHookInput } = require('../core/_lib/hook-input');
 const { getJsonlPath } = require('../core/_lib/telemetry-paths');
 const { readSummary } = require('../core/_lib/gate-summary');
 const { resolveProjectRoot } = require('../core/_lib/project-root');
+const { readRunPointer, pointerRoot } = require('../core/_lib/run-pointer');
 
 function resolveSessionId(parsedJson) {
     return process.env.CLAUDE_CODE_SESSION_ID || parsedJson?.session_id || null;
@@ -136,8 +148,8 @@ function inferGateRun(command) {
  *
  * @returns {{ overall: boolean } | null} Parsed summary, or null on any read/parse failure
  */
-function readGateSummary() {
-    return readSummary(getProjectRoot());
+function readGateSummary(projectRoot = getProjectRoot()) {
+    return readSummary(projectRoot);
 }
 
 /**
@@ -166,6 +178,8 @@ function appendJsonl(jsonlPath, event) {
  */
 function processEvent(parsedJson) {
     let event = null;
+    // Resolved once per event: with no env root each call spawns git.
+    const projectRoot = getProjectRoot();
 
     // Check for command invocation (PostToolUse:Skill)
     const skillName = parsedJson?.tool_input?.skill;
@@ -198,7 +212,7 @@ function processEvent(parsedJson) {
         // the wall-clock duration. gate.js stamps `durationMs` into the summary
         // immediately before exit; the PostToolUse:Bash payload has no timing of
         // its own, so the summary is the only source for gate_run duration.
-        const summary = readGateSummary();
+        const summary = readGateSummary(projectRoot);
 
         // A killed run (a leg stopped by a signal, the gate's own SIGINT/SIGTERM, or a gate
         // that died without finishing: its in-progress marker is still there) is no verdict
@@ -233,9 +247,19 @@ function processEvent(parsedJson) {
 
     if (!event) { return null; }
 
+    // SF-3.2: stamp the run id and wave from the session pointer. The session is the one the row's
+    // own session_id reports; readRunPointer never throws and returns null for anything unusable. The
+    // pointer is read under pointerRoot(projectRoot): the main worktree, where run-record.js writes it,
+    // even when CLAUDE_PROJECT_DIR names a linked worktree.
+    const run = readRunPointer({ root: pointerRoot(projectRoot), session: event.session_id });
+    if (run) {
+        event.run_id = run.run_id;
+        event.wave = run.wave;
+    }
+
     // Write to JSONL — always under the resolved project root, regardless of
     // caller CWD or anything in the event payload.
-    const jsonlPath = getJsonlPath(getProjectRoot(), 'command-usage.jsonl');
+    const jsonlPath = getJsonlPath(projectRoot, 'command-usage.jsonl');
 
     appendJsonl(jsonlPath, event);
 

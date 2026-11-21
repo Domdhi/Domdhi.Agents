@@ -1,10 +1,10 @@
 # Check Templates
 
-Self-diagnostic for canonical `.agents/` sources and the installed Claude/Codex projections. Scans agents, skills, hooks, commands, and settings for orphans, gaps, and broken cross-references. Read-only — reports findings without making changes.
+Self-diagnostic for the canonical `.agents/` sources and the installed Claude/Codex projections: find orphaned agents, skills, hooks and commands, broken cross-references and silent doctrine regressions, then score template health. A good result is a persisted, scored report whose findings are specific enough to act on, with every deterministic-checker failure repaired and re-verified.
 
 ## Telemetry (run first)
 
-This command is user-typed, so it does not fire `PostToolUse:Skill` — without this it leaves no `command_invocation` row and fleet analytics under-count human-driven runs. Self-log the invocation before anything else (best-effort — if it fails, continue regardless):
+A user-typed command does not fire `PostToolUse:Skill`, so log the invocation yourself (best-effort; continue if it fails):
 
 ```bash
 node .claude/core/telemetry-log.js review:check-templates
@@ -14,23 +14,17 @@ node .claude/core/telemetry-log.js review:check-templates
 
 ### 0. Check for --multi flag
 
-```
-IF $ARGUMENTS contains "--multi":
-  Run Steps 1-9 for the current project first (normal single-project audit)
-  Then proceed to Step 10 (Cross-Project Scan)
-ELSE:
-  Run Steps 1-9 only (unchanged behavior)
-```
+If `$ARGUMENTS` contains `--multi`, run Steps 1-9 for the current project, then Step 10 (Cross-Project Scan). Otherwise run Steps 1-9 only.
 
 ### 1. Scan Agent Inventory
 
-Read canonical `.agents/roles/*.md` first, plus legacy native roles without canonical equivalents. Extract identity and declared `skills` from source frontmatter. Read generated Claude frontmatter/Codex TOML and each runtime's project-owned `shared-agents.json` for actual tools, model and permission wiring; those fields do not belong in canonical role frontmatter.
+Read canonical `.agents/roles/*.md` first, plus legacy native roles that have no canonical equivalent. Identity and declared `skills` come from the source frontmatter. Actual tools, model and permission wiring come from the generated Claude frontmatter / Codex TOML and each runtime's project-owned `shared-agents.json`; those fields do not belong in canonical role frontmatter.
 
 ### 2. Scan Skill Inventory
 
-Enumerate `.agents/skills/*/SKILL.md` (legacy native skills only where canonical sources are absent). Partition the inventory using `.agents/adapters/workflows.json`: registered explicit workflow selectors and conditional knowledge skills have different description and wiring contracts.
+Enumerate `.agents/skills/*/SKILL.md` (legacy native skills only where canonical sources are absent). Partition the inventory with `.agents/adapters/workflows.json`: registered explicit workflow selectors and conditional knowledge skills have different description and wiring contracts.
 
-**CSO check** — only conditional knowledge skills require a `Use WHEN` triggering clause. Registered workflow selectors intentionally use explicit invocation descriptions; do not classify them as violations or unused knowledge. The following read-only check implements the partition (use the active runtime's native helper prefix):
+**CSO check.** Only conditional knowledge skills need a `Use WHEN` triggering clause. Registered workflow selectors intentionally use explicit-invocation descriptions; they are neither violations nor unused knowledge. This read-only check implements the partition (use the active runtime's helper prefix):
 
 ```bash
 node - <<'NODE'
@@ -53,137 +47,115 @@ process.exitCode = errors ? 1 : 0;
 NODE
 ```
 
-For a legacy-only installation, use its actual knowledge inventory; do not infer missing selector registration from an older source layout. Flag genuine knowledge violations in Step 9.
+For a legacy-only installation use its actual knowledge inventory rather than inferring missing selector registration from an older layout. Flag genuine knowledge violations in Step 9.
 
 ### 2b. Skill Spec Conformance
 
-Run the deterministic conformance check against the Agent Skills open standard:
+Check skills against the Agent Skills open standard:
 
 ```bash
 node .claude/core/skill-conformance.js
 ```
 
-The current CLI scans the installed Claude skill projections and applies three rules. Keep the canonical inventory/CSO checks above separate, and compare Codex entry points through their adapter:
+The CLI scans the installed Claude skill projections (compare Codex entry points through their adapter; the canonical inventory/CSO check above is separate):
 
-- **Body budget** — `SKILL.md` > 500 lines → **WARN: OVER_BUDGET** (activation cost; advisory, does not fail the gate)
-- **Name match** — `name:` frontmatter ≠ parent directory name → **ERROR: NAME_MISMATCH**
-- **Description length** — `description:` > 1024 characters → **ERROR: DESC_TOO_LONG**
+- **Body budget**: `SKILL.md` over 500 lines is **WARN: OVER_BUDGET** (advisory; does not fail the gate).
+- **Name match**: `name:` frontmatter differing from the parent directory is **ERROR: NAME_MISMATCH**.
+- **Description length**: `description:` over 1024 characters is **ERROR: DESC_TOO_LONG**.
 
-Exit code is 0 when clean or WARN-only, non-zero only when an ERROR is present. Capture stdout — each line names the offending skill, the rule, and the measured value (e.g. `WARN tailwind-css-patterns: 877 lines (budget 500)`). Any output MUST appear in Step 9's Issues Found section: ERRORs as **SPEC VIOLATION**, WARNs as **OVER BUDGET**.
+Exit is non-zero only on an ERROR. Every output line goes into Step 9's Issues Found: ERRORs as **SPEC VIOLATION**, WARNs as **OVER BUDGET**.
 
 ### 2c. Operating-Standard Enforcement
 
-Assert the project's operating standard ("resolve it or don't report it" — the mission at the top of `CLAUDE.md`) is *enforced* through the agent tier, not merely declared. Run the deterministic checker:
+The project's operating standard ("resolve it or don't report it", the mission at the top of `CLAUDE.md`) has to be enforced through the agent tier, not just declared:
 
 ```bash
 node .claude/core/operating-standard.js
 ```
 
-The current CLI scans installed Claude role projections and applies role-routed rules. Repair any underlying canonical source selected in Step 1 and render; the CLI result verifies that native surface:
-- **Acting** agents (write code/docs) MUST load `verification-before-completion` in frontmatter **and** carry an `## Operating Standard` section.
-- **Report-only** agents (`disallowedTools: Edit` — `code-reviewer`, `security-auditor`) MUST carry an `## Operating Standard` section in its **report-only** translation (exhaustive/precise/fix-ready findings, hand the orchestrator the fix). They are NOT required to load the skill — that would imply they write fixes.
-- **`shadow`** is exempt — its prose persona is its convention (the documented Shadow exception); it carries the doctrine in its own idiom.
+The CLI scans installed Claude role projections:
 
-Exit code is 0 when clean, non-zero when any ERROR exists. Each ERROR (a dropped `## Operating Standard` section, or an acting agent missing the skill ref) is a silent doctrine regression. This audit is read-only by design, but the operating standard binds *this command too*: don't dead-end in a report — fold any output into Step 9's Issues Found as **DOCTRINE REGRESSION** and **fix it in place** (add the missing section or `verification-before-completion` skill ref to the named agent), then re-run the checker to confirm green.
+- **Acting** agents (write code/docs) load `verification-before-completion` in frontmatter and carry an `## Operating Standard` section.
+- **Report-only** agents (`disallowedTools: Edit`, e.g. `code-reviewer`, `security-auditor`) carry the section in its report-only translation (exhaustive, precise, fix-ready findings; hand the orchestrator the fix). They do not load the skill, which would imply they write fixes.
+- **`shadow`** is exempt: its prose persona carries the doctrine in its own idiom.
+
+Each ERROR (a dropped section, or an acting agent missing the skill) is a silent doctrine regression. The audit is read-only by design, but the standard binds this command too: record the output in Step 9 as **DOCTRINE REGRESSION**, fix it in place in the canonical source selected in Step 1 (add the section or the skill ref) and render, then re-run to confirm green.
 
 ### 2d. Frontmatter Skill Resolution
 
-Assert every skill an agent declares in frontmatter **actually preloads**. Subagent `skills:` is *eager full-body injection* at startup (Claude Code native — `sub-agents.md`, "Preload skills into subagents": the full body is injected, firing NO `Read` event), so a broken ref fails **silently** — no runtime error, no telemetry signal, and the agent runs as if it had the knowledge. Run the deterministic checker:
+A subagent's `skills:` frontmatter is eager full-body injection at startup (Claude Code native, no `Read` event), so a broken ref fails silently: the agent runs without the knowledge and nothing reports it.
 
 ```bash
 node .claude/core/skill-resolution.js
 ```
 
-The current CLI scans installed Claude frontmatter `skills:` against installed Claude skill directories and flags two silent failure modes. The canonical and Codex inventories remain the separate checks above:
-- **BROKEN_SKILL_REF** — a listed skill has no installed `.claude/skills/<name>/SKILL.md` (typo, missing projection or renamed/removed source) → Claude preload loads nothing. Repair the selected canonical/legacy source and render.
-- **UNPRELOADABLE** — a listed skill sets `disable-model-invocation: true` → cannot be preloaded, silently skipped.
+The CLI checks installed Claude frontmatter `skills:` against installed Claude skill directories:
 
-Exit code is 0 when clean, non-zero on any ERROR. This is the tool-checkable form of the manual "BROKEN SKILL REF" check in Step 6 — same operating standard applies: fold output into Step 9's Issues Found as **BROKEN SKILL REF**, **fix it in place** (correct the agent's frontmatter or add/restore the skill), then re-run to confirm green.
+- **BROKEN_SKILL_REF**: a listed skill has no installed `.claude/skills/<name>/SKILL.md` (typo, missing projection, renamed or removed source).
+- **UNPRELOADABLE**: a listed skill sets `disable-model-invocation: true`, so preload silently skips it.
+
+Same handling as 2c: record as **BROKEN SKILL REF**, fix in place (correct the agent frontmatter or restore the skill, in the canonical source, then render), re-run to green. Step 6 uses these results rather than re-deriving them.
 
 ### 2e. Path-Drift Lint
 
-Assert path literals in prose and code match the current resolvers — the mechanical form of the `migrate-all-readers-of-a-shared-path-in-one-wave` workflow memory (four independent writer/reader drift instances in the v4.95 window alone). Run the deterministic checker:
+Path literals in prose and code must match the current resolvers (the mechanical form of the `migrate-all-readers-of-a-shared-path-in-one-wave` workflow memory):
 
 ```bash
 node .claude/core/path-drift-lint.js
 ```
 
-It scans the template fileset (`.claude/`, `tools/`, `docs/reference/`, `docs/engineering/`, root `CLAUDE.md`/`docs/CLAUDE.md`/`README.md`) plus the living plan (`docs/work/backlog.md`, `roadmap.md` — the rest of `docs/work/` is historical as-of-date record, deliberately not judged) and applies three rules:
+It scans the template fileset (`.claude/`, `tools/`, `docs/reference/`, `docs/engineering/`, root `CLAUDE.md`/`docs/CLAUDE.md`/`README.md`) plus the living plan (`docs/work/backlog.md`, `roadmap.md`; the rest of `docs/work/` is historical record and is not judged):
 
-- **LEGACY_TOKEN** (ERROR) — a pre-taxonomy `.output/…` token survives (sourced from `migrate-output-layout.js`'s rewrite table plus the Amendment-2 `memories/` store)
-- **FLAT_HANDOFF** (ERROR) — a literal or glob addresses a file directly under `handoffs/` with no `{YYYY-MM}` month segment; `handoff-path.js` writes month-bucketed, so a flat reader glob silently misses every current handoff
-- **UNKNOWN_COMPARTMENT** (WARN) — a literal `docs/.output/<seg>` segment absent from `constants.js OUTPUT_PATHS` (WARN because the taxonomy is open — adopters grow compartments; in the workshop it usually means drift)
+- **LEGACY_TOKEN** (ERROR): a pre-taxonomy `.output/…` token survives.
+- **FLAT_HANDOFF** (ERROR): a literal or glob addresses a file directly under `handoffs/` with no `{YYYY-MM}` month segment; `handoff-path.js` writes month-bucketed, so a flat glob misses every current handoff.
+- **UNKNOWN_COMPARTMENT** (WARN): a `docs/.output/<seg>` segment absent from `constants.js OUTPUT_PATHS`. Only a WARN because adopters grow compartments; in the workshop it usually means drift.
 
-Exit code is 0 when clean or WARN-only, 1 on any ERROR. Same operating standard as 2c/2d: fold output into Step 9's Issues Found as **PATH DRIFT**, **fix it in place** (update the stale literal to the resolver's current shape — or, for an intentional legacy example, append a `path-lint:keep` marker to that line), then re-run to confirm green.
+Exit is 1 on any ERROR. Record as **PATH DRIFT**, fix in place (update the literal to the resolver's current shape, or append a `path-lint:keep` marker to an intentional legacy example), re-run to green.
 
 ### 2f. fs-safe Trust-Boundary Lint
 
-Assert every raw filesystem write/delete in a module that crosses the adopter trust boundary (writes into a *target/adopter* directory, not a workshop-local path) is routed through the symlink-safe wrappers in `_lib/fs-safe.js` — the mechanical form of `[[fs-safe-hardening-needs-every-callsite-not-just-most]]`, which the `full-review-260716` retro's own fresh review pass re-discovered a THIRD time (fleet.js/publish.js's `pruneEmptyDirs`). Run the deterministic checker:
+Every raw filesystem write or delete in a module that crosses the adopter trust boundary (writes into a target/adopter directory, not a workshop-local path) must go through the symlink-safe wrappers in `_lib/fs-safe.js`. Per `[[fs-safe-hardening-needs-every-callsite-not-just-most]]`, this class was re-discovered three times by review before it was made mechanical.
 
 ```bash
 node .claude/core/fs-safe-lint.js
 ```
 
-It scans a hardcoded fileset of the canonical `.agents/` sources — `core/install.js`, `core/template-updater.js`, `core/scaffold.js`, `core/_lib/{skill-merger,agent-merger,zone-copy,settings-merger,shared-agents,git-ignored}.js` — plus the workshop-only `tools/fleet.js`, `tools/publish.js` and `tools/sync-work.js` (skipped and counted when absent, as in an adopter): the confirmed adopter-trust-boundary-crossing modules, deliberately NOT `core/`/`hooks/`/`tools/`-wide (that would false-positive on the many legitimate workshop-local raw fs calls elsewhere, like gate.js reports or telemetry logs). The default run fails closed: a missing shipped entry is **MISSING_ENTRY** (ERROR), and an entry that is a generated compatibility wrapper or holds no filesystem call is **VACUOUS_ENTRY** (ERROR), because scanning it proves nothing. Applies two rules:
+It scans a fixed fileset of canonical sources: `core/install.js`, `core/template-updater.js`, `core/scaffold.js`, `core/_lib/{skill-merger,agent-merger,zone-copy,settings-merger,shared-agents,git-ignored}.js`, plus the workshop-only `tools/fleet.js`, `tools/publish.js` and `tools/sync-work.js` (skipped and counted when absent, as in an adopter). It is deliberately not `core/`-wide, which would false-positive on legitimate workshop-local fs calls. The default run fails closed: a missing shipped entry is **MISSING_ENTRY** (ERROR); an entry that is a generated wrapper or holds no filesystem call is **VACUOUS_ENTRY** (ERROR), because scanning it proves nothing. Rules:
 
-- **UNGUARDED_WRITE** (ERROR) — a raw `fs.writeFileSync`/`fs.copyFileSync`/`fs.cpSync` call with no `fs-safe-lint:local` marker on the line
-- **UNGUARDED_DELETE** (ERROR) — a raw `fs.rmSync`/`fs.rmdirSync` call with no marker AND no `assertNoSymlinkedAncestor()` guard call within the preceding 6 lines (the established `pruneEmptyDirs` pattern)
+- **UNGUARDED_WRITE** (ERROR): a raw `fs.writeFileSync`/`fs.copyFileSync`/`fs.cpSync` with no `fs-safe-lint:local` marker on the line.
+- **UNGUARDED_DELETE** (ERROR): a raw `fs.rmSync`/`fs.rmdirSync` with no marker and no `assertNoSymlinkedAncestor()` call within the preceding 6 lines (the `pruneEmptyDirs` pattern).
 
-Exit code is 0 when clean, 1 on any ERROR. Same operating standard as 2c/2d/2e: fold output into Step 9's Issues Found as **UNGUARDED FS CALL**, **fix it in place** (route through `safeWrite`/`safeCopy`/`safeDelete`, or add an `assertNoSymlinkedAncestor()` guard immediately before the delete — or, for a hand-verified workshop-local destination like `os.tmpdir()` scratch or `VERSION_PATH`, append a `fs-safe-lint:local` marker to that line), then re-run to confirm green. If a new module starts writing into an adopter tree, add it to `TRUST_BOUNDARY_FILES` in `fs-safe-lint.js`.
+Exit is 1 on any ERROR. Record as **UNGUARDED FS CALL**, fix in place (route through `safeWrite`/`safeCopy`/`safeDelete`, or add an `assertNoSymlinkedAncestor()` guard right before the delete; for a hand-verified workshop-local destination such as `os.tmpdir()` scratch or `VERSION_PATH`, append a `fs-safe-lint:local` marker), re-run to green. When a new module starts writing into an adopter tree, add it to `TRUST_BOUNDARY_FILES` in `fs-safe-lint.js`.
 
 ### 3. Scan Hook Inventory
 
-```
-Glob: .agents/hooks/*.cjs
-# Compare installed .claude/.codex wrappers and each adapter registration.
-```
-
-Record executable handlers separately from shared libraries such as `secret-patterns.cjs`; a library is not an orphaned hook.
+Glob `.agents/hooks/*.cjs` and compare the installed `.claude`/`.codex` wrappers and each adapter registration. Record executable handlers separately from shared libraries such as `secret-patterns.cjs`; a library is not an orphaned hook.
 
 ### 4. Scan Command Inventory
 
-```
-Glob: .agents/skills/*/references/workflow.md
-# Use .agents/adapters/workflows.json and sanity-check generated command/skill entry points.
-```
-
-For each command, read the content and extract:
-- Agent references (mentions of `subagent_type:` or agent names like `architect`, `code-reviewer`, etc.)
-- Skill references (mentions of skill names or `SKILL.md`)
+Glob `.agents/skills/*/references/workflow.md`, and use `.agents/adapters/workflows.json` to sanity-check the generated command/skill entry points. From each command extract the agent references (`subagent_type:` or role names) and skill references (skill names, `SKILL.md`).
 
 ### 5. Read Settings
 
-Read Claude `.claude/settings.json` and Codex `.codex/hooks.json` against their adapter metadata. Extract the installed event/handler wiring for each active runtime:
-- Which hook files are registered under PreToolUse, PostToolUse, PreCompact
-- Which matchers are configured
+Read Claude `.claude/settings.json` and Codex `.codex/hooks.json` against their adapter metadata. For each active runtime, extract which hook files are registered under PreToolUse, PostToolUse and PreCompact, and which matchers are configured.
 
 ### 6. Cross-Reference Analysis
 
-**6a. Agent wiring:**
-- For each role: is it actually dispatched/read by a workflow or intentionally available for direct use (such as Shadow)? Only if neither → **ORPHANED**. Do not invent a workflow to register a valid direct-use role.
-- Broken skill refs are now caught deterministically in Step 2d (`skill-resolution.js`) — don't re-derive them by eye here; just carry forward any **BROKEN SKILL REF** / **UNPRELOADABLE** findings it reported.
+**6a. Agent wiring.** A role is **ORPHANED** only if no workflow dispatches or reads it and it is not intentionally direct-use (such as Shadow); do not invent a workflow to register a valid direct-use role. Carry forward the **BROKEN SKILL REF** / **UNPRELOADABLE** findings from Step 2d.
 
-**6b. Skill wiring:**
-- For each knowledge skill: is it loaded by frontmatter or explicitly read by a workflow/role body? Only if neither → **UNUSED SKILL**. Registered workflow selectors are evaluated as command wiring, not eager knowledge preloads.
-- For each skill: is it referenced by at least one command? If not → **UNREFERENCED** (may be fine if agent-loaded only)
+**6b. Skill wiring.** A knowledge skill loaded by neither frontmatter nor an explicit workflow/role-body read is **UNUSED SKILL**. Registered workflow selectors are judged as command wiring, not eager preloads. A skill no command references is **UNREFERENCED** (fine if agent-loaded only).
 
-**6c. Hook wiring:**
-- For each executable hook handler: is it registered by the relevant adapter/runtime? If not → **UNREGISTERED HOOK** only when that runtime promises the event. Shared libraries and intentionally unsupported runtime events are exempt.
-- For each installed Claude/Codex hook registration: does the referenced file exist? If not → **MISSING HOOK FILE**
+**6c. Hook wiring.** An executable handler its runtime's adapter does not register is **UNREGISTERED HOOK**, only where that runtime promises the event; shared libraries and intentionally unsupported events are exempt. An installed registration whose file does not exist is **MISSING HOOK FILE**.
 
-**6d. Command wiring:**
-- For each command that references an agent: does the agent file exist? If not → **MISSING AGENT**
-- For each command: does it have a matching skill registration entry? (informational only)
+**6d. Command wiring.** A command that references an agent whose file does not exist is **MISSING AGENT**. A command without a matching skill registration entry is informational only.
 
 ### 7. Read Template Version
 
-Read canonical `.agents/config/version.json` when present and compare its rendered `.claude/version.json`; use the native marker as the legacy fallback:
-- If found: extract `version`, `updated`, `changelog` fields
-- If not found: set version to "unknown (pre-versioning)"
+Read canonical `.agents/config/version.json` when present and compare it with the rendered `.claude/version.json` (the native marker is the legacy fallback). Extract `version`, `updated`, `changelog`; when absent, the version is "unknown (pre-versioning)".
 
 ### 8. Score
 
-Rate each category 0-10:
+Rate each category 0-10; the health score is the sum (0-50):
 
 | Category | 10 (perfect) | 0 (broken) |
 |----------|-------------|------------|
@@ -193,11 +165,9 @@ Rate each category 0-10:
 | **Commands** | All agent references valid | Missing agents referenced |
 | **Settings** | Hook config complete and consistent | Broken registrations |
 
-**Total health score:** sum of 5 categories (0-50)
-
 ### 9. Report
 
-**Persist before reporting:** Write the full report below to `docs/.output/findings/reviews/{YYMMDD-HHMM}-template-health-check.md`. Then display the same content in chat.
+Write the full report to `docs/.output/findings/reviews/{YYMMDD-HHMM}-template-health-check.md` first, then show the same content in chat.
 
 ```markdown
 ## Template Health Check
@@ -241,15 +211,13 @@ Rate each category 0-10:
 
 ### 9b. Commit (main agent)
 
-After the report file is written, commit it:
-
-Write the commit message to `docs/.output/.state/.commit-msg` (Write tool — no shell escaping):
+Write the commit message to `docs/.output/.state/.commit-msg`:
 
 ```
 docs: /review:check-templates — {score}/50, {N} issues found
 ```
 
-Then run:
+Stage the report plus every file the Step 2 fixes and the render changed (specific files, per the Post-Command Commit Convention), then run:
 
 ```bash
 git add docs/.output/findings/reviews/{YYMMDD-HHMM}-template-health-check.md
@@ -258,32 +226,15 @@ node .claude/core/commit.js
 
 ### 10. Cross-Project Scan (--multi only)
 
-Scan the parent directory of the current project for sibling repos with `.claude/` directories.
+List the sibling directories of the project (`../`) and treat one as a sibling project when `../{dir}/.claude/version.json` is readable; read errors mean "version unknown". For each sibling:
 
-**Discovery:** Use Glob to find sibling directories. For each candidate directory name found by listing `../`, check whether `../{dir}/.claude/version.json` exists using the Read tool. A directory qualifies as a sibling project if that file is readable (even if it returns an empty or error result — treat read errors as "version unknown").
-
-For each discovered sibling project:
-
-**10a. Read version:**
-- Read `../{project}/.claude/version.json` → extract `version` and `updated` fields
-- If not found or unreadable → version = "unknown (pre-versioning)"
-
-**10b. Count inventory (lightweight — no cross-reference analysis):**
-- Use Glob on `../{project}/.claude/agents/*.md` → count results → agent count
-- Use Glob on `../{project}/.claude/hooks/*.cjs` → count results → hook count
-- Use Glob on `../{project}/.claude/skills/*/SKILL.md` → count results → skill count
-
-**10c. Version comparison:**
-- Compare sibling version against current project's version (the one read in Step 7)
-- Use semver comparison: split each version string on ".", compare major, then minor, then patch numerically
-- If sibling version < current project version → status = "OUTDATED"
-- If sibling version > current project version → status = "AHEAD"
-- If sibling version == current project version → status = "CURRENT"
-- If either version is "unknown (pre-versioning)" → status = "UNKNOWN"
+- **Version**: `version` and `updated` from `../{project}/.claude/version.json`, or "unknown (pre-versioning)".
+- **Inventory** (lightweight, no cross-reference analysis): counts of `.claude/agents/*.md`, `.claude/hooks/*.cjs` and `.claude/skills/*/SKILL.md`.
+- **Status** against the Step 7 version, comparing major, then minor, then patch numerically: lower is `OUTDATED`, higher is `AHEAD`, equal is `CURRENT`, and either side "unknown (pre-versioning)" is `UNKNOWN`.
 
 ### 11. Cross-Project Report (--multi only)
 
-Append the following section to the single-project report produced in Step 9:
+Append this section to the Step 9 report:
 
 ```markdown
 ## Cross-Project Template Status

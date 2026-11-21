@@ -39,11 +39,12 @@ const path = require('path');
 // them. import path is relative to this file's own __dirname (always correct even
 // when run from an adopter project via the bin entry-point).
 
-const { matchesAnyGlob, copyFile, loadExcludedSkills, preflightFrontDoor, ROOT_DOC_REDIRECT } = require('./template-updater');
+const { matchesAnyGlob, copyFile, loadExcludedSkills, loadExcludedRoles, preflightFrontDoor, ROOT_DOC_REDIRECT } = require('./template-updater');
 const { safeWrite, assertNoSymlinkedAncestor } = require('./_lib/fs-safe');
 const { WORKSHOP_ONLY_SHARED } = require('./_lib/zone-classifier');
 const { stripExcludedSkills } = require('./_lib/agent-merger');
-const { renderSharedAgents, syncStartupInstructions, projectionPaths, canonicalFiles, commandFiles, workflowMap, isExcludedSkillPath, STATE_PATH } = require('./_lib/shared-agents');
+const { planDenyUnion } = require('./_lib/settings-merger');
+const { renderSharedAgents, syncStartupInstructions, projectionPaths, canonicalFiles, commandFiles, workflowMap, isExcludedSkillPath, isExcludedRolePath, STATE_PATH } = require('./_lib/shared-agents');
 const { applyManagedBlock, TEMPLATE_RENAMES } = require('./scaffold');
 const { ignoredFilter } = require('./_lib/git-ignored');
 
@@ -412,7 +413,8 @@ function runInstall(opts) {
     // .claude/scheduled_tasks.lock); they never install. A failed query in a
     // real checkout throws here, before any target write.
     const isIgnored = ignoredFilter(source, { failureMessage: 'Install source ignored-file query failed; nothing was installed.' });
-    const excludedSkills = loadExcludedSkills(targetClaudeDir);
+    const excludedSkills = loadExcludedSkills(targetClaudeDir, source);
+    const excludedRoles = loadExcludedRoles(targetClaudeDir, source);
     const workflows = workflowMap(source);
     const projections = projectionPaths(source);
     const pendingCopies = [];
@@ -429,11 +431,26 @@ function runInstall(opts) {
         const text = content !== undefined ? content : (rel.endsWith('.md') ? fs.readFileSync(src, 'utf8') : null);
         files.set(rel, text !== null ? text.replace(/\r\n/g, '\n') : fs.readFileSync(src));
     };
+    // A kept settings.json still receives the template's permissions.deny wall (SF-1.9): the hard-deny
+    // set must reach an adopter who re-runs the installer, exactly as it does through the updater's
+    // --merge. ONLY the deny union is applied; the adopter's hooks, allow, ask and env stay as they are.
+    // The merged text is planned like any copy and written after every refusal check has passed.
+    const planKeptSettingsDeny = (srcAbs, destAbs) => {
+        const plan = planDenyUnion(srcAbs, destAbs);
+        if (plan.action === 'merged') {
+            planCopy(srcAbs, destAbs, '.claude/settings.json', plan.content);
+            console.log(`  MERGE    .claude/settings.json — ${plan.detail}`);
+            stats.merged++;
+        } else if (plan.action === 'skipped') {
+            console.warn(`  WARN     .claude/settings.json — ${plan.detail}`);
+            stats.denyUnionSkipped = true;
+        }
+    };
     for (const relPath of walkClaudeDir(sourceClaudeDir)) {
         // Normalize to forward slashes for glob matching
         const rel = relPath.replace(/\\/g, '/');
 
-        if (isExcludedSkillPath(`.claude/${rel}`, excludedSkills, workflows)) continue;
+        if (isExcludedSkillPath(`.claude/${rel}`, excludedSkills, workflows) || isExcludedRolePath(`.claude/${rel}`, excludedRoles)) continue;
         if (isIgnored(`.claude/${rel}`)) continue;
 
         // Canonical pilot outputs are rendered at the installed destination.
@@ -471,6 +488,7 @@ function runInstall(opts) {
                 console.log(`  KEEP     .claude/${rel} (conflict — kept existing)`);
                 stats.skipped++;
                 stats.conflicts.push(rel);
+                if (rel === 'settings.json') planKeptSettingsDeny(srcAbs, destAbs);
             }
         }
     }
@@ -483,7 +501,7 @@ function runInstall(opts) {
         if (fs.existsSync(path.join(source, rel))) sharedFiles.push(rel);
     }
     for (const rel of sharedFiles) {
-        if (isExcludedSkillPath(rel, excludedSkills, workflows)) continue;
+        if (isExcludedSkillPath(rel, excludedSkills, workflows) || isExcludedRolePath(rel, excludedRoles)) continue;
         // Workshop distribution authority never ships; the same shared
         // rule keeps the updater from delivering it and its projection is never rendered.
         if (WORKSHOP_ONLY_SHARED.has(rel)) continue;
@@ -536,7 +554,7 @@ function runInstall(opts) {
     const commands = [...new Set([...commandFiles(target), ...[...files.keys()].filter(rel => rel.startsWith('.claude/commands/') && rel.endsWith('.md'))])];
     // The version marker is deferred out of the main render and rendered last.
     const markerOnly = new Set([VERSION_MARKER]);
-    const renderOptions = { force: overwriteAll, excludedSkills, files, commands, deferredOutputs: markerOnly };
+    const renderOptions = { force: overwriteAll, excludedSkills, excludedRoles, files, commands, deferredOutputs: markerOnly };
     const preview = projections.size ? renderSharedAgents(target, { ...renderOptions, dryRun: true }) : { changed: [], conflicts: [] };
     for (const warning of preview.warnings || []) console.warn(warning);
 
@@ -562,6 +580,7 @@ function runInstall(opts) {
         if (projections.size) {
             const rendered = renderSharedAgents(target, renderOptions);
             if (rendered.conflicts.length === 0) stats.created += rendered.changed.length;
+            for (const rel of rendered.pruned || []) console.log(`  PRUNE    ${rel} — excluded by the project's skill selection`);
             for (const rel of rendered.conflicts) {
                 stats.conflicts.push(rel);
                 console.error(`  CONFLICT ${rel} — generated output has local edits; review canonical source before rendering.`);
@@ -573,6 +592,7 @@ function runInstall(opts) {
         }
     } else {
         for (const rel of preview.changed) console.log(`  RENDER   ${rel} (from installed canonical sources)`);
+        for (const rel of preview.pruned || []) console.log(`  PRUNE    ${rel} — excluded by the project's skill selection (dry run: not removed)`);
     }
 
     // ── Write MERGE-NOTES if conflicts occurred (not dry-run) ─────────────────
@@ -661,7 +681,7 @@ function runInstall(opts) {
             if (dryRun) {
                 console.log(`  PLAN     ${VERSION_MARKER} (last — install marker)`);
             } else {
-                const marker = renderSharedAgents(target, { onlyOutputs: markerOnly, adoptPaths: markerOnly, excludedSkills, files, commands });
+                const marker = renderSharedAgents(target, { onlyOutputs: markerOnly, adoptPaths: markerOnly, excludedSkills, excludedRoles, files, commands });
                 if (marker.conflicts.length > 0) {
                     stats.conflicts.push(...marker.conflicts);
                     stats.ok = false;
@@ -746,7 +766,10 @@ function main() {
 
     const verified = preflightInstall({ source, target: targetAbs, dryRun: opts.dryRun });
     if (!verified.ok) {
-        for (const error of verified.errors) console.error(`  ${error.code}: ${error.message}${error.reason ? ` [${error.reason}]` : ''}`);
+        for (const error of verified.errors) {
+            console.error(`  ${error.code}: ${error.message}${error.reason ? ` [${error.reason}]` : ''}`);
+            for (const line of error.details || []) console.error(`    ${line}`);
+        }
         console.error('install: preflight refused; nothing was written.');
         process.exitCode = 1;
         return;

@@ -7,8 +7,15 @@ const { TextDecoder } = require('util');
 const MAX_TODO_BYTES = 2 * 1024 * 1024;
 const STORY_ID = /^[A-Za-z0-9]+(?:[._-][A-Za-z0-9]+)*$/;
 const MARKER = /\[([ xX>!~*BC])\]/g;
+// A checkbox marker anywhere in a command would be miscounted by status.js and metrics.js, which match one unanchored.
+const MARKER_ANYWHERE = /\[[ xX>!~*BC]\]/;
+// The first words ac-verify.js will run. Owned here because ac-verify requires this module, never the reverse.
+const VERIFY_HEADS = ['node', 'npx', 'npm', 'git', 'pytest', 'dotnet', 'cargo', 'go'];
+// Names Windows reserves as devices; a story id is a record file name (`{storyId}.json`), and `CON.json` is the console there.
+const WINDOWS_RESERVED = /^(?:CON|PRN|AUX|NUL|COM[0-9]|LPT[0-9])$/i;
 
-function withoutCodeSpans(text) {
+/** [start, end) ranges of the inline code spans in `text` (a backtick run closes at the next run of equal length). */
+function codeSpanRanges(text) {
     const runs = Array.from(text.matchAll(/`+/g));
     const next = [];
     const seen = new Map();
@@ -16,17 +23,74 @@ function withoutCodeSpans(text) {
         next[at] = seen.get(runs[at][0].length);
         seen.set(runs[at][0].length, at);
     }
-    const pieces = [];
-    let start = 0;
+    const ranges = [];
     for (let at = 0; at < runs.length; at++) {
         const close = next[at];
         if (close === undefined) continue;
-        pieces.push(text.slice(start, runs[at].index));
-        start = runs[close].index + runs[close][0].length;
+        ranges.push([runs[at].index, runs[close].index + runs[close][0].length]);
         at = close;
+    }
+    return ranges;
+}
+
+function withoutCodeSpans(text) {
+    const pieces = [];
+    let start = 0;
+    for (const [from, to] of codeSpanRanges(text)) {
+        pieces.push(text.slice(start, from));
+        start = to;
     }
     pieces.push(text.slice(start));
     return pieces.join('');
+}
+
+/** `text` with every code-span character replaced by a space, so indexes still line up with the original. */
+function maskCodeSpans(text) {
+    let masked = text;
+    for (const [from, to] of codeSpanRanges(text)) masked = masked.slice(0, from) + ' '.repeat(to - from) + masked.slice(to);
+    return masked;
+}
+
+/**
+ * A `verify` that was written in a variant form (capital `Verify:`, full-width colon, wrapped in backticks or
+ * bold) and is followed by something that starts like a runnable command. Such a bullet would otherwise silently
+ * become a manual criterion, which is how a binding is defanged, so it is an error instead. A bullet that merely
+ * mentions the word (`the \`verify:\` line`, `**E2E verify:** seed a store`) is prose and stays manual.
+ */
+function variantVerify(content) {
+    for (const match of content.matchAll(/(?<![\w-])verify\s*[:\uFF1A]/gi)) {
+        const after = content.slice(match.index + match[0].length).replace(/^[\s*_`]+/, '');
+        const word = after.match(/^[A-Za-z]+/);
+        if (word && VERIFY_HEADS.includes(word[0])) {
+            return { error: `verify: found "${match[0]}" written in a variant form. The only binding form is a lowercase "verify:" with an ASCII colon, outside code spans and bold, followed by the command.` };
+        }
+    }
+    return null;
+}
+
+/**
+ * The `verify: <command> [=> exit N]` binding of an acceptance-criterion bullet (a lowercase `verify:`
+ * outside code spans, not glued to a word, not a bold or italic label). Returns null when the bullet has
+ * none, `{ command, expectedExit }` when it parses, and `{ error }` when it is malformed or was written in
+ * a variant form that would otherwise defang it silently. The command is taken from the original text, never
+ * the code-span-masked copy, so it is exactly what the author wrote, and it must not contain a checkbox marker.
+ */
+function parseVerifyBinding(content) {
+    const masked = maskCodeSpans(content);
+    for (const found of masked.matchAll(/(?<![\w-])verify:/g)) {
+        // `**E2E verify:** text` and `**verify:**` are bold labels in prose, not bindings.
+        if (/\*$/.test(content.slice(0, found.index)) || /^[*_]/.test(content.slice(found.index + 'verify:'.length))) continue;
+        const rest = content.slice(found.index + 'verify:'.length).trim();
+        const parts = rest.split('=>');
+        const command = parts[0].trim();
+        if (!command) return { error: 'verify: needs a command before any "=> exit N".' };
+        if (MARKER_ANYWHERE.test(command)) return { error: 'verify: the command must not contain a checkbox marker such as "[ ]" or "[x]".' };
+        if (parts.length === 1) return { command, expectedExit: 0 };
+        const code = parts.length === 2 ? parts[1].trim().match(/^exit\s+(\d{1,3})$/) : null;
+        if (!code || Number(code[1]) > 255) return { error: 'verify: expects "<command> => exit N" with one N from 0 to 255 and nothing after it.' };
+        return { command, expectedExit: Number(code[1]) };
+    }
+    return variantVerify(content);
 }
 
 /** Verify selected story completion without changing the TODO or its criteria. */
@@ -35,9 +99,10 @@ function verifyTodoCompletion(text, options = {}) {
     const error = (code, storyId, line, message) => result.errors.push({ code, storyId, line, message });
     const storyIds = options?.storyIds;
     if (!Array.isArray(storyIds) || !storyIds.length || storyIds.length > 128
-        || storyIds.some(id => typeof id !== 'string' || id.length > 64 || !STORY_ID.test(id))
-        || new Set(storyIds).size !== storyIds.length) {
-        error('INVALID_STORY_IDS', null, null, 'Select unique, exact story IDs.');
+        || storyIds.some(id => typeof id !== 'string' || id.length > 64 || !STORY_ID.test(id) || WINDOWS_RESERVED.test(id.split('.')[0]))
+        || new Set(storyIds.map(id => id.toLowerCase())).size !== storyIds.length) {
+        // Reserved Windows device names and ids that differ only by case would share one record file on Windows.
+        error('INVALID_STORY_IDS', null, null, 'Select unique, exact story IDs (no Windows device names such as CON or NUL, and no two ids that differ only by case).');
         return result;
     }
     if (typeof text !== 'string' || Buffer.byteLength(text, 'utf8') > MAX_TODO_BYTES
@@ -147,6 +212,9 @@ function verifyTodoCompletion(text, options = {}) {
         const reason = disposition?.[2].trim();
         const criterion = { line: number, text: content, checked: checkbox[1].toLowerCase() === 'x',
             disposition: reason ? { type: disposition[1].toLowerCase(), reason } : null };
+        const binding = parseVerifyBinding(content);
+        if (binding?.error) error('BAD_VERIFY', current.id, number, binding.error);
+        else if (binding) criterion.verify = binding;
         current.criteria.push(criterion);
         if (!criterion.checked && !criterion.disposition) result.unchecked.push({ storyId: current.id, line: number, text: content });
     }
@@ -221,5 +289,5 @@ function main(args = process.argv.slice(2)) {
     return result.ok ? 0 : 1;
 }
 
-module.exports = { verifyTodoCompletion, readTodoFile, selfTest, main, MAX_TODO_BYTES };
+module.exports = { verifyTodoCompletion, readTodoFile, selfTest, main, MAX_TODO_BYTES, VERIFY_HEADS };
 if (require.main === module) process.exitCode = main();

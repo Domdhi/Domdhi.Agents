@@ -4,7 +4,7 @@
  * memory-recall.js — hybrid recall over a memory corpus (see memory-notes.js).
  *
  * Keyword (BM25) and embedding (cosine) rankings are fused with reciprocal rank fusion. Evidence
- * (Domdhi.Vault scale test, 40 to 579 memories): the right memory stayed in the top 3 for 12 of 12
+ * (a real-store scale test, 40 to 579 memories): the right memory stayed in the top 3 for 12 of 12
  * findable queries. The cosine floor is 0.70 (rank still does the work). 0.65 was right for that small store, but on
  * two real 320-memory project stores with real prompts it injected on 100% of prompts and about 70% of the
  * injected memories were noise; 0.70 halved the noise and kept the useful hits on those stores and on the Vault's.
@@ -28,6 +28,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { safeWriteAtomic } = require('./fs-safe');
 
 const STOP = new Set(('a an the and or but if then else for of to in on at by with from as is are was were be it its this that these those i you we they me my our your do does ' +
     'did not no yes can could should would will may might must have has had please make add update fix change use using need get set run new also into out up down over so than too ' +
@@ -160,11 +161,10 @@ function readHosts(file) {
 }
 
 function writeHosts(file, hosts) {
+    // The state folder is whatever the working tree makes it (L1H, review C1 part 2): the atomic write
+    // refuses a symlinked ancestor and never writes through a symlinked leaf.
     try {
-        fs.mkdirSync(path.dirname(file), { recursive: true });
-        const tmp = `${file}.${process.pid}.tmp`;
-        fs.writeFileSync(tmp, JSON.stringify(hosts));
-        fs.renameSync(tmp, file);
+        safeWriteAtomic(file, JSON.stringify(hosts));
     } catch { /* best effort: a lost write only means one more retry */ }
 }
 
@@ -263,10 +263,7 @@ function loadIndex(stateDir) {
 }
 
 function writeIndex(stateDir, idx) {
-    fs.mkdirSync(stateDir, { recursive: true });
-    const tmp = `${indexFile(stateDir)}.${process.pid}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify({ ...idx, updated: new Date().toISOString() }));
-    fs.renameSync(tmp, indexFile(stateDir));
+    safeWriteAtomic(indexFile(stateDir), JSON.stringify({ ...idx, updated: new Date().toISOString() }));
 }
 
 /** Documents whose vector is missing or out of date for the current model. */

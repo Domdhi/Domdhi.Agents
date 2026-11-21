@@ -14,9 +14,19 @@ import { execFileSync } from 'node:child_process';
 const require = createRequire(import.meta.url);
 const mig = require('../../../.agents/core/migrate-output-layout');
 
+// Every directory mkTmp() hands out is recorded and removed after the test that made it, so a
+// test that builds its own root inline (no per-describe afterEach) cannot leak into os.tmpdir().
+const createdTmpRoots = [];
 function mkTmp() {
-    return fs.mkdtempSync(path.join(os.tmpdir(), 'migrate-output-'));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'migrate-output-'));
+    createdTmpRoots.push(root);
+    return root;
 }
+afterEach(() => {
+    while (createdTmpRoots.length > 0) {
+        fs.rmSync(createdTmpRoots.pop(), { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    }
+});
 function write(root, rel, content) {
     const abs = path.join(root, rel);
     fs.mkdirSync(path.dirname(abs), { recursive: true });

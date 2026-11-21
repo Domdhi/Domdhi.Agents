@@ -18,6 +18,11 @@ const NO_DEPENDENCY = /^(?:none|n\/a|-+|—|–)?$/i;
 
 const clean = cell => String(cell || '').replace(/[*`_]/g, '').trim();
 
+// A header-story field written after another on one line: `**Dependencies:** F-1.1 · **After:** F-1.3`.
+// The scalar fields (release, tier, wave, dependencies) take only the text before the next inline field.
+const INLINE_FIELD = /\s+·\s+(?=\*\*[A-Za-z][A-Za-z ]*:?\*\*)/;
+const headOf = text => String(text || '').split(INLINE_FIELD)[0].trim();
+
 function splitCells(trimmed) {
     // `\|` is a literal pipe inside a cell, not a column break.
     return trimmed.slice(1, -1).split(/(?<!\\)\|/).map(cell => cell.trim());
@@ -91,18 +96,27 @@ function findHeaderStories(lines) {
             ? heading[2].match(/^Story\s+([A-Za-z0-9]+(?:[._-][A-Za-z0-9]+)*)(?=\s|:|$)/i)
             : trimmed.match(/^[-*+]\s+(?:\[[ xX>!~]\]\s+)?\*\*Story\s+([A-Za-z0-9]+(?:[._-][A-Za-z0-9]+)*)(?=\s|:|\*\*|$)/i);
         if (header) {
-            current = { id: header[1], line: at + 1, depth: heading ? heading[1].length : 0, status: trimmed, fields: {} };
+            if (current && current.end === undefined) current.end = at;
+            current = { id: header[1], line: at + 1, depth: heading ? heading[1].length : 0, status: trimmed, fields: {}, end: undefined };
             stories.push(current);
             continue;
         }
-        if (heading && current && (!current.depth || heading[1].length <= current.depth)) { current = null; continue; }
+        if (heading && current && (!current.depth || heading[1].length <= current.depth)) {
+            if (current.end === undefined) current.end = at;
+            current = null;
+            continue;
+        }
         if (!current) continue;
-        const field = trimmed.match(/^(?:[-*+]\s+)?\*\*(Release|Risk tier|Tier|Dependencies|Depends on|Wave):?\*\*:?\s*(.*)$/i);
+        // `end` is the 0-based exclusive line index where the story's block stops: the next story
+        // header, a heading that closes it, or a `---` rule. Field capture below is unchanged by it.
+        if (current.end === undefined && /^(?:-{3,}|\*{3,}|_{3,})$/.test(trimmed)) current.end = at;
+        const field = trimmed.match(/^(?:[-*+]\s+)?\*\*(Release|Risk tier|Tier|Dependencies|Depends on|Wave|After|Files|Agent budget):?\*\*:?\s*(.*)$/i);
         if (field) {
             const key = field[1].toLowerCase().replace(/^risk tier$/, 'tier').replace(/^depends on$/, 'dependencies');
             if (!(key in current.fields)) current.fields[key] = { value: field[2], line: at + 1 };
         }
     }
+    for (const story of stories) if (story.end === undefined) story.end = lines.length;
     return { stories, unclosedFence: Boolean(fence) };
 }
 
@@ -193,7 +207,7 @@ function checkReleaseSlices(text, options = {}) {
         }
         if (missing('tier')) (strict ? error : warn)('MISSING_TIER_COLUMN', null, null, 'A story has no **Risk tier:** line: assign deep | standard at planning time.');
         for (const story of stories) {
-            const value = key => (key in story.fields ? story.fields[key].value : null);
+            const value = key => (key in story.fields ? headOf(story.fields[key].value) : null);
             addStory(story.id, story.line, {
                 release: value('release'), tier: value('tier'), status: story.status, unmarked: 'pending',
                 wave: value('wave') || '', deps: value('dependencies') || '',
@@ -288,5 +302,5 @@ function main(args = process.argv.slice(2)) {
     return result.ok ? 0 : 1;
 }
 
-module.exports = { checkReleaseSlices, main };
+module.exports = { checkReleaseSlices, findHeaderStories, dependenciesOf, INLINE_FIELD, main };
 if (require.main === module) process.exitCode = main();

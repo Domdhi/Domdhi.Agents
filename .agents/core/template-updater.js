@@ -44,7 +44,8 @@ const { safeCopy, assertNoSymlinkedAncestor } = require('./_lib/fs-safe');
 const { applyManagedBlock }       = require('./scaffold');
 const { ignoredFilter }           = require('./_lib/git-ignored');
 const { hiddenManagedFiles, describeHidden } = require('./_lib/ignored-managed');
-const { describeRetiredConflict, syncSharedAgents, syncStartupInstructions, projectionPaths, renderSharedAgents, isExcludedSkillPath, workflowMap } = require('./_lib/shared-agents');
+const { resolveSelection, withRenamedSkills, checkSelectionClosure } = require('./_lib/skill-profiles');
+const { describeRetiredConflict, syncSharedAgents, syncStartupInstructions, projectionPaths, renderSharedAgents, isExcludedSkillPath, isExcludedRolePath, workflowMap } = require('./_lib/shared-agents');
 
 const { classifyClaudeFile }  = zoneClassifier;
 const { mergeAgentFile }      = agentMerger;
@@ -76,7 +77,8 @@ const FRONT_DOOR_MESSAGES = {
     TARGET: 'Target must be an existing directory; mutation is refused.',
     PATH: 'Target scope must stay inside the project without symbolic links; mutation is refused.',
     ASSETS: 'Required toolkit source assets are missing; mutation is refused.',
-    CONFIG: 'Project .claude/update-config.json must be a regular JSON object whose optional skillExclude is an array of strings; mutation is refused.',
+    CONFIG: 'Project .claude/update-config.json must be a regular JSON object whose optional skillProfile is a string and optional skillInclude and skillExclude are arrays of strings; mutation is refused.',
+    PROFILE: 'Project skill selection (update-config.json skillProfile, skillInclude, skillExclude) is unknown or leaves a kept skill or role invoking a dropped skill; mutation is refused.',
     VALIDATION: 'A toolkit validation substep failed; mutation is refused.',
 };
 
@@ -94,31 +96,63 @@ function tryAction(label, fn, stats) {
     }
 }
 
-// Skills the toolkit renamed: a project that excluded the old name keeps excluding the skill under its new name.
-const RENAMED_SKILLS = Object.freeze({ 'learning-intake': 'intake' });
-function withRenamedSkills(names) {
-    for (const [from, to] of Object.entries(RENAMED_SKILLS)) if (names.has(from)) names.add(to);
-    return names;
+// The tree whose profiles resolve a selection by default: the toolkit running this code.
+// During a fleet sync that is the workshop; in an adopter's own render it is the adopter's
+// synced copy, which carries the same shipped profiles.
+const DEFAULT_TOOLKIT_ROOT = path.resolve(__dirname, '..', '..');
+
+/**
+ * Resolve the target project's skill and role selection from its
+ * .claude/update-config.json (`skillProfile`, `skillInclude`, `skillExclude`)
+ * against the toolkit profiles. Missing config → nothing excluded. An
+ * unparsable config or an unknown profile warns and falls back to the plain
+ * `skillExclude` list (the strict front door refuses both before any write).
+ * Never throws.
+ *
+ * @param {string} targetClaudeDir — absolute path to the target's .claude/
+ * @param {string} [toolkitRoot]  — tree whose profiles apply
+ * @returns {{ excludedSkills: Set<string>, excludedRoles: Set<string> }}
+ */
+function loadSelection(targetClaudeDir, toolkitRoot = DEFAULT_TOOLKIT_ROOT) {
+    const none = { excludedSkills: new Set(), excludedRoles: new Set() };
+    const cfgPath = path.join(targetClaudeDir, 'update-config.json');
+    if (!fs.existsSync(cfgPath)) return none;
+    let cfg;
+    try {
+        cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+    } catch (err) {
+        console.error(`  WARN     could not parse .claude/update-config.json — ignoring exclusions (${err.message})`);
+        return none;
+    }
+    if (cfg === null || typeof cfg !== 'object' || Array.isArray(cfg)) return none;
+    const config = {
+        skillProfile: typeof cfg.skillProfile === 'string' ? cfg.skillProfile : undefined,
+        skillInclude: Array.isArray(cfg.skillInclude) ? cfg.skillInclude : [],
+        skillExclude: Array.isArray(cfg.skillExclude) ? cfg.skillExclude : [],
+    };
+    const selection = resolveSelection({ toolkitRoot, config });
+    if (selection.errors.length) {
+        for (const error of selection.errors) console.error(`  WARN     update-config.json: ${error} — applying skillExclude only`);
+        return { excludedSkills: withRenamedSkills(new Set(config.skillExclude)), excludedRoles: new Set() };
+    }
+    return { excludedSkills: selection.excludedSkills, excludedRoles: selection.excludedRoles };
 }
 
 /**
- * Load the set of skill names the target project has opted out of, from its
- * .claude/update-config.json (`{ "skillExclude": ["tailwind-css-patterns", ...] }`).
- * Missing/invalid config → empty set (no exclusions). Never throws.
+ * The skill names the target project does not receive: its profile's
+ * complement plus `skillExclude` (or `skillExclude` alone without a profile).
  *
  * @param {string} targetClaudeDir  — absolute path to the target's .claude/
+ * @param {string} [toolkitRoot]  — tree whose profiles apply
  * @returns {Set<string>}
  */
-function loadExcludedSkills(targetClaudeDir) {
-    const cfgPath = path.join(targetClaudeDir, 'update-config.json');
-    if (!fs.existsSync(cfgPath)) return new Set();
-    try {
-        const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
-        return Array.isArray(cfg.skillExclude) ? withRenamedSkills(new Set(cfg.skillExclude)) : new Set();
-    } catch (err) {
-        console.error(`  WARN     could not parse .claude/update-config.json — ignoring exclusions (${err.message})`);
-        return new Set();
-    }
+function loadExcludedSkills(targetClaudeDir, toolkitRoot) {
+    return loadSelection(targetClaudeDir, toolkitRoot).excludedSkills;
+}
+
+/** The toolkit role names the target project's profile does not ship. */
+function loadExcludedRoles(targetClaudeDir, toolkitRoot) {
+    return loadSelection(targetClaudeDir, toolkitRoot).excludedRoles;
 }
 
 /**
@@ -131,26 +165,42 @@ function loadExcludedSkills(targetClaudeDir) {
  * Never throws.
  *
  * @param {string} targetClaudeDir — absolute path to the target's .claude/
- * @returns {{ ok: true, skillExclude: string[] } | { ok: false, code: 'CONFIG', message: string }}
+ * @returns {{ ok: true, skillExclude: string[], skillInclude: string[], skillProfile?: string } | { ok: false, code: 'CONFIG', message: string }}
  */
 function readUpdateConfig(targetClaudeDir) {
     const refusal = { ok: false, code: 'CONFIG', message: FRONT_DOOR_MESSAGES.CONFIG };
     try {
         const cfgPath = path.join(targetClaudeDir, 'update-config.json');
         const stat = fs.lstatSync(cfgPath, { throwIfNoEntry: false });
-        if (!stat) return { ok: true, skillExclude: [] };
+        if (!stat) return { ok: true, skillExclude: [], skillInclude: [] };
         if (!stat.isFile()) return refusal;
         const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
         const plain = cfg !== null && typeof cfg === 'object' && !Array.isArray(cfg)
             && (Object.getPrototypeOf(cfg) === Object.prototype || Object.getPrototypeOf(cfg) === null);
         if (!plain) return refusal;
-        if (!Object.hasOwn(cfg, 'skillExclude')) return { ok: true, skillExclude: [] };
-        const list = cfg.skillExclude;
-        if (!Array.isArray(list) || !list.every(name => typeof name === 'string')) return refusal;
-        return { ok: true, skillExclude: [...list] };
+        const names = key => !Object.hasOwn(cfg, key) || (Array.isArray(cfg[key]) && cfg[key].every(name => typeof name === 'string'));
+        if (!names('skillExclude') || !names('skillInclude')) return refusal;
+        if (Object.hasOwn(cfg, 'skillProfile') && (typeof cfg.skillProfile !== 'string' || cfg.skillProfile === '')) return refusal;
+        return {
+            ok: true,
+            skillExclude: [...(cfg.skillExclude || [])],
+            skillInclude: [...(cfg.skillInclude || [])],
+            ...(Object.hasOwn(cfg, 'skillProfile') ? { skillProfile: cfg.skillProfile } : {}),
+        };
     } catch {
         return refusal;
     }
+}
+
+/** Group pruned paths by skill directory so a profile switch prints one line per skill, not per file. */
+function pruneGroups(paths) {
+    const groups = new Map();
+    for (const rel of paths) {
+        const skill = /^(\.(?:agents|claude)\/skills\/[^/]+\/)/.exec(rel);
+        const key = skill ? skill[1] : rel;
+        groups.set(key, (groups.get(key) || 0) + 1);
+    }
+    return [...groups.entries()].sort(([a], [b]) => a.localeCompare(b));
 }
 
 function frontDoorRefusal(code, dryRun) {
@@ -182,7 +232,8 @@ function validateTargetScope(target, scope) {
 
 /**
  * Read-only direct-entry preflight: request → source assets → target directory
- * and contained, symlink-free mutation scope → strict project update-config.
+ * and contained, symlink-free mutation scope → strict project update-config →
+ * a skill selection that is closed over the source's skills and roles.
  * Ordinary projects do not require Git metadata or an organization declaration.
  * Unexpected validation failures refuse before mutation.
  *
@@ -208,7 +259,11 @@ function preflightFrontDoor(request, spec) {
         } catch {
             return frontDoorRefusal('PATH', dryRun);
         }
-        if (!readUpdateConfig(path.join(targetRoot, '.claude')).ok) return frontDoorRefusal('CONFIG', dryRun);
+        const config = readUpdateConfig(path.join(targetRoot, '.claude'));
+        if (!config.ok) return frontDoorRefusal('CONFIG', dryRun);
+        // The selection must be closed over the skills and roles this source delivers.
+        const closure = checkSelectionClosure(sourceRoot, config);
+        if (!closure.ok) return { ok: false, exitCode: 1, errors: [{ code: 'PROFILE', message: FRONT_DOOR_MESSAGES.PROFILE, details: closure.details }], dryRun };
         return { ok: true, exitCode: 0, source: sourceRoot, target: targetRoot, operation: spec.operation, scope, dryRun };
     } catch {
         return frontDoorRefusal('VALIDATION', dryRun);
@@ -302,9 +357,11 @@ function runUpdate(targetPath, options) {
     // checkout throws here, before any target write.
     const isIgnored = ignoredFilter(projectRoot, { failureMessage: 'Update source ignored-file query failed; nothing was written.' });
 
-    const excludedSkills = loadExcludedSkills(targetClaudeDir);
-    if (excludedSkills.size > 0) {
-        console.log(`  Excluding skills (per update-config.json): ${[...excludedSkills].join(', ')}`);
+    const excludedSkills = loadExcludedSkills(targetClaudeDir, projectRoot);
+    const excludedRoles = loadExcludedRoles(targetClaudeDir, projectRoot);
+    if (excludedSkills.size > 0 || excludedRoles.size > 0) {
+        if (excludedSkills.size > 0) console.log(`  Excluding skills (per update-config.json): ${[...excludedSkills].join(', ')}`);
+        if (excludedRoles.size > 0) console.log(`  Excluding roles (per update-config.json profile): ${[...excludedRoles].join(', ')}`);
         console.log('');
     }
 
@@ -327,14 +384,16 @@ function runUpdate(targetPath, options) {
 
     let sharedUpdateReady = false;
     tryAction('.agents shared update', () => {
-        const r = syncSharedAgents(projectRoot, targetPath, { ...options, canonicalSkills, targetSkills, excludedSkills, deferredOutputs: new Set(['.claude/version.json']) });
+        const r = syncSharedAgents(projectRoot, targetPath, { ...options, canonicalSkills, targetSkills, excludedSkills, excludedRoles, deferredOutputs: new Set(['.claude/version.json']) });
         sharedUpdateReady = r.conflicts.length === 0;
         stats.copied += r.copied; stats.merged += r.merged; stats.skipped += r.skipped;
         stats.conflicts.push(...r.conflicts);
         for (const rel of r.changed) console.log(`  ${options.dryRun ? 'PLAN' : 'UPDATE'}   ${rel}`);
         for (const rel of r.retired || []) console.log(`  ${options.dryRun ? 'PLAN' : 'RETIRE'}   ${rel} — removed by the toolkit; unedited since it was shipped`);
+        for (const [group, count] of pruneGroups(r.pruned || [])) console.log(`  PRUNE    ${group}${count > 1 ? ` (${count} files)` : ''} — excluded by the project's skill selection${options.dryRun ? ' (dry run: not removed)' : ''}`);
         for (const rel of r.conflicts) {
             const warning = describeRetiredConflict(projectRoot, rel, r.retiredReasons)
+                || (r.prunedConflicts?.includes(rel) ? `${rel} — excluded by the project's skill selection but locally edited; move the changes you want to keep, delete it, then update again` : null)
                 || (rel.endsWith('/') ? `${rel} — a directory of yours has the name of a new toolkit skill; rename or remove it, or list the skill in update-config.json skillExclude, then update again` : null)
                 || `${rel} — generated output edited; review canonical source before rendering`;
             console.log(`  CONFLICT ${warning}`); warnings.push(warning); stats.warned++; stats.mergeWarned++;
@@ -363,7 +422,7 @@ function runUpdate(targetPath, options) {
         if (isIgnored(`.claude/${rel}`)) continue;
 
         // Per-project skill exclusion — skip any file under an excluded skill dir.
-        if (isExcludedSkillPath(`.claude/${rel}`, excludedSkills, workflowMap(projectRoot))) {
+        if (isExcludedSkillPath(`.claude/${rel}`, excludedSkills, workflowMap(projectRoot)) || isExcludedRolePath(`.claude/${rel}`, excludedRoles)) {
             console.log(`  SKIP     .claude/${rel} (excluded by update-config.json)`);
             stats.skipped++;
             continue;
@@ -445,6 +504,9 @@ function runUpdate(targetPath, options) {
                     } else if (r.action === 'skipped') {
                         console.log(`  WARN     .claude/${rel} — ${r.detail}`);
                         stats.warned++;
+                        // A settings.json the merger could not parse never receives the permissions.deny
+                        // wall: fleet-actionable, so it counts with the other merges that did not apply.
+                        if (r.denyUnionSkipped) stats.mergeWarned++;
                     } else {
                         // 'merged' or 'copied'
                         const verb = options.dryRun ? 'MERGE(dry)' : 'MERGE';
@@ -453,7 +515,8 @@ function runUpdate(targetPath, options) {
                     }
                 }, stats);
             } else {
-                console.log(`  SKIP     .claude/${rel} (project zone)`);
+                // Without --merge the permissions.deny union is not applied either; say so on the one file it matters for.
+                console.log(`  SKIP     .claude/${rel} (project zone${rel === 'settings.json' ? '; permissions.deny union not applied' : ''})`);
                 stats.skipped++;
             }
 
@@ -590,7 +653,7 @@ function runUpdate(targetPath, options) {
         } else {
             tryAction('.claude/version.json', () => {
                 if (fs.existsSync(canonicalVersion)) {
-                    const rendered = renderSharedAgents(targetPath, { onlyOutputs: new Set(['.claude/version.json']), excludedSkills, adoptPaths: new Set(['.claude/version.json']) });
+                    const rendered = renderSharedAgents(targetPath, { onlyOutputs: new Set(['.claude/version.json']), excludedSkills, excludedRoles, adoptPaths: new Set(['.claude/version.json']) });
                     if (rendered.conflicts.length) throw new Error(`Generated version marker conflict: ${rendered.conflicts.join(', ')}`);
                 } else copyFile(versionSrc, versionDest, targetPath);
                 console.log('  COPY     .claude/version.json (last — sync marker)');
@@ -663,9 +726,12 @@ Zone behavior:
                     agent skills are kept): agents/*.md
                     With --no-merge: skipped with a warning
   Exceptions      — Skipped with warning: skills/brand-guidelines/**
-  Skill opt-out   — Skills named in the target's .claude/update-config.json
-                    ("skillExclude": [...]) are never copied, so a project can
-                    permanently drop template skills it doesn't use (e.g. Tailwind).
+  Skill opt-out   — The target's .claude/update-config.json selects skills:
+                    "skillProfile" (a toolkit profile: app, knowledge, agent),
+                    "skillInclude" and "skillExclude". Skills and roles outside
+                    the selection are never copied. A selection that leaves a
+                    kept skill or role invoking a dropped one is refused
+                    (node .claude/core/skill-profile.js check|suggest).
   Doc redirect    — Source CLAUDE.md → target .claude/README.md
   .gitignore      — Active root .gitignore: managed-block merge from
                     .claude/templates/root/gitignore (idempotent; the adopter's
@@ -712,7 +778,10 @@ function main() {
         const projectRoot = process.env.CLAUDE_PROJECT_DIR || PROJECT_ROOT;
         const verified = preflightUpdate({ source: projectRoot, target: path.resolve(targetPath), dryRun: options.dryRun });
         if (!verified.ok) {
-            for (const error of verified.errors) console.error(`  ${error.code}: ${error.message}${error.reason ? ` [${error.reason}]` : ''}`);
+            for (const error of verified.errors) {
+                console.error(`  ${error.code}: ${error.message}${error.reason ? ` [${error.reason}]` : ''}`);
+                for (const line of error.details || []) console.error(`    ${line}`);
+            }
             console.error('template-updater: update preflight refused; nothing was written.');
             process.exitCode = 1;
             return;
@@ -752,8 +821,8 @@ if (require.main === module) { main(); }
 const _libFW = require('./_lib/file-walker');
 module.exports = Object.assign(
     {
-        copyFile, runUpdate, loadExcludedSkills, listSkillDirs,
-        UPDATE_SCOPE, ROOT_DOC_REDIRECT, preflightUpdate, preflightFrontDoor, readUpdateConfig,
+        copyFile, runUpdate, loadExcludedSkills, loadExcludedRoles, loadSelection, listSkillDirs,
+        UPDATE_SCOPE, ROOT_DOC_REDIRECT, preflightUpdate, preflightFrontDoor, readUpdateConfig, pruneGroups,
     },
     zoneClassifier,
     agentMerger,

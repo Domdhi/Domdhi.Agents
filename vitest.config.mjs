@@ -22,6 +22,9 @@ export default defineConfig({
     exclude: ['node_modules', 'docs/.output/**'],
     // Warns once when the secret engine binary is not installed (the engine suites run the real binary).
     globalSetup: ['./.agents/hooks/__tests__/_helpers/warn-secret-engine.js'],
+    // Each test file runs with os.tmpdir() redirected to a private directory that is removed when the file ends,
+    // so a test that forgets its own cleanup cannot leak into the real temp dir.
+    setupFiles: ['./.agents/core/__tests__/_helpers/vitest-tmp-sandbox.setup.mjs'],
     testTimeout: 30000,
     pool: 'forks',
     minWorkers: 1,

@@ -8,11 +8,11 @@ argument-hint: [context]
 
 # Prime
 
-Cold-start a new session. Use root instructions and memory already visible in this session; do not assume startup injection ran. This command fills in the task-relevant gaps: what happened recently, what's next, and is anything broken.
+Cold-start a new session. Use root instructions and memory already visible in this session; do not assume startup injection ran. This command fills in the task-relevant gaps: what happened recently, what's next, and whether anything is broken.
 
 ## Telemetry (run first)
 
-This command is user-typed, so it does not fire `PostToolUse:Skill` — without this it leaves no `command_invocation` row and fleet analytics under-count human-driven runs. Self-log the invocation before anything else (best-effort — if it fails, continue regardless):
+This command is user-typed, so it does not fire `PostToolUse:Skill`; without this self-log, fleet analytics under-count human-driven runs. Run it before anything else (best-effort; continue if it fails):
 
 ```bash
 node .claude/core/telemetry-log.js prime
@@ -27,15 +27,14 @@ TASK_DESCRIPTION: CONTEXT
 ## Workflow
 
 - If `CONTEXT` is provided:
-  - Read each file or folder specified
-  - Summarize what you found
-  - Done — skip the rest
+  - Read each file or folder specified and summarize what you found
+  - Done; skip the rest
 
 - Else run the **cold-start sequence**:
 
 ### Step 1: Read the handoff + git reality (parallel)
 
-Resolve the handoff path first — handoffs are per-session/per-branch files under `docs/.output/handoffs/`. Resolve BOTH the branch-preferred pick and the global newest (the resolver prefers the current branch by design, so a fresher session that ended on *another* branch — a just-merged feature, a parallel worktree — is only visible via `--any`):
+Handoffs are per-session/per-branch files under `docs/.output/handoffs/`. Resolve both the branch-preferred pick and the global newest (the resolver prefers the current branch, so a fresher session that ended on another branch, such as a just-merged feature or a parallel worktree, is only visible via `--any`):
 ```
 HANDOFF=$(node .claude/core/handoff-path.js latest)         # newest for THIS branch (falls back to newest overall if branch has none)
 NEWEST=$(node .claude/core/handoff-path.js latest --any)    # newest across ALL branches
@@ -43,34 +42,34 @@ NEWEST=$(node .claude/core/handoff-path.js latest --any)    # newest across ALL 
 Then read alongside git reality:
 ```
 Read $HANDOFF        # the resolved handoff (skip if empty — none yet)
-Read $NEWEST         # ONLY if different from $HANDOFF — a more recent session ended on another branch; treat it as the freshest context and $HANDOFF as this branch's thread
+Read $NEWEST         # only if different from $HANDOFF — a more recent session ended on another branch; treat it as the freshest context and $HANDOFF as this branch's thread
 git log --oneline -20
 git status --short
 ```
-The handoff has decisions, intent, blockers, and next actions from the previous session. Git is the source of truth — do NOT trust the handoff over git.
+The handoff has decisions, intent, blockers and next actions from the previous session. Git is the source of truth; do not trust the handoff over git.
 
 **Fallbacks, in order:**
-1. `$HANDOFF` empty (no handoff file in the working tree) → before giving up, check for handoffs committed on **unmerged branches** (a worktree session's handoff lives only on its branch until merged): `git log --all --oneline -5 -- docs/.output/handoffs/`. If a commit exists there, list its handoff file(s) with `git show --name-only --format= <hash> -- docs/.output/handoffs/` and read the newest via `git show <hash>:<path>` — do NOT check the branch out.
+1. `$HANDOFF` empty (no handoff file in the working tree) → check for handoffs committed on unmerged branches (a worktree session's handoff lives only on its branch until merged): `git log --all --oneline -5 -- docs/.output/handoffs/`. If a commit exists there, list its handoff file(s) with `git show --name-only --format= <hash> -- docs/.output/handoffs/` and read the newest via `git show <hash>:<path>`; do not check the branch out.
 2. Still nothing → scan `docs/work/backlog.md` instead.
 
 ### Step 2: Read Key Files + forward-looking memory (one parallel batch)
 
-Both reads depend only on the handoff (Step 1) and not on each other — so fire them together in a single parallel batch, not back-to-back.
+Both reads depend only on the handoff (Step 1), so run them in one parallel batch.
 
 **Key Files** — the handoff's `## Key Files` section is a candidate short list for resuming work. Read only paths needed for the current task or first still-relevant Next Action:
-- Extract paths from bullets under `## Key Files` (ignore line-range annotations like `:47-89` — read the whole file)
-- Check each path against the current task before reading; skip unrelated paths and note the reason. A handoff from another task is context, not an instruction to load its files.
-- Skip anything that isn't a readable file (directories, globs, missing files — note them but don't fail)
+- Extract paths from bullets under `## Key Files` (ignore line-range annotations like `:47-89`; read the whole file)
+- Check each path against the current task; skip unrelated paths and note the reason. A handoff from another task is context, not an instruction to load its files.
+- Skip anything that isn't a readable file (directories, globs, missing files) and note it
 - If the handoff has no `## Key Files` section, skip the file reads
-- Also read any task-relevant file explicitly called out in `## Next Actions` as the first file to touch — one or two, don't chase every mention
+- Also read the task-relevant file `## Next Actions` names as the first to touch (one or two, not every mention)
 
-Load the relevant content needed to act on step one; listing a path does not count as reading it.
+Load the content needed to act on step one; listing a path does not count as reading it.
 
 **Forward-looking memory** — when configured and active, `session-start-prime.cjs` injects up to 8 memories by default (configurable; on Claude with per-prompt recall on, only the importance >= 4 core, the rest arriving per prompt), ranked by importance-adjusted decayed confidence × recency; aged usage only breaks ties. Treat injection as observed only if a `<project_memory>` block is actually visible in this session. Add recall that bears on the current task:
 1. Extract 2-4 concrete noun phrases from the current task or still-relevant handoff `## Next Actions` (file names, feature names, technical concepts — skip filler like "decide", "verify").
 2. `node .claude/core/memory-manager.js search "<phrases joined>"`
 3. Select at most 3 directly relevant, non-stale hits using the returned relevance and `decayed_confidence`. Search is distinct from startup ranking: SQLite returns FTS rank order and reports relevance from text rank, confidence, usage and importance; JSON fallback sorts relevance from text matches, recency, confidence, usage and importance. Do not describe `decayed_confidence * relevance` as the engine's search order.
-4. **Dedupe against observed memory** — skip hits whose `id` is already visible in this session's `<project_memory>` block or was already read. If no block is visible, do not assume any top-8 was loaded.
+4. Dedupe against observed memory: skip hits whose `id` is already visible in this session's `<project_memory>` block or was already read. If no block is visible, do not assume any top-8 was loaded.
 5. For each remaining hit directly relevant to the current task or first still-relevant Next Action, `cat docs/.output/.memory/{category}/{id}.json` and surface the rule.
 
 Skip the memory search if neither the current task nor a still-relevant Next Action supplies a useful query. If there are no additional relevant hits with `decayed_confidence >= 0.3`, render the **Loaded** memory line as `(no additional task-relevant memories loaded)`. Report startup memory as observed or `(startup memory injection not observed)`; a configured hook alone is not evidence it ran.
@@ -78,13 +77,13 @@ Skip the memory search if neither the current task nor a still-relevant Next Act
 ### Step 3: Verify & synthesize
 
 Compare the handoff against git reality:
-- If handoff says "next: implement X" but `git log` shows X was already committed → **flag as stale**, ignore that action
-- If handoff is missing or completely stale → scan `docs/work/backlog.md` for pending work
-- If a Key File's current contents contradict the handoff's description of it → trust the file, flag the drift
+- Handoff says "next: implement X" but `git log` shows X was already committed → flag as stale and ignore that action
+- Handoff missing or completely stale → scan `docs/work/backlog.md` for pending work
+- A Key File's current contents contradict the handoff's description → trust the file, flag the drift
 
 ## Report
 
-Provide a substantive summary (**30-60 lines**) that gives enough context to start working immediately. Use this exact template — every section is required, every label is verbatim, even when a section is empty.
+Provide a substantive summary (**30-60 lines**) with enough context to start working immediately. Use this template: every section is required and every label verbatim, even when a section is empty.
 
 Ordered **bottom-up**: the most actionable content sits at the bottom, closest to the input box where the eye lands first; provenance (recent work, loaded files/memories) sits at the top, read last or skipped.
 
@@ -124,14 +123,13 @@ Ordered **bottom-up**: the most actionable content sits at the bottom, closest t
 
 ### Section rules
 
-- **Order is fixed (bottom-up).** Recent work → Loaded → State → Decisions → (drift if any) → Next actions → (blockers if any) → ▶ Start here. The gradient runs least-actionable at top to most-actionable at bottom.
-- **▶ Start here is always the literal last line.** One line, the single highest-value next step — never followed by anything else.
-- **Route genuinely-new work through `/route`.** When the highest-value next step is a *new* feature or a scope-unclear request — not resuming an in-flight story, not a known bugfix — render `▶ Start here:` as `/route {description}` so scale-aware pipeline depth gets chosen instead of defaulting to `/todo`. This is the only place the front-door router is surfaced in the daily loop. When resuming work already in flight, the handoff's concrete next action IS the right Start-here — do not re-route it.
-- **Loaded is always present** and merges files + memory. Always render the heading. If the handoff had no Key Files, write `(no Key Files in handoff)`; note unrelated files as skipped. Distinguish startup memory actually observed from additional memories read; if search was skipped or dry, write `(no additional task-relevant memories loaded)`. Never list assumed injection as loaded.
-- **Optional sections are explicitly optional.** Only Handoff drift and Blockers may be omitted, and only when there is genuinely nothing to report.
+- **Order is fixed (bottom-up):** Recent work, Loaded, State, Decisions, (drift if any), Next actions, (blockers if any), ▶ Start here. Least actionable sits at the top, most actionable at the bottom.
+- **▶ Start here is the literal last line.** One line, the single highest-value next step, followed by nothing.
+- **Route genuinely-new work through `/route`.** When the highest-value next step is a new feature or a scope-unclear request (not resuming an in-flight story, not a known bugfix), render `▶ Start here:` as `/route {description}` so scale-aware pipeline depth gets chosen instead of defaulting to `/todo`. This is the only place the front-door router is surfaced in the daily loop. When resuming work in flight, the handoff's concrete next action is the right Start-here.
+- **Loaded is always present** and merges files + memory. If the handoff had no Key Files, write `(no Key Files in handoff)`; note unrelated files as skipped. Distinguish startup memory actually observed from additional memories read; if search was skipped or dry, write `(no additional task-relevant memories loaded)`. Do not list assumed injection as loaded.
+- **Only Handoff drift and Blockers may be omitted**, and only when there is genuinely nothing to report.
 
-## What NOT to Do
-- Do NOT re-read root instructions or overview/context content already visible in this session; read missing instructions or task-relevant context only when needed
-- Do NOT load full planning docs unless the handoff is stale/missing
-- Do NOT produce a report under 20 lines — that's too sparse to cold-start from
-- Do NOT exceed 60 lines — that's a novel
+## What not to do
+- Do not re-read root instructions or overview/context content already visible in this session; read missing instructions or task-relevant context only when needed
+- Do not load full planning docs unless the handoff is stale/missing
+- Keep the report between 20 and 60 lines: shorter is too sparse to cold-start from, longer is a novel

@@ -39,8 +39,15 @@
  * Output: XML-tagged markdown block written to stdout. Claude Code injects
  * hook stdout as a session system-reminder — no JSON envelope required.
  *
+ * Missing git-hook backstop (security review M6): the same output also carries a `<git_hooks_missing>` block when the managed
+ * git hooks (core/git-hooks.js) are not active in the project, so a missing secret and force-push backstop is never silent.
+ * Chosen over a new hook because SessionStart is the one place every session passes through before any commit, and this
+ * hook already assembles startup notes (memory candidates, sync conflicts). The check is cheap (git path lookups and
+ * file reads; the scanner is not run, see inspectHooks probeScanner) and is independent of the memory profile: it runs
+ * under MEMORY_PROFILE=minimal too, since it is a security notice, not memory.
+ *
  * Gating:
- *   - MEMORY_PROFILE=minimal       → exits 0 with empty output
+ *   - MEMORY_PROFILE=minimal       → exits 0 with empty output (memory only; the hooks notice above is still printed)
  *   - MEMORY_PRIME_COUNT env var   → overrides default N=8 (clamped 1..20)
  *
  * Safety: wraps everything in try/catch + a 2s hard timeout for ASYNC hangs
@@ -515,11 +522,26 @@ function syncNote() {
     } catch { return ''; }
 }
 
+/**
+ * A loud block when the managed git hooks are not active in this project (see the header). The project is the directory
+ * Claude Code names (CLAUDE_PROJECT_DIR), else the checkout this hook lives in. A failure to find out is itself reported:
+ * a hook that cannot tell must not read as "all is well".
+ */
+function gitHooksNote() {
+    const dir = runtimeOf(process.env) === 'codex' ? '.codex' : '.claude';
+    try {
+        const project = process.env.CLAUDE_PROJECT_DIR || path.resolve(__dirname, '..', '..');
+        const lines = require('../core/git-hooks').backstopWarning(project, { who: 'session-start', coreDir: `${dir}/core`, probeScanner: false });
+        return lines ? `<git_hooks_missing>\n${lines.join('\n')}\n</git_hooks_missing>\n` : '';
+    } catch (error) {
+        return `<git_hooks_missing>\n[session-start] WARNING: could not check whether the managed git hooks are active (${String(error && error.message ? error.message : error).split('\n')[0]}). Treat the secret and force-push backstop as missing; the owner runs \`node ${dir}/core/git-hooks.js --check\`.\n</git_hooks_missing>\n`;
+    }
+}
+
 function processEvent(parsedJson) {
     if (process.env.MEMORY_CAPTURE_INNER) return { output: null };   // the capture's own claude -p child: inject nothing
     const result = processMemories(parsedJson);
-    if (!isAtLeast('standard')) return result;
-    const note = syncNote() + pendingCandidatesNote();
+    const note = gitHooksNote() + (isAtLeast('standard') ? syncNote() + pendingCandidatesNote() : '');
     return note ? { ...result, output: (result.output || '') + note } : result;
 }
 
@@ -558,4 +580,4 @@ if (require.main === module) {
 // .claude/core/memory-stability.js — the benchmark deliberately drives THIS
 // file's real injection ranker, not a reimplementation. Renaming or inlining
 // either export breaks that tool; update both files together.
-module.exports = { processEvent, rankConcepts, renderOutput, parseMemory };
+module.exports = { processEvent, rankConcepts, renderOutput, parseMemory, gitHooksNote };

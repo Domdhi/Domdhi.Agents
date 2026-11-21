@@ -79,7 +79,7 @@ For each target epic:
 node .claude/core/_lib/doc-drift.js
 ```
 
-If it reports **misplaced TODO files**, tell the user and offer to remove/relocate them (or fold into `/onboard`'s Step 6b reconcile) so the project doesn't end up with two competing sets of epic checklists.
+If it reports **misplaced TODO files**, tell the user and offer to remove/relocate them (or reconcile them manually) so the project doesn't end up with two competing sets of epic checklists.
 
 ### 4. Extract Epic Context (main agent)
 
@@ -162,9 +162,19 @@ and conflict review. Respect actual dependency order across waves.
 | 2 | {N}.{x} | direct / parallel | {files} |
 | 3 | {N}.{y} + {N}.{z} | parallel (disjoint surfaces) | {y: files} \| {z: files} |
 
+**Review cadence:** {per-wave reviews grouped by seam; mid-epic review after Wave {N} (the wave after which roughly half the work is done), or none under three waves; final review when the run completes; which waves hold `deep` stories} — planned as in `/todo` (Wave Plan; `references/review-cadence.md` in the `code-review` skill).
+
+**Review groups:** {stories that share a seam, named, or "none"}
+
 > If two stories share a file (e.g. both edit `content.js`), record the handoff,
 > serialized edits or separate-worktree integration explicitly. A shared file
 > alone does not force another wave or forbid necessary file expansion.
+
+---
+
+## Seams and Main Flow
+
+{Defined as in `/todo`: each field, contract or file that crosses a story boundary, defined once with its meaning per case, or `none — {reason}`, and one end-to-end walk of the epic's main flow. A seam that sibling epic checklists also consume is defined once, in the checklist of the epic that produces it, and the others name it and point there.}
 
 ---
 
@@ -219,14 +229,16 @@ and conflict review. Respect actual dependency order across waves.
 ## Story {N}.1: {Story Title} {CRITICAL PATH|BOTTLENECK}
 
 **Dependencies:** None | Story {N}.{X}
+**After:** {optional: Story {N}.{X} this story only prefers to follow; omit the line when there is none}
 **Unblocks:** Story {N}.{X}, Story {N}.{X}
 **Track:** {A (track name)}
 **Domain:** {Backend|Frontend|DevOps|...}
 **Estimate:** {S|M|L|XL}
 **Complexity:** {1–10}  <!-- persisted routing signal `/do` reads; score per the canonical rubric in `/todo` (≤5 → Opus-direct, ≥6 → Sonnet-delegate). Distinct from Estimate (wall-clock effort). -->
 **Release:** {core | later}
-**Risk tier:** {deep | standard} — {the trigger that set it}
-**Ownership:** production {agent type}; tests {owner per the repository's test-authorship rule | owning story ID}; review {fresh independent reviewer}
+**Risk tier:** {deep | standard} — {deep: one-line reason it is high-stakes, per `/todo` Risk tier; standard: what it is}
+**Ownership:** production {agent type}; tests {owner per the repository's test-authorship rule | owning story ID}
+**Premise check:** {only when the story rests on a fact about the code: the command run and its result, or `UNCHECKED — {fact}; verify first in Wave {N}`}
 
 **As a** {persona}, **I want** {capability}, **So that** {benefit}.
 
@@ -280,7 +292,8 @@ After the agent completes, verify:
 - Acceptance criteria match `backlog.md` (not invented)
 - No code blocks or implementation examples (WHAT, not HOW)
 - Required sections all present (Execution Log, Key Decisions, Validation, Work Doc References)
-- Every story has an Ownership line consistent with the repository's actual test-authorship rule
+- Every story has an Ownership line (production and test owners only, no reviewer) consistent with the repository's actual test-authorship rule
+- The Wave Plan has its Review cadence and Review groups lines, and a Seams and Main Flow section exists, per `/todo`
 - Mechanical plan checks pass: every Dependencies/Unblocks ID exists, no wave depends on a later wave, no file is owned by two stories in one wave, and a story that consumes a file another story creates sits in a later wave. These are structural checks, not proof that any AC is met; critical-path hours are effort, not elapsed time
 - If issues found, delegate back to agent to fix
 
@@ -301,7 +314,7 @@ Follow the **Post-Command Commit Convention** in `.agents/startup-reference.md`.
 **Bottleneck stories**: {count}
 
 **Committed**: {hash} — `docs: /create:project-epics-todo — Epic {N}: {name}`
-**Next step**: Run `/do` to implement the first available story, or `/create:project-epics-todo {N+1}` for the next epic.
+**Next step**: Run `/do` to implement the first available story, or `/create:project-epics-todo {N+1}` for the next epic. These checklists carry no `verify:` bindings (they are added when `/todo` materializes a story, rule 9), so a `/do` or `/run-todo` run on them seals every story as all-manual: to bind testable criteria to commands first, materialize the epic's stories with `/todo` or add the `verify:` lines yourself under its Template Rules.
 ```
 
 ## Output Rules
@@ -314,8 +327,9 @@ Follow the **Post-Command Commit Convention** in `.agents/startup-reference.md`.
 6. Include ALL sections even if empty (for consistency with `/do` and `/review:organize`)
 7. **Stories MUST be in dependency-optimized order**
 8. **Every story MUST include Dependencies, Unblocks, Track, Domain, Estimate, and Complexity metadata** (Complexity = the 1–10 routing score `/do` reads — score it per the canonical rubric in `/todo`, never restate that rubric here)
-9. Acceptance criteria MUST match `backlog.md` exactly — do not paraphrase or invent new ones
-10. **Every story MUST include an Ownership line** naming production, test and review ownership per the repository's actual test-authorship rule (see `/todo` Template Rules)
-11. **Every story MUST include a Release tag and a Risk tier** — `core`/`later` and `deep`/`standard`, decided with the rubric in `/todo` (Release Slices and Risk Tiers), never restated here. Across all epics, the core slice must ship on its own: no core story depends on a later story in any epic. Check each checklist with `node .claude/core/release-slice.js {checklist} --strict --deps-from {every other epic checklist of the feature}`; an all-later epic is valid when a sibling holds the core.
+9. Acceptance criteria MUST match `backlog.md` exactly — do not paraphrase or invent new ones. Do not add a `verify:` binding here either: `verify:` is added when `/todo` materializes a story (its Template Rule on `verify:` bindings), never in `backlog.md`, so the copied AC stays identical to the backlog
+10. **Every story MUST include an Ownership line** naming production and test ownership per the repository's actual test-authorship rule, and no reviewer: review is planned per wave (see `/todo` Template Rules and Review cadence)
+11. **Every story MUST include a Release tag and a Risk tier** — `core`/`later` and `deep`/`standard`, decided with the rubric in `/todo` (Release Slices and Risk Tiers; `deep` means high-stakes with a one-line reason), never restated here. Across all epics, the core slice must ship on its own: no core story depends on a later story in any epic. Check each checklist with `node .claude/core/release-slice.js {checklist} --strict --deps-from {every other epic checklist of the feature}`; an all-later epic is valid when a sibling holds the core.
 12. **No second status tracker.** If the epics need a cross-file execution guide, it holds only the static dependency graph, the release slices and the gate list. It has no status, commit or receipt columns: story status lives in the checklists and wave results live in the `/run-todo` plan's Wave Execution Log. Do not ask for per-story receipt files; a receipt is written only when an AC's evidence cannot fit a log line (a SQL proof transcript, a browser run).
-13. **Owner decisions and sourcing come from `/todo`'s rules** — each checklist lists its predictable owner decisions in an `## Owner Decisions` section, and no story incorporates third-party code or data before its build-vs-vendor and license decision is recorded (see `/todo` Phase 1 Step 3 and Template Rule 19; never restate them here).
+13. **Owner decisions and sourcing come from `/todo`'s rules** — each checklist lists its predictable owner decisions, including run scope and continuing past the ship gate, in an `## Owner Decisions` section, and no story incorporates third-party code or data before its build-vs-vendor and license decision is recorded (see `/todo` Phase 1 Step 3 and Template Rule 19; never restate them here).
+14. **Every story MAY carry an optional `**After:**` line** — directly after Dependencies, for stories it only prefers to follow. Its definition and limits live in `/todo` (Template Rules); never restate them here.

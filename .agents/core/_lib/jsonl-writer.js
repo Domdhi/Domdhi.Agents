@@ -11,10 +11,15 @@
  *   - When line count exceeds `maxLines`, tail-rotates to keep only the last
  *     `tailKeep` lines (monotonic shrinkage — bounds file size)
  *   - Silent on any I/O failure — JSONL writes must never break the calling flow
+ *   - Never follows a symlink (L1H, review C1 part 2): this writer runs inside unsandboxed hooks on
+ *     files under `docs/.output/.state/`, which a working tree controls. Every ancestor up to the
+ *     project root is lstat-checked and the leaf is opened with O_NOFOLLOW (see _lib/fs-safe.js); a
+ *     refused write is skipped with ONE stderr line, never thrown into the hook.
  */
 
 const fs = require('fs');
 const path = require('path');
+const { safeAppend, safeMkdirp, safeWriteAtomic, reportRefusal } = require('./fs-safe');
 
 const DEFAULT_MAX_LINES = 1000;
 const DEFAULT_TAIL_KEEP = 500;
@@ -48,15 +53,19 @@ function countJsonlLines(content) {
  * @param {number} [opts.maxLines] Line-count ceiling before rotation (default: 1000)
  * @param {number} [opts.tailKeep] Lines to keep after rotation (default: 500)
  * @param {(msg: string) => void} [opts.onError] Optional error logger; default swallows
+ * @param {string|null} [opts.containRoot] Project root for the symlinked-ancestor guard. Omitted: derived
+ *        from the path (the directory above its first `docs/.output` segment; no ancestor guard when the
+ *        path has none). The O_NOFOLLOW leaf guard always applies.
  */
 function appendJsonl(jsonlPath, entry, {
     maxLines = DEFAULT_MAX_LINES,
     tailKeep = DEFAULT_TAIL_KEEP,
     onError,
+    containRoot,
 } = {}) {
     try {
-        fs.mkdirSync(path.dirname(jsonlPath), { recursive: true });
-        fs.appendFileSync(jsonlPath, JSON.stringify(entry) + '\n', 'utf8');
+        safeMkdirp(path.dirname(jsonlPath), containRoot);
+        safeAppend(jsonlPath, JSON.stringify(entry) + '\n', 'utf8', containRoot);
 
         // Cheap cached line count instead of re-reading the whole file each append.
         let count = lineCountCache.get(jsonlPath);
@@ -87,19 +96,11 @@ function appendJsonl(jsonlPath, entry, {
                 // writes here are already best-effort telemetry — this narrows the failure
                 // mode from "reader sees a corrupt/truncated file" to "rare single-line
                 // loss under heavy concurrent rotation," never a crash or blocked caller.
-                const tmpPath = `${jsonlPath}.tmp-${process.pid}-${Date.now()}`;
-                fs.writeFileSync(tmpPath, trimmed, 'utf8');
-                try {
-                    fs.renameSync(tmpPath, jsonlPath);
-                } catch (renameErr) {
-                    // Practically Linux/WSL-never (same-filesystem rename doesn't fail
-                    // this way), but Windows can EPERM/EBUSY on a rename target that's
-                    // open elsewhere. Don't leak the temp file — best-effort cleanup,
-                    // then re-throw so the outer catch below still logs/swallows per
-                    // this file's normal silent-on-I/O-failure contract.
-                    try { fs.unlinkSync(tmpPath); } catch { /* best-effort */ }
-                    throw renameErr;
-                }
+                // safeWriteAtomic is that temp-file-plus-rename (an O_NOFOLLOW temp, ancestors checked,
+                // and on a rename failure — practically Linux/WSL-never, but Windows can EPERM/EBUSY
+                // on a target open elsewhere — the temp file is removed and the error re-thrown so the
+                // outer catch below still logs/swallows per this file's silent-on-I/O-failure contract).
+                safeWriteAtomic(jsonlPath, trimmed, containRoot);
                 count = tailKeep;
             } else {
                 count = lines.length; // cache drifted high — resync to the truth
@@ -107,6 +108,7 @@ function appendJsonl(jsonlPath, entry, {
         }
         lineCountCache.set(jsonlPath, count);
     } catch (e) {
+        reportRefusal(e);
         if (onError) {
             try { onError(e.message); } catch { /* logger itself failed — swallow */ }
         }

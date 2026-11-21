@@ -1,0 +1,119 @@
+# TODO: Full-Codebase Code-Review Remediation (260715)
+
+| Attribute | Value |
+|-----------|-------|
+| **Status** | Complete — all 6 waves done; all 87 council findings (84 remediation items) resolved |
+| **Author** | the owner (via `/review:code-review` council) |
+| **Created** | 2026-07-15 |
+| **Source** | `docs/.output/findings/reviews/260715-2244-code-review.md` + `council-260715-2244/council.json` |
+| **Complexity** | Large (84 remediation items across 5 zones; 4 waves) |
+
+---
+
+## Executive Summary
+
+A full-codebase council review (4 lenses × 5 zones = 20 finders, anonymized cross-validation, deterministic aggregation) confirmed **87 findings, 0 refuted** — collapsing to **84 distinct remediation items** after merging 3 exact duplicates. Severity (post-consensus): **9 CRITICAL, 39 MAJOR, 34 MINOR, 5 NIT**. Every item carries a `file:line` and a concrete fix in `council.json`; this TODO groups them into dependency-ordered waves so overlapping fixes (whole clusters share a root cause) land as single coherent edits rather than 84 scattered ones.
+
+**Load-bearing theme:** the CRITICALs are not independent — they cluster into four root causes worth fixing structurally:
+1. **Destination-symlink-blind writes/reads** crossing the adopter trust boundary (F23, F81, F86, F55, + write sites in skill-merger/agent-merger/template-updater) → one shared safe-write/safe-walk primitive.
+2. **Shell-command-boundary parsing gaps** in the two guard hooks (F58/F59, F61, F62) → one correct command-splitter shared by both guards.
+3. **`execSync` string-interpolation injection** recurring across CLIs (F31, F33, F54) → convert to argv-array `spawnSync`.
+4. **Store/index divergence** (F44 usage_count) → read the field back where it lives.
+
+**Wave shape:** Wave 1 lands all CRITICALs (security + guard + injection + data-integrity) before the next `fleet:sync`, which is the delivery vehicle for the symlink and glob findings. Waves 2–4 clear MAJOR then MINOR/NIT. Each story lists exact files; stories within a wave have zero file overlap unless a dependency is noted.
+
+> **Standard for every story:** resolve nits-and-up in-pass, leave each file cleaner than found, re-verify to green. After each wave, run `node .claude/core/gate.js test` and fix any regression before committing. New behavior gets a test (this repo's floor: 70% lines / 60% branches on `.claude/core/**`).
+
+---
+
+## Dependency Graph
+
+```
+Wave 1 — CRITICAL (security · guard · injection · data-integrity)   [land before next fleet:sync]
+  CR-1.1  Safe-write/safe-walk symlink primitive + apply at all write/read sites   (F23,F81,F86,F55,+F9,F80)
+  CR-1.2  Shared shell command-boundary splitter for both guard hooks              (F58,F59,F61,F62)
+  CR-1.3  Kill execSync string-interpolation injection (argv arrays)               (F31,F33,F54)
+  CR-1.4  usage_count read-back from SQLite index                                  (F44)
+        │  (Wave 1 fully green + committed)
+        ▼
+Wave 2 — MAJOR: security & correctness
+  CR-2.1  Path-traversal containment for memory id/category/slug                   (F42,F46,+F16 minor)
+  CR-2.2  Guard/secret coverage gaps                                               (F12,F76)
+  CR-2.3  Stored XSS + escape hardening in generated HTML                          (F18/F19,+F13 nit)
+  CR-2.4  Zone-classifier + merge correctness                                      (F0,F20,F21)
+  CR-2.5  CLI/hook correctness bugs                                                (F26,F40,F64,F67,F28)
+Wave 3 — MAJOR: dedup / layering / performance   (parallel with Wave 2 — disjoint files)
+  CR-3.1  Worktree-safe project-root everywhere                                    (F1,F37,F72)
+  CR-3.2  Shared git-exec + frontmatter + SQLite-backend helpers                   (F27,F7,F6,F36)
+  CR-3.3  OUTPUT_PATHS / telemetry-paths adoption                                  (F56,F30,F35,F51,F15,+F32 nit)
+  CR-3.4  Memory decay/supersession consistency                                    (F47,F48)
+  CR-3.5  Performance hot paths                                                    (F4,F5,F14,F24,F25,F39,F43,F68,F70,F82)
+  CR-3.6  Docs: CLAUDE.md hooks table                                             (F79)
+        │  (Waves 2 & 3 green + committed)
+        ▼
+Wave 4 — MINOR & NIT cleanup   (parallel — grouped by cluster)
+  CR-4.1  Hook-duration telemetry on the 5 uninstrumented hooks                    (F60,F66,F69,F71,F75)
+  CR-4.2  Hand-rolled stdin → _lib/hook-input.js                                   (F65,F73,F77)
+  CR-4.3  Directory-walker de-triplication                                         (F2,F83; folds into CR-1.1's primitive)
+  CR-4.4  Redundant re-reads / recompute                                           (F10,F22,F29,F45,F52,F63,F74,F78)
+  CR-4.5  Misc correctness minors                                                  (F8,F34,F50,F85/F84,F17,F55-residual)
+  CR-4.6  Dead code / naming / doc nits                                            (F41,F11,F57,F49,F53,F3,F38,F30)
+```
+
+---
+
+## Wave 1 — CRITICAL (security · guard · injection · data-integrity)
+
+**Goal:** Close every independently-confirmed CRITICAL. Land before the next `fleet:sync`.
+
+### Epic CR-1: Critical fixes
+
+* **Story CR-1.1 (M): Symlink-safe writes & walks across the adopter trust boundary**
+  * **Findings:** F23 (CRIT), F81 (CRIT), F86 (MAJOR), F55 (MINOR), F9 (MAJOR), F80 (MINOR).
+  * **As a** maintainer running `fleet:sync`/`fleet:diverge` against adopter repos, **I want** every file write and directory walk to refuse to follow a destination/interior symlink, **so that** a malicious or accidental symlink in an adopter tree cannot cause arbitrary-file overwrite (F23/F86/F55) or disclosure (F81), and so symlinked skill dirs stop being silently skipped (F9).
+  * **Files:** `.claude/core/_lib/zone-copy.js`, `.claude/core/_lib/skill-merger.js`, `.claude/core/_lib/agent-merger.js`, `.claude/core/template-updater.js`, `.claude/core/scaffold.js`, `.claude/core/_lib/file-walker.js`, `tools/fleet.js`, `tools/publish.js`; new `.claude/core/_lib/fs-safe.js` (shared primitive) + `__tests__`.
+  * **AC:**
+    * [x] New `_lib/fs-safe.js` exports `safeWrite(dstPath, bytes)` / `safeCopy(src, dst)` that `lstatSync(dst,{throwIfNoEntry:false})?.isSymbolicLink()` → `unlinkSync` then write (or abort + surface a security warning in run stats). Unit-tested with a symlinked destination proving the real target is untouched.
+    * [x] All four write sites named in F23's detail route through it: `zone-copy.js:37-44`, `skill-merger.js:337-338`, `agent-merger.js:398-399`, `template-updater.js` `copyFile()` helper.
+    * [x] `file-walker.js` `walkDir()` resolves symlinked dirs/files (via `Dirent` + `lstat`/`stat`) instead of silently dropping them (F9); symlink **cycles** are guarded (visited-realpath set). `tools/fleet.js walkRel()` (F81) and `tools/publish.js` walker (F80) either import the shared safe walker or gain the same symlink handling + cycle guard.
+    * [x] `tools/sync-work.js` agent-doctrine patch (F86) writes via `safeWrite`.
+    * [x] Regression test: a symlinked skill dir now syncs (F9); a symlinked destination is not followed (F23); `fleet diverge` does not read through a symlink (F81).
+    * [x] `node .claude/core/gate.js test` green.
+
+* **Story CR-1.2 (M): One correct shell command-boundary splitter for both guard hooks**
+  * **Findings:** F58 (CRIT), F59 (MAJOR), F61 (CRIT), F62 (CRIT) — all in the guard hooks; same bug class (whitespace/keyword/wrapper evasion) that has recurred 3×.
+  * **As a** developer relying on the guardrail + commit-guard hooks, **I want** command-position detection that recognizes real shell statement boundaries, **so that** `if true; then rm -rf .env; fi`, `sleep 1 & git commit -m …`, `sudo/env/time/nice/xargs git commit`, and `-m` payloads containing `$(...)` cannot bypass the hard-block or the pre-commit secret scan.
+  * **Files:** `.claude/hooks/commit-guard.cjs`, `.claude/hooks/guardrail.cjs`, new shared helper in `.claude/core/_lib/` (e.g. `shell-command-split.js`) + `__tests__`.
+  * **AC:**
+    * [x] Shared helper tokenizes a Bash string into command-position starts, recognizing separators `; | & && || \n` **and** shell keywords `then do else elif {` **and** command wrappers (`sudo env time nice xargs command`) as introducing a new command head. Table-driven tests cover each evasion in the findings.
+    * [x] `commit-guard.cjs gitCommitTail` (F58/F59): detects `git commit` at any command head, not just string-start/narrow-separator. Reproduced bypasses (`&`, `if/then`, `sudo git commit`) now blocked.
+    * [x] `guardrail.cjs stripCommitMessages` (F61): must NOT blank `$(...)`/`` `...` `` inside `-m` before pattern/path evaluation — evaluate substitutions first, or strip only the literal message text. Test: `git commit -m "$(rm -rf ~)"` is still evaluated for the `rm -rf` path.
+    * [x] `guardrail.cjs` zeroAccessPaths (F62): keyword-wrapped `rm -rf .env` still hits the non-escalatable hard-block. Test proves parity between bare and `if/then`-wrapped forms.
+    * [x] Fail-closed: any parser exception in a blocking hook denies (never allows). `gate.js test` green including hook suites.
+
+* **Story CR-1.3 (S): Eliminate execSync string-interpolation injection**
+  * **Findings:** F31 (CRIT, `gate.js` dotnet `.sln` name), F33 (CRIT, `gen-timeline.js` `--base` ref), F54 (CRIT, `pull-request.js` `winQuote`).
+  * **As a** user running gate/timeline/PR helpers in a repo with hostile filenames or refs, **I want** no shell string interpolation of untrusted values, **so that** a crafted `.sln`/`.slnx` filename, `--base` ref, or PR title cannot execute arbitrary commands.
+  * **Files:** `.claude/core/gate.js`, `.claude/core/gen-timeline.js`, `.claude/core/pull-request.js` + `__tests__`.
+  * **AC:**
+    * [x] F31: dotnet invocation uses `spawnSync('dotnet', [verb, slnPath], …)` (argv array, no shell) — the solution filename is an argument, never interpolated into a shell string. Test with a filename containing `; ` / `$(…)`.
+    * [x] F33: `gen-timeline.js` passes `--base` ref via argv array; add `git check-ref-format`-style validation or reject refs with shell metacharacters. Test with a hostile ref name.
+    * [x] F54: replace `winQuote()` with argv-array `spawnSync` for `gh`/`az` (no cmd.exe string), OR fix the quoting to double embedded `"` per cmd.exe rules and add a test asserting a title containing `"` and `&` cannot break out. Prefer the argv-array route.
+    * [x] Grep sweep: no remaining `execSync(\`…${userValue}…\`)` in these three files. `gate.js test` green.
+
+* **Story CR-1.4 (S): usage_count read-back from the SQLite index**
+  * **Finding:** F44 (CRIT correctness / data-integrity).
+  * **As a** user relying on memory injection ranking and `prune-unused`, **I want** `usage_count` read back from where it is incremented (the SQLite index), **so that** genuinely-recalled memories are visible to report/analytics/lint and are not pruned as dead weight.
+  * **Files:** `.claude/core/memory-manager.js` + `__tests__/memory-manager.test.js`.
+  * **AC:**
+    * [x] `usage_count` (and any other index-only field) is merged back into the memory record on read (`listMemories`/`readMemory`/report path), so a recorded recall is reflected in `report`/`analytics`/`prune-unused`.
+    * [x] Regression test: increment usage via a genuine retrieval, then assert `report`/`prune-unused` see the non-zero count and the memory is NOT pruned.
+    * [x] No double-count with passive injection (per the honest-usage contract). `gate.js test` green.
+
+---
+
+## Wave 2 — MAJOR: security & correctness
+
+**Goal:** Close the MAJOR security + correctness findings. Disjoint files from Wave 3 (may run in parallel).
+
+### Epic CR-2: Major security & correctness

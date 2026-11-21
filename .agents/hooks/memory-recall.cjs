@@ -3,7 +3,7 @@
 /**
  * Memory Recall Hook (UserPromptSubmit) — per-prompt hybrid recall of full memories.
  *
- * Why: in the fact-recall test (Domdhi.Vault, 13 tasks, Haiku 5.5) per-prompt retrieval of the top three
+ * Why: in the fact-recall test (a real notes repo, 13 tasks, Haiku 5.5) per-prompt retrieval of the top three
  * full memories passed 72% against 35% for a startup list of eight titles and 16% for no memory.
  *
  * Corpus: the markdown memory dir (Claude's native auto-memory dir unless MEMORY_DIR) plus the engine's
@@ -34,6 +34,7 @@ const { notesContext, recallEnabled } = require('../core/_lib/memory-context');
 const { loadCorpus } = require('../core/_lib/memory-notes');
 const { recall, embedConfig, tuningFromEnv, DEFAULT_FLOOR } = require('../core/_lib/memory-recall');
 const { appendJsonl } = require('../core/_lib/jsonl-writer');
+const { safeWrite, safeMkdirp, reportRefusal } = require('../core/_lib/fs-safe');
 
 const MIN_PROMPT = 20;
 const MAX_HITS = 3;          // MEMORY_RECALL_MAX (1 to 5)
@@ -79,13 +80,15 @@ function spawnIndexOnce(ctx, env) {
         let last = 0;
         try { last = fs.statSync(marker).mtimeMs; } catch { /* first time */ }
         if (Date.now() - last < INDEX_RESPAWN_MS) return false;
-        fs.mkdirSync(ctx.stateDir, { recursive: true });
-        fs.writeFileSync(marker, new Date().toISOString());
+        // The state folder is whatever the working tree makes it (L1H, review C1 part 2): refuse a symlinked
+        // ancestor or marker instead of writing through it, and skip the spawn.
+        safeMkdirp(ctx.stateDir, ctx.projectRoot);
+        safeWrite(marker, new Date().toISOString(), undefined, ctx.projectRoot);
         const cli = path.join(__dirname, '..', 'core', 'memory-capture.js');
         const child = childProcess.spawn(process.execPath, [cli, 'index'], { cwd: ctx.projectRoot, stdio: 'ignore', windowsHide: true, detached: true, env });
         child.unref();
         return true;
-    } catch { return false; }
+    } catch (error) { reportRefusal(error); return false; }
 }
 
 /**
@@ -98,7 +101,7 @@ function recordRecall(ctx, sessionId, result, injected) {
             timestamp: new Date().toISOString(), type: 'memory_recall', source: result.source,
             candidates: result.hits.length, injected_count: injected.length, injected_ids: injected.map(h => h.name),
             top_cos: result.hits.length ? result.hits[0].cos : null, session_proxy: String(sessionId || '').slice(0, 8),
-        });
+        }, { containRoot: ctx.projectRoot });
     } catch { /* telemetry is observability, not correctness */ }
 }
 
@@ -138,10 +141,10 @@ async function processEvent(input, { env = process.env, fallbackDir = path.resol
     if (!blocks.length) return null;
     recordRecall(ctx, input.session_id, result, hits.slice(0, blocks.length));
     try {
-        fs.mkdirSync(path.dirname(sp), { recursive: true });
-        fs.writeFileSync(sp, JSON.stringify([...seen].sort()));
+        safeMkdirp(path.dirname(sp), ctx.projectRoot);
+        safeWrite(sp, JSON.stringify([...seen].sort()), undefined, ctx.projectRoot);
         if (Math.random() < 0.05) pruneSeen(path.dirname(sp));
-    } catch { /* dedupe is best effort; the injection still goes out */ }
+    } catch (error) { reportRefusal(error); /* dedupe is best effort; the injection still goes out */ }
     return { hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: `${HEADER}\n\n${blocks.join('\n\n')}` } };
 }
 

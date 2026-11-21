@@ -21,8 +21,12 @@ const gate = require('../../../.agents/core/gate');
 const posix = process.platform !== 'win32';
 
 const roots = [];
-afterEach(() => { for (const r of roots.splice(0)) fs.rmSync(r, { recursive: true, force: true }); });
+afterEach(() => { for (const r of roots.splice(0)) fs.rmSync(r, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); });
 const tmp = (prefix) => { const d = fs.mkdtempSync(path.join(os.tmpdir(), prefix)); roots.push(d); return d; };
+// runOwnedCommandSync keeps its `native-command-bridge-*` evidence root whenever the supervisor leaves
+// evidence in it (a stop request, a terminate request, no completion receipt). The root is only known
+// through onEvidenceRoot, so register it for removal as soon as the bridge reports it.
+const ownEvidenceRoot = (root) => { roots.push(root); };
 // Windows environment names are case-insensitive: {...process.env, SystemRoot: x} beside an inherited SYSTEMROOT (Git
 // Bash spells it that way) passes both, and the child sees the inherited one. Drop every spelling before overriding.
 const envWithSystemRoot = (value) => {
@@ -67,7 +71,7 @@ describe('owned-process bridge: cooperative stop (fake supervisor)', () => {
     const started = process.hrtime.bigint();
     const result = tree.runOwnedCommandSync(process.execPath, ['-e', 'setTimeout(() => {}, 120000)'], {
       cwd: os.tmpdir(), timeoutMs: 120000, env: envWithSystemRoot(systemRoot),
-      onEvidenceRoot: (root, stopRequestPath) => { observed = { root, stopRequestPath }; writeStopRequestLater(stopRequestPath, 700); },
+      onEvidenceRoot: (root, stopRequestPath) => { ownEvidenceRoot(root); observed = { root, stopRequestPath }; writeStopRequestLater(stopRequestPath, 700); },
     });
     const seconds = Number(process.hrtime.bigint() - started) / 1e9;
     expect(observed.stopRequestPath).toBe(path.join(observed.root, 'stop-request.json'));
@@ -80,7 +84,7 @@ describe('owned-process bridge: cooperative stop (fake supervisor)', () => {
     const systemRoot = fakeSystemRoot({ writeProof: false });
     const result = tree.runOwnedCommandSync(process.execPath, ['-e', 'setTimeout(() => {}, 120000)'], {
       cwd: os.tmpdir(), timeoutMs: 120000, env: envWithSystemRoot(systemRoot),
-      onEvidenceRoot: (_root, stopRequestPath) => writeStopRequestLater(stopRequestPath, 700),
+      onEvidenceRoot: (root, stopRequestPath) => { ownEvidenceRoot(root); writeStopRequestLater(stopRequestPath, 700); },
     });
     expect(result.stopped).toBe(false);
     expect(result.treeConfirmed).toBe(false);
@@ -91,7 +95,7 @@ describe('owned-process bridge: cooperative stop (fake supervisor)', () => {
     let seen = null;
     const result = tree.runOwnedCommandSync(process.execPath, ['-e', '0'], {
       cwd: os.tmpdir(), timeoutMs: 5000, env: envWithSystemRoot(tmp('no-powershell-')),
-      onEvidenceRoot: (root, file) => { seen = { root, file, existed: fs.existsSync(root), requestPresent: fs.existsSync(file) }; throw new Error('callback failure'); },
+      onEvidenceRoot: (root, file) => { ownEvidenceRoot(root); seen = { root, file, existed: fs.existsSync(root), requestPresent: fs.existsSync(file) }; throw new Error('callback failure'); },
     });
     expect(seen).toMatchObject({ existed: true, requestPresent: false });
     // No supervisor exists here, so nothing is confirmed — and nothing claims to be.

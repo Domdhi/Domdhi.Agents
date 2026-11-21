@@ -13,25 +13,21 @@ allowed-tools: Read
 
 ## Overview
 
-**Skill authoring is evidence-driven: prove the gap, then prove the skill closes it.**
+Skill authoring is evidence-driven: prove the gap, then prove the skill closes it.
 
-A skill — new or edited — is justified by **evidence of a real gap first, and a differential eval after.** The gap is the empirical baseline: an agent that fails the task *without* the skill, a recorded misalignment (an `agent-updates` entry), a repeated gate failure, or a cluster of memories showing agents keep re-deriving the same thing unaided. You then draft the skill and measure the **difference** it makes — `with_skill` vs `without_skill` (or `old_skill`) — and keep it only if it measurably helps.
+A skill, new or edited, is justified by evidence of a real gap first and a differential eval after. The gap is the empirical baseline: an agent that fails the task without the skill, a recorded misalignment (an `agent-updates` entry), a repeated gate failure, or a cluster of memories showing agents keep re-deriving the same thing unaided. Draft the skill, then measure the difference it makes (`with_skill` vs `without_skill` or `old_skill`) and keep it only if it measurably helps.
 
-**Core principle:** Never add skill content for a gap you can't point to, and never claim a skill helps without a differential that shows it. Evidence bookends the work — it does not have to come *before* you write a single word.
+Do not add skill content for a gap you cannot point to, and do not claim a skill helps without a differential that shows it. Evidence bookends the work; it need not come before the first word is written.
 
-> **Doctrine note (2026-06-06):** This replaces the old "**NO SKILL WITHOUT A FAILING TEST FIRST**" Iron Law. Pre-emptively pressure-testing a subagent *before* writing blocked machine-assisted skill generation (you can't run a baseline before a skill exists when you're synthesizing it from accumulated workflows) and is out of step with Anthropic's official `skill-creator`, where **tests come after the draft**. We keep the discipline (evidence + measured improvement) and drop the ordering that made it un-automatable. Full rationale: the ADR in `docs/architecture/decisions/0003-self-improving-skills.md`.
+> **Doctrine note (2026-06-06):** This replaces the old "no skill without a failing test first" Iron Law. Pre-emptive pressure-testing blocked machine-assisted skill generation (no baseline can run before a skill exists when it is synthesized from accumulated workflows) and diverged from Anthropic's `skill-creator`, where tests come after the draft. Full rationale: `docs/architecture/decisions/0003-self-improving-skills.md`.
 
-**REQUIRED OPERATIONAL SKILL:** For the actual create→eval→improve→benchmark loop, the eval harness, the differential workspace layout, and description optimization, use **`skill-creator`**. This skill (`skill-authoring`) owns the *doctrine and conventions*; `skill-creator` owns the *mechanics*. The autonomous driver that mines this repo's signals into skill work is `/review:evolve-skills`.
+For the create, eval, improve and benchmark loop, the eval harness, the differential workspace layout and description optimization, use `skill-creator`. This skill owns the doctrine and conventions; `skill-creator` owns the mechanics. The autonomous driver that mines this repo's signals into skill work is `/review:evolve-skills`.
 
-**Official guidance:** For Anthropic's official skill authoring best practices, see references/anthropic-best-practices.md.
+Anthropic's official authoring best practices: `references/anthropic-best-practices.md`.
 
 ## What is a Skill?
 
-A **skill** is a reference guide for proven techniques, patterns, or tools. Skills help future Claude instances find and apply effective approaches.
-
-**Skills are:** Reusable techniques, patterns, tools, reference guides
-
-**Skills are NOT:** Narratives about how you solved a problem once
+A skill is a reference guide for proven techniques, patterns or tools that helps future Claude instances find and apply effective approaches. Skills are reusable techniques, patterns, tools and reference guides, not narratives about how you solved a problem once.
 
 ## TDD Mapping for Skills
 
@@ -42,13 +38,13 @@ A **skill** is a reference guide for proven techniques, patterns, or tools. Skil
 | **Test fails (RED)** | Agent violates rule without skill (baseline) |
 | **Test passes (GREEN)** | Agent complies with skill present |
 | **Refactor** | Close loopholes while maintaining compliance |
-| **Establish baseline** | Capture the failure WITHOUT the skill — a run, a recorded `agent-updates` misalignment, or a memory cluster (capturing it *after* the draft is fine) |
+| **Establish baseline** | Capture the failure without the skill — a run, a recorded `agent-updates` misalignment, or a memory cluster (capturing it *after* the draft is fine) |
 | **Watch it fail** | Document exact rationalizations / the gap the agent shows |
 | **Minimal code** | Write skill addressing those specific violations |
 | **Watch it pass** | Verify the differential: `with_skill` beats baseline |
 | **Refactor cycle** | Find new rationalizations → plug → re-verify |
 
-The cycle keeps TDD's spirit, with one change: the baseline + eval **bookend** the draft rather than strictly preceding it (see The Law below). Mechanics: `skill-creator`.
+The cycle keeps TDD's spirit, with one change: the baseline and eval bookend the draft rather than strictly preceding it (see The Law below). Mechanics: `skill-creator`.
 
 ## When to Create a Skill
 
@@ -85,28 +81,20 @@ skills/
     supporting-file.*     # Only if needed
 ```
 
-**Flat namespace** - all skills in one searchable namespace
+All skills share one flat, searchable namespace.
 
-**Separate files for:**
-1. **Heavy reference** (100+ lines) - API docs, comprehensive syntax
-2. **Reusable tools** - Scripts, utilities, templates
-
-**Keep inline:**
-- Principles and concepts
-- Code patterns (< 50 lines)
-- Everything else
+Separate files for heavy reference (100+ lines: API docs, comprehensive syntax) and reusable tools (scripts, utilities, templates). Keep principles, concepts, code patterns under 50 lines and everything else inline.
 
 ## SKILL.md Structure
 
-**Frontmatter (YAML):** Five required fields — the canonical contract is documented immediately below.
-- `name`: Use letters, numbers, and hyphens only (no parentheses, special chars)
-- `description`: Third-person. MAY lead with a brief *what it does* clause, but MUST state *when to use* it — the Agent Skills open spec allows both (≤ 1024 characters).
-  - Keep the "Use WHEN..." triggering conditions — required even when a what-clause is present
-  - Include specific symptoms, situations, and contexts
-  - **NEVER summarize the skill's step-by-step process or workflow** — naming *what it covers* is fine; describing *how it works* lets Claude shortcut and skip the body (see CSO section for why)
-  - Keep under 500 characters if possible (open-spec hard ceiling: 1024)
+**Frontmatter (YAML):** five required fields, shown in the template below.
+- `name`: letters, numbers and hyphens only (no parentheses or special characters)
+- `description`: third person. It may lead with a brief what-it-does clause but must state when to use the skill (the Agent Skills open spec allows both; at most 1024 characters, ideally under 500).
+  - Keep the "Use WHEN..." triggering conditions, even when a what-clause is present
+  - Include specific symptoms, situations and contexts
+  - Do not summarize the skill's step-by-step process: naming what it covers is fine, but describing how it works lets Claude shortcut and skip the body (see CSO)
 - `metadata`: `version`, `author`, `tags`
-- `user-invocable`: Always `false` unless the skill is a slash command (rare)
+- `user-invocable`: `false` unless the skill is a slash command (rare)
 - `allowed-tools`: Whitelist matching the skill's actual write surface
 
 ```markdown
@@ -129,7 +117,7 @@ What is this? Core principle in 1-2 sentences.
 ## When to Use
 [Small inline flowchart IF decision non-obvious]
 
-Bullet list with SYMPTOMS and use cases
+Bullet list with symptoms and use cases
 When NOT to use
 
 ## Core Pattern (for techniques/patterns)
@@ -152,23 +140,13 @@ Concrete results
 
 ## Claude Search Optimization (CSO)
 
-**Critical for discovery:** Future Claude needs to FIND your skill
+Future Claude needs to find the skill.
 
 ### 1. Rich Description Field
 
-**Purpose:** Claude reads description to decide which skills to load for a given task. Make it answer: "Should I read this skill right now?"
+Claude reads the description to decide which skills to load, so it should answer "Should I read this skill right now?" Start with "Use when..." and state triggering conditions only. Do not summarize the skill's process or workflow.
 
-**Format:** Start with "Use when..." to focus on triggering conditions
-
-**Description = When to Use, NOT What the Skill Does**
-
-The description should ONLY describe triggering conditions. Do NOT summarize the skill's process or workflow in the description.
-
-**Why this matters:** Testing revealed that when a description summarizes the skill's workflow, Claude may follow the description instead of reading the full skill content. A description saying "code review between tasks" caused Claude to do ONE review, even though the skill's flowchart clearly showed TWO reviews (spec compliance then code quality).
-
-When the description was changed to just "Use when executing implementation plans with independent tasks" (no workflow summary), Claude correctly read the flowchart and followed the two-stage review process.
-
-**The trap:** Descriptions that summarize workflow create a shortcut Claude will take. The skill body becomes documentation Claude skips.
+When a description summarizes the workflow, Claude may follow the description instead of reading the body. A description saying "code review between tasks" caused one review even though the skill's flowchart showed two (spec compliance, then code quality). Changed to "Use when executing implementation plans with independent tasks", Claude read the flowchart and ran both reviews. A workflow summary becomes a shortcut, and the body becomes documentation Claude skips.
 
 ```yaml
 # ❌ BAD: Summarizes workflow - Claude may follow this instead of reading skill
@@ -185,12 +163,10 @@ description: Use when implementing any feature or bugfix, before writing impleme
 ```
 
 **Content:**
-- Use concrete triggers, symptoms, and situations that signal this skill applies
-- Describe the *problem* (race conditions, inconsistent behavior) not *language-specific symptoms* (setTimeout, sleep)
-- Keep triggers technology-agnostic unless the skill itself is technology-specific
-- If skill is technology-specific, make that explicit in the trigger
-- Write in third person (injected into system prompt)
-- **NEVER summarize the skill's process or workflow**
+- Use concrete triggers, symptoms and situations that signal the skill applies
+- Describe the problem (race conditions, inconsistent behavior), not language-specific symptoms (setTimeout, sleep)
+- Keep triggers technology-agnostic unless the skill itself is technology-specific, and then say so in the trigger
+- Write in third person (the description is injected into the system prompt)
 
 ```yaml
 # ❌ BAD: Too abstract, vague, doesn't include when to use
@@ -219,13 +195,11 @@ Use words Claude would search for:
 
 ### 3. Descriptive Naming
 
-**Use active voice, verb-first:**
-- ✅ `creating-skills` not `skill-creation`
-- ✅ `condition-based-waiting` not `async-test-helpers`
+Use active voice, verb-first: `creating-skills` not `skill-creation`; `condition-based-waiting` not `async-test-helpers`.
 
 ### 4. Token Efficiency (Critical)
 
-**Problem:** getting-started and frequently-referenced skills load into EVERY conversation. Every token counts.
+**Problem:** getting-started and frequently referenced skills load into every conversation, so every token counts.
 
 **Target word counts:**
 - getting-started workflows: <150 words each
@@ -250,26 +224,15 @@ When searching, dispatch subagent with template...
 [20 lines of repeated instructions]
 
 # ✅ GOOD: Reference other skill
-Always use subagents (50-100x context savings). REQUIRED: Use [other-skill-name] for workflow.
+Use subagents (50-100x context savings). Required: use [other-skill-name] for workflow.
 ```
 
-**Compress examples:**
-```markdown
-# ❌ BAD: Verbose example (42 words)
-your human partner: "How did we handle authentication errors in React Router before?"
-You: I'll search past conversations for React Router authentication patterns.
-[Dispatch subagent with search query: "React Router authentication error handling 401"]
-
-# ✅ GOOD: Minimal example (20 words)
-Partner: "How did we handle auth errors in React Router?"
-You: Searching...
-[Dispatch subagent → synthesis]
-```
+**Compress examples:** a 20-word example (`Partner: "How did we handle auth errors in React Router?"` / `You: Searching...` / `[Dispatch subagent → synthesis]`) beats the 42-word version of the same exchange.
 
 **Eliminate redundancy:**
 - Don't repeat what's in cross-referenced skills
-- Don't explain what's obvious from command
-- Don't include multiple examples of same pattern
+- Don't explain what's obvious from the command
+- Don't include multiple examples of the same pattern
 
 **Verification:**
 ```bash
@@ -278,28 +241,20 @@ wc -w skills/path/SKILL.md
 # Other frequently-loaded: aim for <200 total
 ```
 
-**Name by what you DO or core insight:**
-- ✅ `condition-based-waiting` > `async-test-helpers`
-- ✅ `using-skills` not `command-usage`
-- ✅ `flatten-with-flags` > `data-structure-refactoring`
-- ✅ `root-cause-tracing` > `debugging-techniques`
-
-**Gerunds (-ing) work well for processes:**
-- `creating-skills`, `testing-skills`, `debugging-with-logs`
-- Active, describes the action you're taking
+**Name by what you do or the core insight:** `condition-based-waiting` over `async-test-helpers`, `flatten-with-flags` over `data-structure-refactoring`, `root-cause-tracing` over `debugging-techniques`. Gerunds (`creating-skills`, `testing-skills`) work well for processes.
 
 ### 4. Cross-Referencing Other Skills
 
-**When writing documentation that references other skills:**
-
-Use skill name only, with explicit requirement markers:
+Reference other skills by name only, with explicit requirement markers:
 - ✅ Good: `**REQUIRED SUB-SKILL:** systematic-debugging` (local skill name, no namespace prefix)
 - ✅ Good: `**REQUIRED BACKGROUND:** verification-before-completion`
 - ❌ Bad: `See skills/testing/test-driven-development` (unclear if required)
 - ❌ Bad: `@skills/testing/test-driven-development/SKILL.md` (force-loads, burns context)
 - ❌ Bad: `superpowers:test-driven-development` (`superpowers:*` is from an external library, not this repo)
 
-**Why no @ links:** `@` syntax force-loads files immediately, consuming 200k+ context before you need them.
+`@` links force-load files immediately, consuming 200k+ context before you need them.
+
+A workflow that may be absent under a lean skill profile (`.agents/adapters/skill-profiles.json`) is named with "if installed" on the same line, e.g. ``Run `/review:feedback` if installed.`` The profile closure check treats such a line as optional; an unmarked invocation of a skill a profile drops fails `skill-profiles-live.test.js`.
 
 ## Flowchart Usage
 
@@ -316,12 +271,12 @@ digraph when_flowchart {
 }
 ```
 
-**Use flowcharts ONLY for:**
+**Use flowcharts only for:**
 - Non-obvious decision points
 - Process loops where you might stop too early
 - "When to use A vs B" decisions
 
-**Never use flowcharts for:**
+**Do not use flowcharts for:**
 - Reference material → Tables, lists
 - Code examples → Markdown blocks
 - Linear instructions → Numbered lists
@@ -337,64 +292,31 @@ See `.agents/skills/skill-authoring/references/graphviz-conventions.dot` for gra
 
 ## Code Examples
 
-**One excellent example beats many mediocre ones**
-
-Choose most relevant language:
+One excellent example beats many mediocre ones. Choose the most relevant language:
 - Testing techniques → TypeScript/JavaScript
 - System debugging → Shell/Python
 - Data processing → Python
 
-**Good example:**
-- Complete and runnable
-- Well-commented explaining WHY
-- From real scenario
-- Shows pattern clearly
-- Ready to adapt (not generic template)
+A good example is complete and runnable, commented to explain why, drawn from a real scenario, and ready to adapt. Do not implement in 5+ languages, write fill-in-the-blank templates or contrive examples.
 
-**Don't:**
-- Implement in 5+ languages
-- Create fill-in-the-blank templates
-- Write contrived examples
-
-You're good at porting - one great example is enough.
+One great example is enough; Claude ports it.
 
 ## File Organization
 
-### Self-Contained Skill
-```
-defense-in-depth/
-  SKILL.md    # Everything inline
-```
-When: All content fits, no heavy reference needed
-
-### Skill with Reusable Tool
-```
-condition-based-waiting/
-  SKILL.md    # Overview + patterns
-  example.ts  # Working helpers to adapt
-```
-When: Tool is reusable code, not just narrative
-
-### Skill with Heavy Reference
-```
-pptx/
-  SKILL.md       # Overview + workflows
-  pptxgenjs.md   # 600 lines API reference
-  ooxml.md       # 500 lines XML structure
-  scripts/       # Executable tools
-```
-When: Reference material too large for inline
+- **Self-contained** (`defense-in-depth/SKILL.md`): all content fits inline, no heavy reference.
+- **With a reusable tool** (`condition-based-waiting/` with `SKILL.md` + `example.ts`): the tool is reusable code, not just narrative.
+- **With heavy reference** (`pptx/` with `SKILL.md`, `pptxgenjs.md` at 600 lines, `ooxml.md` at 500 lines, `scripts/`): reference material too large for inline.
 
 ## Toolkit Skill Archetypes & Wiring
 
 A skill in this toolkit is one of two shapes, and the `Overview / When to Use / Core Pattern` skeleton above is only one of them:
 
-- **Doc-producer** — owns a domain-doc template in `assets/` (e.g. `assets/spec.md` → `docs/design/spec.md`, `assets/backlog.md` → `docs/work/backlog.md`; wired into `scaffold.js`'s `SKILL_TEMPLATE_MANIFEST`) and validates the artifact it produces. Use a `Document Template (one-line pointer to assets/) / Required Sections Checklist / Quality Criteria / Interview Questions` skeleton. The `assets/` copy is the **scaffold source of record** — raw, with the `<!-- @@template -->` first line — so the skill and `scaffold.js` share one copy.
+- **Doc-producer** — owns a domain-doc template in `assets/` (e.g. `assets/spec.md` → `docs/design/spec.md`, `assets/backlog.md` → `docs/work/backlog.md`; wired into `scaffold.js`'s `SKILL_TEMPLATE_MANIFEST`) and validates the artifact it produces. Use a `Document Template (one-line pointer to assets/) / Required Sections Checklist / Quality Criteria / Interview Questions` skeleton. The `assets/` copy is the scaffold source of record (raw, with the `<!-- @@template -->` first line), so the skill and `scaffold.js` share one copy.
 - **Technique / prose** — encodes a method or voice, owns no scaffolded template. Use the `Overview / When to Use / Core Pattern` skeleton above. Examples: this skill, `systematic-debugging`, the design-technique skills (`design-taste-frontend`, `tailwind-css-patterns`), `ghostwriting`.
 
 When in doubt, ask "does this skill own a scaffolded domain-doc template (in `assets/`, wired into `SKILL_TEMPLATE_MANIFEST`)?" Yes → doc-producer; No → technique/prose.
 
-**Where the planning-pipeline doc-producers live:** the planning *text* documents are consolidated into **one** skill, **`project-planning`** (brief, requirements, feature-ideas, epics/stories backlog, and the project-context quick-ref — each its own `references/` guide + `assets/` template). It is NOT one skill per document and there is NO `-writer` suffix convention. The genuine design disciplines — **`architecture`** and **`ux-design`** — stay self-contained (each owns its own template *and* its craft knowledge), because they carry real domain judgment beyond producing a doc.
+**Where the planning-pipeline doc-producers live:** the planning *text* documents are consolidated into **one** skill, **`project-planning`** (brief, requirements, feature-ideas, epics/stories backlog, and the project-context quick-ref — each its own `references/` guide + `assets/` template). It is not one skill per document and there is no `-writer` suffix convention. The genuine design disciplines — **`architecture`** and **`ux-design`** — stay self-contained (each owns its own template *and* its craft knowledge), because they carry real domain judgment beyond producing a doc.
 
 **Wiring checklist (new skill):**
 - [ ] Directory at `.agents/skills/{name}/SKILL.md`, `name:` field matches the directory
@@ -406,12 +328,12 @@ When in doubt, ask "does this skill own a scaffolded domain-doc template (in `as
 
 ## Project additions to a template skill
 
-Skills are **Template zone** — `template-updater`/`fleet:sync` overwrites them in every
-adopter. Project-specific content added to a template skill MUST go inside one of two
-sentinel forms — never edit template-owned prose in place — or it's clobbered on the
+Skills are Template zone: `template-updater`/`fleet:sync` overwrites them in every
+adopter. Project-specific content added to a template skill goes inside one of two
+sentinel forms (never edit template-owned prose in place) or it is clobbered on the
 next sync: a whole-tail `<!-- @@project-additions -->` marker for a new section appended
 at EOF, or an anchored `<!-- @@project-additions:start -->`/`:end` fence for a bullet
-inserted INSIDE an existing section (the whole-tail marker can't protect that shape).
+inserted inside an existing section (the whole-tail marker can't protect that shape).
 Both are matched only outside documentation code fences. Full doctrine, examples, the
 `fleet:diverge` interaction, and a live bug this fixed:
 `references/project-additions-marker.md`.
@@ -422,57 +344,34 @@ Both are matched only outside documentation code fences. Full doctrine, examples
 NO SKILL CONTENT WITHOUT EVIDENCE OF A GAP — AND A DIFFERENTIAL THAT SHOWS IT CLOSES
 ```
 
-This applies to NEW skills AND EDITS to existing skills. The order is **evidence → draft → differential eval**, not "test first."
+This applies to new skills and to edits of existing skills. The order is evidence, then draft, then differential eval.
 
-- **Evidence of a gap (the baseline):** a `without_skill` / `old_skill` run that fails, an `agent-updates` misalignment, a repeated gate failure, or a cluster of memories showing agents keep re-deriving this unaided. No gap you can point to → no skill content. Speculative "this could be clearer" polish is out of scope.
-- **Differential (the proof):** `with_skill` measurably beats the baseline on pass-rate — `node .claude/core/skill-eval.js aggregate <iteration> --skill-name <name>`. A delta ≤ 0 means the change isn't earning its place; iterate or drop it.
+- **Evidence of a gap (the baseline):** a `without_skill` / `old_skill` run that fails, an `agent-updates` misalignment, a repeated gate failure, or a cluster of memories showing agents keep re-deriving this unaided. No gap you can point to means no skill content; speculative "this could be clearer" polish is out of scope.
+- **Differential (the proof):** `with_skill` measurably beats the baseline on pass-rate: `node .claude/core/skill-eval.js aggregate <iteration> --skill-name <name>`. A delta ≤ 0 means the change is not earning its place; iterate or drop it.
 
-**The evidence requirement has no exceptions, but it can be lightweight:**
-- "Simple addition" / "just a section" / "doc update" still needs a gap behind it — but the gap can be one recorded misalignment and the differential a single with/without spot-check.
-- Subjective skills (writing style, design taste) are judged qualitatively, not with assertions — human judgment IS the differential there.
-
-**Why this replaced "failing test first":** you cannot run a baseline before a skill exists when you're *synthesizing* it from accumulated workflows (the `/review:evolve-skills` CREATE path), and Anthropic's official `skill-creator` puts tests *after* the draft. We kept the discipline and dropped the un-automatable ordering. Operational loop: `skill-creator`. Autonomous driver: `/review:evolve-skills`.
+The evidence requirement has no exceptions, but it can be lightweight. A "simple addition", "just a section" or doc update still needs a gap behind it, which can be one recorded misalignment with a single with/without spot-check as the differential. Subjective skills (writing style, design taste) are judged qualitatively; human judgment is the differential there.
 
 Load `references/testing-methodology.md` for full testing detail by skill type, rationalization tables, bulletproofing patterns, and the RED-GREEN-REFACTOR process for skills. Load when writing or pressure-testing a new skill.
 
 ## Anti-Patterns
 
-### ❌ Narrative Example
-"In session 2025-10-03, we found empty projectDir caused..."
-**Why bad:** Too specific, not reusable
-
-### ❌ Multi-Language Dilution
-example-js.js, example-py.py, example-go.go
-**Why bad:** Mediocre quality, maintenance burden
-
-### ❌ Code in Flowcharts
-```dot
-step1 [label="import fs"];
-step2 [label="read file"];
-```
-**Why bad:** Can't copy-paste, hard to read
-
-### ❌ Generic Labels
-helper1, helper2, step3, pattern4
-**Why bad:** Labels should have semantic meaning
+- Narrative examples ("In session 2025-10-03, we found..."): too specific to reuse.
+- Multi-language examples (example-js.js, example-py.py, example-go.go): mediocre quality and a maintenance burden.
+- Code in flowcharts (`step1 [label="import fs"]`): cannot be copy-pasted and is hard to read.
+- Generic labels (helper1, step3, pattern4): labels need semantic meaning.
 
 ## Discovery Workflow
 
 How future Claude finds your skill:
 
-1. **Encounters problem** ("tests are flaky")
-3. **Finds SKILL** (description matches)
-4. **Scans overview** (is this relevant?)
-5. **Reads patterns** (quick reference table)
-6. **Loads example** (only when implementing)
+1. Encounters a problem ("tests are flaky")
+2. Finds the skill (description matches)
+3. Scans the overview (is this relevant?)
+4. Reads patterns (quick reference table)
+5. Loads an example (only when implementing)
 
-**Optimize for this flow** - put searchable terms early and often.
+Put searchable terms early and often.
 
 ## The Bottom Line
 
-**Creating skills is evidence-driven engineering for process documentation.**
-
-Prove the gap (baseline) → draft the skill → prove it closes the gap (differential) → refactor to generalize.
-The discipline is unchanged from TDD's spirit; only the *ordering* relaxed so skills can be drafted — and machine-generated from accumulated experience — before the eval, then validated by it.
-
-If you measure your code, measure your skills. Use `skill-creator` to run the loop, `/review:evolve-skills` to automate it.
+Prove the gap (baseline), draft the skill, prove it closes the gap (differential), then refactor to generalize. The ordering is relaxed from TDD so skills can be drafted, including machine-generated from accumulated experience, before the eval validates them. Use `skill-creator` to run the loop and `/review:evolve-skills` to automate it.

@@ -395,6 +395,10 @@ describe('processEvent_worktreeSafeProjectRoot', () => {
 
         const mkdirSpy = vi.spyOn(fs, 'mkdirSync').mockImplementation(() => {});
         const writeSpy = vi.spyOn(fs, 'writeFileSync').mockImplementation(() => {});
+        // The snapshot is written through fs-safe (O_NOFOLLOW open + write through the fd), so the open
+        // and the close are faked too: the fd is never real and nothing touches disk.
+        const openSpy = vi.spyOn(fs, 'openSync').mockReturnValue(999);
+        const closeSpy = vi.spyOn(fs, 'closeSync').mockImplementation(() => {});
         delete process.env.CLAUDE_PROJECT_DIR;
 
         try {
@@ -410,9 +414,17 @@ describe('processEvent_worktreeSafeProjectRoot', () => {
             );
             expect(sessionsMkdirCall).toBeTruthy();
             expect(sessionsMkdirCall[0].startsWith(fakeRoot)).toBe(true);
+            // ...and the snapshot file itself is opened under that same resolved root.
+            const snapshotOpenCall = openSpy.mock.calls.find(
+                ([p]) => typeof p === 'string' && p.includes('sessions') && p.endsWith('-pre-compaction.md')
+            );
+            expect(snapshotOpenCall).toBeTruthy();
+            expect(snapshotOpenCall[0].startsWith(fakeRoot)).toBe(true);
         } finally {
             mkdirSpy.mockRestore();
             writeSpy.mockRestore();
+            openSpy.mockRestore();
+            closeSpy.mockRestore();
             require.cache[projectRootCachePath] = savedProjectRoot;
             if (savedHook) require.cache[hookCachePath] = savedHook;
             else delete require.cache[hookCachePath];

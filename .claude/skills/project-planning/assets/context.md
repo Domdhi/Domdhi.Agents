@@ -42,7 +42,6 @@
 | `/module` | Full feature lifecycle: brainstorm, plan, TODO |
 | `/code-review` | Review code changes |
 | `/qa` | Generate tests for code |
-| `/retro` | Retrospective after epic completion |
 | `/status` | Project status dashboard |
 | `/changelog` | Release notes from stories + git history |
 | `/check-sync` | Detect documentation drift |

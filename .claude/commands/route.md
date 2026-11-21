@@ -44,7 +44,7 @@ If the request is an existing checklist story that already carries a persisted `
 | **0 — Trivial / Bugfix** | one known change, no new design | 1–3 | **`/do {task}`** | ALL planning (brief, PRD, architecture, design, epics, todo) |
 | **1 — Feature** | several stories within the *existing* architecture; no new ADRs | 4–6 | **`/todo {feature}`** → `/run-todo` (or `/do` per story) | brief, PRD, architecture, design, epics |
 | **2 — Module** | a new feature *area* inside an existing project | 4–7 | **`/create:module {name}`** | project-level brief/PRD/architecture (a module-scoped `brief.md` replaces them) |
-| **3 — Epic / Greenfield / Product** | a new product or major subsystem; needs real requirements + architecture | 7–10 | **`/create:new-project`** (greenfield) · **`/onboard`** (existing code with no docs) | none — the full planning pipeline runs |
+| **3 — Epic / Greenfield / Product** | a new product or major subsystem; needs real requirements + architecture | 7–10 | **`/create:new-project`** (greenfield) · **`/onboard`** if installed (existing code with no docs) | none — the full planning pipeline runs |
 
 **The Complexity bands are overlapping guides, not exclusive cutoffs** — **architectural reach is the primary axis** (a Complexity-5 request is Tier 1 if it fits the existing architecture, Tier 2 if it's a new feature area). Use Complexity to *break ties within* a reach band, not to pick the band.
 

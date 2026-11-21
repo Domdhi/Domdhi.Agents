@@ -92,31 +92,30 @@ describe('appendJsonl', () => {
   describe('rotation atomicity (write-temp + rename)', () => {
 
     it('appendJsonl_rotation_usesWriteTempThenAtomicRename', () => {
-      // Proves the SHAPE actually implemented: writeFileSync targets a temp path
+      // Proves the SHAPE actually implemented: the rotation writes a temp path
       // (never the live jsonlPath) and renameSync swaps it into place — not a
-      // direct writeFileSync onto jsonlPath (which would have a truncation window).
+      // direct truncating write onto jsonlPath (which would have a truncation window).
       //
-      // Note: Node's fs.appendFileSync is itself implemented as a pass-through call
-      // to fs.writeFileSync internally (with an options object carrying flag: 'a'),
-      // so spying on writeFileSync also captures every ordinary append call, not
-      // just the rotation's direct write. Distinguish rotation's own direct call —
-      // `fs.writeFileSync(tmpPath, trimmed, 'utf8')`, a bare 'utf8' 3rd arg — from
-      // appendFileSync's internal passthrough, which always passes an options object.
+      // The writer is symlink-safe (fs-safe): appends and the rotation's temp file are opened with
+      // openSync (O_NOFOLLOW) and written through the fd, so no write call ever carries a path. The
+      // shape is therefore pinned at the open and the rename: the ONLY opens that create/truncate a
+      // path are the appends to jsonlPath (O_APPEND, never O_TRUNC) and exactly one sibling temp
+      // path (O_TRUNC); nothing truncates jsonlPath itself.
       const jsonlPath = path.join(tmp.root, 'out.jsonl');
-      const writeSpy = vi.spyOn(fs, 'writeFileSync');
+      const openSpy = vi.spyOn(fs, 'openSync');
       const renameSpy = vi.spyOn(fs, 'renameSync');
 
       for (let i = 0; i < 11; i++) {
         appendJsonl(jsonlPath, { n: i }, { maxLines: 10, tailKeep: 5 });
       }
 
-      const directWrites = writeSpy.mock.calls.filter(([, , opts]) => typeof opts === 'string');
+      const truncatingOpens = openSpy.mock.calls.filter(([, flags]) => (flags & fs.constants.O_TRUNC) !== 0);
 
-      // Rotation's direct writeFileSync call must never target jsonlPath itself.
-      expect(directWrites.filter(([p]) => p === jsonlPath)).toHaveLength(0);
+      // Rotation must never truncate jsonlPath itself (the old direct-write truncation window).
+      expect(truncatingOpens.filter(([p]) => p === jsonlPath)).toHaveLength(0);
 
-      // It must write to exactly one sibling temp path derived from jsonlPath...
-      const tempWrites = directWrites.filter(
+      // It must truncate-write exactly one sibling temp path derived from jsonlPath...
+      const tempWrites = truncatingOpens.filter(
         ([p]) => typeof p === 'string' && p.startsWith(`${jsonlPath}.tmp-`)
       );
       expect(tempWrites).toHaveLength(1);

@@ -16,7 +16,6 @@
       "Bash(git branch*)",
       "Bash(git checkout*)",
       "Bash(git add*)",
-      "Bash(curl:*)",
       "Bash(node:*)",
       "PowerShell(git status)",
       "PowerShell(git diff*)",
@@ -24,10 +23,63 @@
       "PowerShell(git branch*)",
       "PowerShell(git checkout*)",
       "PowerShell(git add*)",
-      "PowerShell(curl:*)",
       "PowerShell(node:*)"
     ],
-    "deny": []
+    "deny": [
+      "Read(**/.env)",
+      "Edit(**/.env)",
+      "Read(**/.env.local)",
+      "Edit(**/.env.local)",
+      "Read(**/.env.*.local)",
+      "Edit(**/.env.*.local)",
+      "Read(**/.env.production)",
+      "Edit(**/.env.production)",
+      "Read(**/.env.development)",
+      "Edit(**/.env.development)",
+      "Read(**/.env.staging)",
+      "Edit(**/.env.staging)",
+      "Read(//**/.env)",
+      "Edit(//**/.env)",
+      "Read(//**/.env.local)",
+      "Edit(//**/.env.local)",
+      "Read(//**/.env.*.local)",
+      "Edit(//**/.env.*.local)",
+      "Read(//**/.env.production)",
+      "Edit(//**/.env.production)",
+      "Read(//**/.env.development)",
+      "Edit(//**/.env.development)",
+      "Read(//**/.env.staging)",
+      "Edit(//**/.env.staging)",
+      "Read(**/tools/skill-holdout/**)",
+      "Read(//**/tools/skill-holdout/**)",
+      "Read(~/.config/claude/**)",
+      "Edit(~/.config/claude/**)",
+      "Read(~/.claude/.credentials.json)",
+      "Read(~/.ssh/**)",
+      "Read(~/.config/gh/**)",
+      "Bash(git push *--force*)",
+      "PowerShell(git push *--force*)",
+      "Bash(git push -f*)",
+      "PowerShell(git push -f*)",
+      "Bash(git push * -f*)",
+      "PowerShell(git push * -f*)",
+      "Bash(git push +*)",
+      "PowerShell(git push +*)",
+      "Bash(git push * +*)",
+      "PowerShell(git push * +*)",
+      "Bash(git push *--m*)",
+      "PowerShell(git push *--m*)",
+      "Bash(git -C * push *--force*)",
+      "PowerShell(git -C * push *--force*)",
+      "Bash(git -c * push *--force*)",
+      "PowerShell(git -c * push *--force*)",
+      "Bash(git -C * push *--m*)",
+      "PowerShell(git -C * push *--m*)",
+      "Bash(git -c * push *--m*)",
+      "PowerShell(git -c * push *--m*)",
+      "Bash(git send-pack*)",
+      "PowerShell(git send-pack*)"
+    ]
   },
   "hooks": {
     "SessionStart": [
@@ -101,7 +153,8 @@
           },
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/path-guardrail.cjs\""
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/path-guardrail.cjs\"",
+            "timeout": 10
           }
         ]
       },
@@ -114,7 +167,8 @@
           },
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/path-guardrail.cjs\""
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/path-guardrail.cjs\"",
+            "timeout": 10
           }
         ]
       },
@@ -127,7 +181,8 @@
           },
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/path-guardrail.cjs\""
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/path-guardrail.cjs\"",
+            "timeout": 10
           }
         ]
       },
@@ -140,7 +195,8 @@
           },
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/path-guardrail.cjs\""
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/path-guardrail.cjs\"",
+            "timeout": 10
           }
         ]
       },
@@ -149,7 +205,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/guardrail.cjs\""
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/guardrail.cjs\"",
+            "timeout": 10
           },
           {
             "type": "command",

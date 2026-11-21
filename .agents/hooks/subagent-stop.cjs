@@ -3,6 +3,15 @@
 
 // Completion-sourced dispatch telemetry. Child content is local, bounded data;
 // it is never executed, read as a path, or promoted into curated memory.
+//
+// RUN ID ON ROWS (SF-3.3): the persisted row carries `run_id` and `wave` when this session's run
+// pointer (`current-run-{session}.json`, written by run-record.js) is usable under `pointerRoot(projectRoot)`
+// (the main worktree, never `sourceRoot`); otherwise the two keys are absent and the row is
+// unchanged. The session is `CLAUDE_CODE_SESSION_ID` first, else the payload's `session_id`.
+// The pointer is read by `_lib/run-pointer.js`, which never throws and never blocks.
+// This stamp is effective only where the SubagentStop event is registered: Claude `settings.json`
+// does not register SubagentStop (this hook never runs there), while the Codex hooks config
+// (`.agents/adapters/codex/hooks-config.json`) registers it, so only Codex rows are stamped here.
 const fs = require('fs');
 const path = require('path');
 const { appendJsonl } = require('../core/_lib/jsonl-writer');
@@ -10,6 +19,7 @@ const { getJsonlPath } = require('../core/_lib/telemetry-paths');
 const { assertNoSymlinkedAncestor } = require('../core/_lib/fs-safe');
 const { resolveProjectRoot, resolveWorktreeRoot } = require('../core/_lib/project-root');
 const { parseFrontmatter } = require('../core/_lib/frontmatter');
+const { readRunPointer, pointerRoot } = require('../core/_lib/run-pointer');
 
 function configuredSkills(agentType, sourceRoot) {
     for (const directory of ['.agents/roles', '.claude/agents']) {
@@ -25,6 +35,25 @@ function configuredSkills(agentType, sourceRoot) {
         }
     }
     return { skills: [], skills_truncated: false };
+}
+
+/**
+ * SF-3.3: stamp run_id and wave from the session pointer. readRunPointer never throws and returns null for
+ * anything unusable, leaving the row unchanged; the `pointerRoot()` argument is computed here too, so a
+ * failure in either keeps the completion row (unstamped) instead of losing it.
+ */
+function stampRun(event, projectRoot, session) {
+    let run = null;
+    try {
+        run = readRunPointer({ root: pointerRoot(projectRoot), session });
+    } catch {
+        run = null;
+    }
+    if (run) {
+        event.run_id = run.run_id;
+        event.wave = run.wave;
+    }
+    return event;
 }
 
 function processEvent(input, projectRoot = resolveProjectRoot(path.resolve(__dirname, '..', '..')), sourceRoot = projectRoot) {
@@ -43,6 +72,7 @@ function processEvent(input, projectRoot = resolveProjectRoot(path.resolve(__dir
         last_assistant_message: lastMessage === null ? null : lastMessage.slice(0, 4096),
         message_truncated: lastMessage !== null && lastMessage.length > 4096,
     };
+    stampRun(event, projectRoot, process.env.CLAUDE_CODE_SESSION_ID || input.session_id || null);
     const destination = getJsonlPath(projectRoot, 'skill-usage.jsonl');
     assertNoSymlinkedAncestor(destination, projectRoot);
     if (fs.lstatSync(destination, { throwIfNoEntry: false })?.isSymbolicLink()) throw new Error('Refusing symlinked telemetry file');
@@ -89,4 +119,4 @@ async function main() {
     }
 }
 if (require.main === module) main().then(() => process.exit(0), () => process.exit(0));
-module.exports = { processEvent, readInput };
+module.exports = { processEvent, readInput, stampRun };

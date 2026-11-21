@@ -31,6 +31,7 @@ const childProcess = require('child_process');
 const { isAtLeast } = require('../core/profile');
 const { readHookInput } = require('../core/_lib/hook-input');
 const { notesContext, captureEnabled, syncEnabled } = require('../core/_lib/memory-context');
+const { safeOpenAppend, safeMkdirp, reportRefusal } = require('../core/_lib/fs-safe');
 
 /** True when a capture provider is configured (cheap check; the CLI resolves the key itself). */
 function providerConfigured(env) {
@@ -53,8 +54,16 @@ function processEvent(input, { env = process.env, fallbackDir = path.resolve(__d
     if (!transcript || !transcript.endsWith('.jsonl') || !fs.existsSync(transcript)) return false;
 
     const ctx = notesContext(fallbackDir, env);
-    fs.mkdirSync(ctx.stateDir, { recursive: true });
-    const log = fs.openSync(ctx.logPath, 'a');
+    // The capture log lives under the state folder, which the working tree controls (L1H, review C1 part 2):
+    // a symlinked ancestor or log file is refused (one stderr line) and no capture child is started.
+    let log;
+    try {
+        safeMkdirp(ctx.stateDir, ctx.projectRoot);
+        log = safeOpenAppend(ctx.logPath, ctx.projectRoot);
+    } catch (error) {
+        if (reportRefusal(error)) return false;
+        throw error;
+    }
     try {
         fs.writeSync(log, `== ${new Date().toISOString()} capture ${path.basename(transcript)}\n`);
         const cli = path.join(__dirname, '..', 'core', 'memory-capture.js');

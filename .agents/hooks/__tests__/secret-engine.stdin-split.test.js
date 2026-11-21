@@ -30,8 +30,15 @@ const { createFakeEngineKit } = require('./_helpers/fake-engine');
 
 const j = (...p) => p.join('');
 const MARK = j('betterleaks', ':allow');
-const ALNUM = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-const token = () => j('gh', 'p_') + [...crypto.randomBytes(36)].map(b => ALNUM[b % ALNUM.length]).join('');
+// The body is lowercase letters and digits only. With upper case in it, about one body in 62^4 (about 1.5 in 10,000,000)
+// starts with the literal prefix of another provider's rule and is then reported twice, once per rule: a body that began
+// "ATBB" and went on for 32 characters was also a Bitbucket app password, which put one extra finding in a 21,951-token
+// scan and failed the 900 KB case about once in 700 runs. Every other provider shape a 36-character body could fill
+// needs an upper-case prefix (ATBB, AKIA, AIza, ATATT3, PMAK-, SG.), so this alphabet cannot collide with one.
+const BODY_ALPHABET = 'abcdefghijklmnopqrstuvwxyz0123456789';
+const token = () => j('gh', 'p_') + [...crypto.randomBytes(36)].map(b => BODY_ALPHABET[b % BODY_ALPHABET.length]).join('');
+// The body that was captured doing it (built from parts: this file holds no key literal).
+const BITBUCKET_LOOKALIKE = j('gh', 'p_', 'ATBB', 'P465EbudWDwbTxWCGWBa9BwPjFM8hLUj');
 const isGithub = f => /GitHub/.test(f.name);
 
 const savedEnv = {};
@@ -79,6 +86,19 @@ function expectEveryTokenOnce(findings, tokens) {
     expect({ missing: missing.slice(0, 5), doubled: doubled.slice(0, 5), total: hits.length }).toEqual({ missing: [], doubled: [], total: tokens.length });
     expect(findings.length).toBe(tokens.length);
 }
+
+describe('the token fixture', () => {
+    it('never builds a body another provider rule can match: lowercase letters and digits after the prefix', () => {
+        const bodies = Array.from({ length: 5000 }, () => token());
+        expect(bodies.filter(t => !/^ghp_[a-z0-9]{36}$/.test(t))).toEqual([]);
+    });
+
+    it('is why: a body that starts with another provider\'s prefix is one line with two findings (the extra one the 900 KB case once saw)', () => {
+        const found = engine.scanContent(`${BITBUCKET_LOOKALIKE}\n`, 'notes/dense.txt', { wholeFile: false });
+        expect(found.map(f => f.name).sort()).toEqual(['Bitbucket App Password', 'GitHub Token']);
+        expect(found.map(f => f.line)).toEqual([1, 1]);
+    });
+});
 
 describe('the real engine on input it would cut', () => {
     it('finds every token in 200 KB through scanContent (the cuts fall inside tokens)', { timeout: 60000 }, () => {

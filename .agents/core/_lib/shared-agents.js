@@ -75,17 +75,39 @@ function workflowMap(root, files = new Map()) {
     return files.has(rel) ? JSON.parse(files.get(rel)) : fs.existsSync(path.join(root, rel)) ? JSON.parse(read(root, rel)) : {};
 }
 
+// Blocking PreToolUse hooks. Claude Code blocks a tool call only on exit status 2: every other
+// status, a crash before the hook could exit 2 (a syntax error in a required module exits 1), a
+// killed child and a hook that times out all let the call through. Their generated entry points
+// therefore fail closed: anything but a clean exit 0 becomes exit 2, and the child is bounded by
+// a spawn timeout shorter than the hook timeout in settings.json, because a synchronous stall
+// inside the hook (a filesystem call on a dead mount) cannot be interrupted from within. The value
+// is that spawn timeout in ms (null = unbounded, for hooks whose latency is not measured).
+const FAIL_CLOSED_HOOKS = new Map([
+    ['.agents/hooks/path-guardrail.cjs', 9000],
+    ['.agents/hooks/guardrail.cjs', 9000],
+    ['.agents/hooks/secret-scanner.cjs', null],
+    ['.agents/hooks/commit-guard.cjs', null],
+]);
+
 // Imported modules retain their exports; executable entry points run as the
 // actual main module with the original arguments, cwd and stdio. Native gate
 // execution pins its project context so an inherited workshop root cannot select
 // another checkout's commands or lock; imported helpers retain their root seam.
+// Blocking hooks (FAIL_CLOSED_HOOKS) fail closed instead of passing the child's status through.
 function compatibilityWrapper(source, output) {
     const runtimeDefault = output.startsWith('.codex/') ? "if (!process.env.AGENTS_RUNTIME && !process.env.AGENT_RUNTIME) process.env.AGENTS_RUNTIME = 'codex';\n" : '';
     const relative = path.posix.relative(path.posix.dirname(output), source);
     const gateEnvironment = source === '.agents/core/gate.js'
         ? ", env: { ...process.env, CLAUDE_PROJECT_DIR: require('path').resolve(__dirname, '..', '..'), AGENTS_PROJECT_DIR: require('path').resolve(__dirname, '..', '..') }"
         : '';
-    return `#!/usr/bin/env node\n'use strict';\n// Generated compatibility entry point from ${source}.\n${runtimeDefault}const entry = require('path').resolve(__dirname, ${JSON.stringify(relative)});\nif (require.main === module) {\n    const result = require('child_process').spawnSync(process.execPath, [entry, ...process.argv.slice(2)], { stdio: 'inherit', windowsHide: true${gateEnvironment} });\n    if (result.error) throw result.error;\n    if (result.signal) process.kill(process.pid, result.signal);\n    else process.exitCode = result.status === null ? 1 : result.status;\n} else module.exports = require(entry);\n`;
+    const header = `#!/usr/bin/env node\n'use strict';\n// Generated compatibility entry point from ${source}.\n`;
+    if (FAIL_CLOSED_HOOKS.has(source)) {
+        const limit = FAIL_CLOSED_HOOKS.get(source);
+        const timeout = limit === null ? '' : `, timeout: Number(process.env.HOOK_WRAPPER_TIMEOUT_MS) || ${limit}`;
+        const label = path.posix.basename(source, '.cjs');
+        return `${header}// Blocking hook: fail closed. Only a clean exit 0 passes; a crash, a spawn error, a signal or a timeout exits 2.\n${runtimeDefault}const entry = require('path').resolve(__dirname, ${JSON.stringify(relative)});\nif (require.main === module) {\n    const result = require('child_process').spawnSync(process.execPath, [entry, ...process.argv.slice(2)], { stdio: 'inherit', windowsHide: true${timeout} });\n    if (result.error || result.signal || result.status === null) {\n        process.stderr.write('[${label}] BLOCKED (fail-closed): the hook did not finish (' + ((result.error && result.error.code) || result.signal || 'no exit status') + ').\\n');\n        process.exitCode = 2;\n    } else process.exitCode = result.status === 0 ? 0 : 2;\n} else module.exports = require(entry);\n`;
+    }
+    return `${header}${runtimeDefault}const entry = require('path').resolve(__dirname, ${JSON.stringify(relative)});\nif (require.main === module) {\n    const result = require('child_process').spawnSync(process.execPath, [entry, ...process.argv.slice(2)], { stdio: 'inherit', windowsHide: true${gateEnvironment} });\n    if (result.error) throw result.error;\n    if (result.signal) process.kill(process.pid, result.signal);\n    else process.exitCode = result.status === null ? 1 : result.status;\n} else module.exports = require(entry);\n`;
 }
 
 function commandFiles(root) {
@@ -121,6 +143,13 @@ function isExcludedSkillPath(rel, excludedSkills, workflows = {}) {
     const command = /^\.claude\/commands\/(.+)\.md$/.exec(rel);
     if (command && excludedSkills.has(command[1].replace(/\//g, '-'))) return true;
     return Object.entries(workflows).some(([name, dest]) => dest === rel && excludedSkills.has(name));
+}
+
+/** A role the project's profile does not ship: its canonical copy and both native projections. */
+function isExcludedRolePath(rel, excludedRoles) {
+    if (!excludedRoles?.size) return false;
+    const role = /^\.agents\/roles\/([^/]+)\.md$/.exec(rel) || /^\.claude\/agents\/([^/]+)\.md$/.exec(rel) || /^\.codex\/agents\/([^/]+)\.toml$/.exec(rel);
+    return Boolean(role && excludedRoles.has(role[1]));
 }
 
 /** Reuse the existing managed-block merger; adopter prose remains outside it. */
@@ -464,6 +493,7 @@ function renderSharedAgents(root, options = {}) {
         const role = /^\.agents\/roles\/([^/]+)\.md$/.exec(source);
         if (!role) continue;
         const name = role[1];
+        if (options.excludedRoles?.has(name)) continue;
         const text = stripExcludedSkills(get(source), options.excludedSkills);
         const fm = parseAgentSections(text).frontmatter;
         if (field(fm, 'name') !== name) throw new Error(`shared-agents: role name must match ${name}`);
@@ -572,7 +602,24 @@ function renderSharedAgents(root, options = {}) {
             return false; // unreadable: keep reporting it, as before
         }
     };
-    for (const rel of Object.keys(previous)) if (selected(rel) && !isExcludedSkillPath(rel, options.excludedSkills, workflowMap(root, files)) && !outputs.has(rel) && !retiring(rel) && !retirement.conflicts.includes(rel) && rel !== '.claude/settings.json' && !rel.startsWith('.agents/') && fs.existsSync(path.join(root, rel)) && !sourceHiddenByIgnoreAndOutputUnchanged(rel)) result.conflicts.push(rel);
+    for (const rel of Object.keys(previous)) if (selected(rel) && !isExcludedSkillPath(rel, options.excludedSkills, workflowMap(root, files)) && !isExcludedRolePath(rel, options.excludedRoles) && !outputs.has(rel) && !retiring(rel) && !retirement.conflicts.includes(rel) && rel !== '.claude/settings.json' && !rel.startsWith('.agents/') && fs.existsSync(path.join(root, rel)) && !sourceHiddenByIgnoreAndOutputUnchanged(rel)) result.conflicts.push(rel);
+    // Outputs of a skill or role the project's selection now excludes are pruned: an
+    // unedited one (its bytes match the ledger) is removed with its ledger entry; an
+    // edited one is kept and reported, like any other edited output.
+    const prune = [];
+    for (const rel of Object.keys(previous)) {
+        if (!selected(rel) || rel.startsWith('.agents/') || outputs.has(rel) || retiring(rel)) continue;
+        if (!isExcludedSkillPath(rel, options.excludedSkills, workflowMap(root, files)) && !isExcludedRolePath(rel, options.excludedRoles)) continue;
+        const abs = path.join(root, rel);
+        assertNoSymlinkedAncestor(abs, root);
+        if (!fs.existsSync(abs)) { delete next[rel]; continue; }
+        if (matchesShipped(fs.readFileSync(abs), [previous[rel]])) prune.push(rel);
+        else {
+            result.conflicts.push(rel);
+            (result.prunedConflicts ||= []).push(rel);
+        }
+    }
+    if (prune.length) result.pruned = prune.sort();
     // Validate every output before any write: a conflict cannot leave the other
     // runtime silently updated while the edited projection stays behind.
     for (const [rel, content] of outputs) {
@@ -594,6 +641,14 @@ function renderSharedAgents(root, options = {}) {
             (result.retiredReasons ||= {})[rel] = 'edited while the update was running';
             result.retired = result.retired.filter(kept => kept !== rel);
             if (previous[rel] !== undefined) next[rel] = previous[rel];
+        }
+        // Re-verified at delete time, as for retired files.
+        for (const rel of prune) {
+            if (removeRetired(root, rel, [previous[rel]]) === 'changed') {
+                result.conflicts.push(rel);
+                (result.prunedConflicts ||= []).push(rel);
+                result.pruned = result.pruned.filter(kept => kept !== rel);
+            } else delete next[rel];
         }
         if (JSON.stringify(previous) !== JSON.stringify(next)) write(root, STATE_PATH, JSON.stringify(next, null, 2) + '\n');
     }
@@ -667,8 +722,12 @@ function syncSharedAgents(source, target, options = {}) {
     const listFile = path.join(source, RETIRED_PATH);
     const versionFile = path.join(source, '.agents/config/version.json');
     const incomingRetirement = fs.existsSync(listFile) ? { list: read(source, RETIRED_PATH), version: fs.existsSync(versionFile) ? read(source, '.agents/config/version.json') : null } : undefined;
-    const before = renderSharedAgents(target, { dryRun: true, excludedSkills: options.excludedSkills, deferredOutputs: options.deferredOutputs, incomingRetirement });
-    if (before.conflicts.length) { result.conflicts = before.conflicts; return result; }
+    const before = renderSharedAgents(target, { dryRun: true, excludedSkills: options.excludedSkills, excludedRoles: options.excludedRoles, deferredOutputs: options.deferredOutputs, incomingRetirement });
+    if (before.conflicts.length) {
+        result.conflicts = before.conflicts;
+        if (before.prunedConflicts) result.prunedConflicts = before.prunedConflicts;
+        return result;
+    }
     const files = new Map();
     const adoptPaths = new Set();
     const migratedNative = new Map();
@@ -690,6 +749,7 @@ function syncSharedAgents(source, target, options = {}) {
     for (const rel of incoming) {
         const skill = /^\.agents\/skills\/([^/]+)\/(.+)$/.exec(rel);
         if (skill && options.excludedSkills?.has(skill[1])) { result.skipped++; continue; }
+        if (isExcludedRolePath(rel, options.excludedRoles)) { result.skipped++; continue; }
         const zone = classifySharedFile(rel);
         if (zone === 'project-exception') { result.skipped++; continue; }
         const dest = path.join(target, rel);
@@ -762,20 +822,62 @@ function syncSharedAgents(source, target, options = {}) {
         if (runtime === 'claude') for (const [name, native] of migratedNative) obj.roles[name] = { ...obj.roles[name], ...native };
         queue(rel, JSON.stringify(obj, null, 2) + '\n', fs.existsSync(dest));
     }
+    // Canonical copies of excluded skills and roles: removed when every file is a version the
+    // toolkit shipped (current or historic); a customised copy is project content, kept and reported.
+    const canonicalPrune = [];
+    const shippedCopy = rel => {
+        const bytes = fs.readFileSync(path.join(target, rel));
+        const current = path.join(source, rel);
+        if (fs.existsSync(current) && matchesShipped(bytes, [digest(fs.readFileSync(current)), digest(read(source, rel))])) return true;
+        return shippedBefore(source, rel, digest(bytes)) || shippedBefore(source, rel, digest(bytes.toString('utf8')));
+    };
+    for (const name of [...(options.excludedSkills || [])].sort()) {
+        const dir = path.join(target, '.agents/skills', name);
+        if (!fs.existsSync(path.join(source, '.agents/skills', name)) || !fs.existsSync(dir)) continue;
+        assertNoSymlinkedAncestor(dir, target);
+        const rels = [...walkDir(dir)].map(abs => path.relative(target, abs).replace(/\\/g, '/'));
+        if (rels.every(shippedCopy)) canonicalPrune.push(...rels);
+        else result.warnings.push(`.agents/skills/${name}/ — excluded by the project's skill selection but customised; kept (delete it by hand if unwanted)`);
+    }
+    for (const name of [...(options.excludedRoles || [])].sort()) {
+        const rel = `.agents/roles/${name}.md`;
+        if (!fs.existsSync(path.join(target, rel))) continue;
+        assertNoSymlinkedAncestor(path.join(target, rel), target);
+        if (shippedCopy(rel)) canonicalPrune.push(rel);
+        else result.warnings.push(`${rel} — excluded by the project's skill selection but customised; kept (delete it by hand if unwanted)`);
+    }
     const commands = commandFiles(source);
-    const preview = renderSharedAgents(target, { incomingRetirement, shippedFrom: source, dryRun: true, files, adoptPaths, excludedSkills: options.excludedSkills, deferredOutputs: options.deferredOutputs, commands });
+    const preview = renderSharedAgents(target, { incomingRetirement, shippedFrom: source, dryRun: true, files, adoptPaths, excludedSkills: options.excludedSkills, excludedRoles: options.excludedRoles, deferredOutputs: options.deferredOutputs, commands });
     result.warnings.push(...(preview.warnings || []));
     if (preview.retired) result.retired = preview.retired;
     if (preview.retiredConflicts) result.retiredConflicts = preview.retiredConflicts;
-    if (preview.conflicts.length) { result.conflicts = preview.conflicts; result.copied = result.merged = 0; result.changed = []; return result; }
+    if (preview.conflicts.length) {
+        result.conflicts = preview.conflicts;
+        if (preview.prunedConflicts) result.prunedConflicts = preview.prunedConflicts;
+        result.copied = result.merged = 0; result.changed = []; return result;
+    }
     result.changed.push(...preview.changed);
+    if (canonicalPrune.length || preview.pruned) result.pruned = [...canonicalPrune, ...(preview.pruned || [])].sort();
     result.copied += preview.changed.length;
     if (!options.dryRun) {
         for (const [rel, content] of pending) write(target, rel, content);
-        const rendered = renderSharedAgents(target, { incomingRetirement, shippedFrom: source, files, adoptPaths, excludedSkills: options.excludedSkills, deferredOutputs: options.deferredOutputs, commands });
+        const rendered = renderSharedAgents(target, { incomingRetirement, shippedFrom: source, files, adoptPaths, excludedSkills: options.excludedSkills, excludedRoles: options.excludedRoles, deferredOutputs: options.deferredOutputs, commands });
         result.conflicts.push(...rendered.conflicts);
+        if (rendered.prunedConflicts) result.prunedConflicts = rendered.prunedConflicts;
+        const removed = [];
+        if (rendered.conflicts.length === 0) {
+            for (const rel of canonicalPrune) {
+                if (!fs.existsSync(path.join(target, rel))) continue;
+                // Re-verified at delete time: a copy edited since planning is kept.
+                if (shippedCopy(rel) && removeRetired(target, rel, [digest(fs.readFileSync(path.join(target, rel)))]) !== 'changed') removed.push(rel);
+                else result.warnings.push(`${rel} — changed while pruning; kept`);
+            }
+        }
+        // Report only what was actually removed.
+        result.pruned = [...removed, ...(rendered.pruned || [])].sort();
+        if (!result.pruned.length) delete result.pruned;
     }
     return result;
 }
 
-module.exports = { describeRetiredConflict, removeRetired, shippedBefore, planRetirement, loadModelAdapter, renderSharedAgents, syncSharedAgents, syncStartupInstructions, projectionPaths, canonicalFiles, commandFiles, workflowMap, isExcludedSkillPath, STATE_PATH };
+module.exports = { compatibilityWrapper, FAIL_CLOSED_HOOKS, describeRetiredConflict, removeRetired, shippedBefore, planRetirement, loadModelAdapter, renderSharedAgents, syncSharedAgents, syncStartupInstructions, projectionPaths, canonicalFiles, commandFiles, workflowMap, isExcludedSkillPath, isExcludedRolePath, STATE_PATH };

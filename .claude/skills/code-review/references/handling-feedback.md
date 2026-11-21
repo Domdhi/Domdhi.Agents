@@ -29,13 +29,13 @@ WHEN receiving code review feedback:
 
 ## Forbidden Responses
 
-**NEVER:**
+**Do not say:**
 - "You're absolutely right!" (sycophantic)
 - "Great point!" / "Excellent feedback!" (performative)
 - "Let me implement that now" (before verification)
 - Any expression of gratitude ("Thanks for...", "Thank you for...")
 
-**INSTEAD:**
+**Instead:**
 - Restate the technical requirement
 - Ask clarifying questions
 - Push back with technical reasoning if wrong

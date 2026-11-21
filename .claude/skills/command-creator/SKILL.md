@@ -15,7 +15,7 @@ allowed-tools: Read Write Edit Grep Glob
 
 Template, decision gates, and quality criteria for creating a shared workflow (`.agents/skills/{native-skill-name}/references/workflow.md`) that follows this toolkit's conventions. A command owns **orchestration** — gates, delegation, validation, commit logic — and never inlines skill domain knowledge. See the three-tier architecture + "no duplication between layers" rule in CLAUDE.md; for agents use `agent-creator`, for skills use `skill-creator` + `skill-authoring`.
 
-**Namespacing:** a command's slash name comes from its path. `commands/create/project-brief.md` → `/create:project-brief`; `commands/review/code-review.md` → `/review:code-review`; a top-level `commands/sweep.md` → `/sweep`. Put setup commands in `create/`, periodic/maintenance commands in `review/`, daily build-loop commands at the top level.
+**Namespacing:** a command's slash name comes from its path. `commands/create/project-brief.md` → `/create:project-brief`; `commands/review/code-review.md` → `/review:code-review`; a top-level `commands/do.md` → `/do`. Put setup commands in `create/`, periodic/maintenance commands in `review/`, daily build-loop commands at the top level.
 
 ## Command Template
 
@@ -128,7 +128,7 @@ Follow the **Post-Command Commit Convention** in `.agents/startup-reference.md`.
 
 ### Commands That Commit vs Read-Only
 
-- **Commits**: All `/create:*`, `/brainstorm`, `/research`, `/review:optimize-*`, `/review:specialize`, `/retro`, `/review:changelog`, `/review:update-docs`, `/review:qa`
+- **Commits**: All `/create:*`, `/brainstorm`, `/research`, `/review:optimize-*`, `/review:specialize`
 - **Read-only**: `/prime`, `/review:check-readiness`, `/review:check-sync`, `/review:code-review`, `/review:memory-health`, `/todo`, `/review:organize`, `/review:status`
 - **Own commit logic**: `/do`, `/run-todo`
 

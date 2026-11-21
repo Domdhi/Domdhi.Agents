@@ -1,33 +1,13 @@
 # Project Context
 
-Defines the format for `docs/product/context.md` — the single-file quick reference that `/prime` loads first in every session.
+Defines `docs/product/context.md`, the single-file quick reference `/prime` loads first in every session. A good one lets a reader understand the project in 30 seconds and reflects where it actually stands.
 
 ## Document Template
 
-The document you produce — the canonical, scaffold-blessed template — lives in `../assets/context.md` (raw, with the `<!-- @@template -->` first-line marker). Read it to know the artifact's structure; `scaffold.js` seeds `docs/product/context.md` from the same file.
+The canonical, scaffold-blessed template is `../assets/context.md` (raw, with the `<!-- @@template -->` first-line marker). `scaffold.js` seeds `docs/product/context.md` from it.
 
-## Maintenance Rules
+## Maintenance
 
-- **Updated by**: scaffold.js (creates), `/end` (updates state), `/do` (updates active work)
-- **Read by**: `/prime` (first thing loaded each session)
-- **Frequency**: Should be updated after every completed story or significant change
-- Keep it under 100 lines — it's a quick reference, not documentation
-
-## Quality Criteria
-
-### Good product/context.md
-- Can understand the project in 30 seconds by reading this file
-- All doc links are valid
-- Current state reflects actual progress
-- Tech stack summary matches architecture/overview.md
-
-### Bad product/context.md
-- Outdated state (shows stories as pending that are done)
-- Broken doc links
-- Missing architecture summary
-- No current state section
-
-## Cross-References
-- Created by: scaffold.js
-- Updated by: `/end`, `/do`
-- Read by: `/prime`
+- Created by `scaffold.js`; `/end` updates state and `/do` updates active work. `/prime` reads it first each session.
+- Update it after every completed story or significant change, and keep it under 100 lines: a quick reference, not documentation.
+- Keep doc links valid, the current-state section true to actual progress (no done stories shown as pending), and the tech-stack summary matching `architecture/overview.md`. Missing architecture summary or current state are the usual failures.

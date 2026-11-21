@@ -84,7 +84,13 @@ describe('settings --merge into an adopter that predates the hooks', () => {
         expect(sessionEnd).toContain('memory-session-capture.cjs');
         expect(sessionEnd).toContain('adopter-notify.cjs');
         expect(merged.env).toEqual(adopterSettings.env);              // the opt-in flags and key command survive a template update
-        expect(merged.permissions).toEqual(adopterSettings.permissions);
+        // SF-1.9: adopter allow/ask survive untouched; the template's deny set is unioned in (never replacing the adopter's).
+        const { deny: adopterDeny = [], ...adopterRest } = adopterSettings.permissions;
+        const { deny: mergedDeny = [], ...mergedRest } = merged.permissions;
+        expect(mergedRest).toEqual(adopterRest);
+        expect(mergedDeny.slice(0, adopterDeny.length)).toEqual(adopterDeny);
+        const templateDeny = JSON.parse(fs.readFileSync(ADAPTER, 'utf8')).permissions.deny;
+        for (const rule of templateDeny) expect(mergedDeny).toContain(rule);
         expect(merged.$schema).toBe(adopterSettings.$schema);
         expect(mergeSettingsFile(ADAPTER, dest, {}, tmp.root).action).toBe('unchanged');
     });

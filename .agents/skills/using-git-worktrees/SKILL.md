@@ -139,6 +139,15 @@ Tests passing (<N> tests, 0 failures)
 Ready to implement <feature-name>
 ```
 
+## Per-writer worktrees in a wave
+
+`/run-todo` gives each overlapping writer of a wave its own worktree (`run-todo` workflow, Step 3 Path B, "Worktree isolation"). A writer worktree differs from a feature worktree in four ways:
+
+- **Base is local HEAD, not the remote default.** Dependent stories must see earlier unpushed waves, so skip the origin-first chain of Creation Step 2 and create `git worktree add -b "wave-{N}-{ID}" "$path" HEAD`. `path` still follows Directory Selection (the sibling root or an absolute `AGENTS_WORKTREE_ROOT`). Claude Code's own worktree creation and its Agent `isolation: "worktree"` parameter start from the remote default branch or an unverified commit, so the wave creates these worktrees explicitly.
+- **Resolve the root from the worktree's cwd.** Inside a worktree `git rev-parse --show-toplevel` is the worktree and `git rev-parse --path-format=absolute --git-common-dir` points at the main checkout's `.git`. A command that must act on the writer's files resolves its root from that cwd, not `CLAUDE_PROJECT_DIR`, which keeps naming the main checkout. Ignored state under `docs/.output/.state/` (telemetry, memory index) resolves to the main checkout from every worktree, while tracked files and gate receipts are per worktree: run gates only in the main checkout.
+- **Ignored files are not checked out.** `git worktree add` copies none of them; Claude Code's hook copies the `.worktreeinclude` matches, an explicit create does not. Copy them from the main checkout: `git -C "$main" ls-files --others --ignored --exclude-from="$main/.worktreeinclude"` lists the matches (never a link, never a tracked file); copy each to the same relative path under `$path`.
+- **Prune leftovers.** Remove a finished writer from the main checkout with `git worktree remove "$path"` (never `--force`: a worktree holding uncommitted work stays) and delete its scratch branch, then run `git worktree prune`. The test files copied into the worktree are untracked there and make `remove` refuse: delete them by exact path first (`rm -- {path}`, never `rm -r`), then confirm `git -C "$path" status --porcelain` prints nothing (anything left is an unreported edit: keep the worktree). At the start of a run, `git worktree list` shows leftovers from an interrupted wave; a directory deleted by hand shows as prunable and `git worktree prune` clears the registration. A leftover scratch branch makes `git worktree add -b "wave-{N}-{ID}"` fail: check `git worktree list` first, and delete the branch with `git branch -D` only when no worktree holds it.
+
 ## Quick Reference
 
 | Situation | Action |

@@ -9,7 +9,7 @@ argument-hint: "[--dry-run | --fix | --report-only]"
 
 Re-align the `.claude/` system with the **actual codebase** during Phase 4 implementation. While `/specialize` sets up agents from planning docs, `/optimize-agents` keeps them aligned as the codebase evolves.
 
-Run this periodically — after completing an epic, when agents feel out of sync, or when `/retro` flags system improvements.
+Run this periodically — after completing an epic, or when agents feel out of sync.
 
 **Idempotent** — safe to re-run. Agent context sections are replaced, not duplicated. Memories are not overwritten.
 
@@ -38,7 +38,7 @@ MODE: $ARGUMENTS (default: `--fix`)
 
 ## When to Run
 
-- After completing an epic (suggested by `/retro`)
+- After completing an epic
 - When agent output quality degrades
 - After major refactors or dependency changes
 - After architecture document updates
@@ -346,7 +346,6 @@ Follow the **Post-Command Commit Convention** in `.agents/startup-reference.md`.
 ```
 /specialize     → Initial setup: docs → agents (Phase 3→4 bridge)
 /optimize-agents → Runtime alignment: codebase → agents (during Phase 4)
-/retro          → Analysis: identifies drift + proposes improvements (after epic)
 /check-sync     → Detection: finds doc drift (anytime)
 ```
 
@@ -355,8 +354,6 @@ Follow the **Post-Command Commit Convention** in `.agents/startup-reference.md`.
 /specialize --fix          (once, during initial project setup)
     ↓
 /do | /run-todo            (builds code, logs agent issues to docs/.output/evolution/agents/{date}.md)
-    ↓
-/retro                     (after epic, promotes patterns to 0.8, flags system issues)
     ↓
 /optimize-agents --fix     (reads agent-updates/ day-files + retro findings + codebase scan,
                             fixes recurring issues, updates agent context)
@@ -367,7 +364,6 @@ Follow the **Post-Command Commit Convention** in `.agents/startup-reference.md`.
 **Data sources for optimization:**
 ```
 docs/.output/evolution/agents/{date}.md  ← runtime issues from /do and /run-todo (day-rotated, continuous)
-docs/.output/findings/reviews/retro-*.md                ← system improvements from /retro (per epic)
 codebase scan                  ← actual dependencies, patterns, structure (live)
 memory system                  ← proven patterns at confidence ≥ 0.7 (accumulated)
 ```

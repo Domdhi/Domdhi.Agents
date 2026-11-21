@@ -1,0 +1,151 @@
+# TODO: Dependency-closed skill profiles, caller cleanup and workflow prose modernisation
+
+| Attribute | Value |
+|-----------|-------|
+| **Status** | Specification Complete |
+| **Author** | the owner |
+| **Created** | 2026-11-12 |
+| **Parent** | notes-repo TODO_studio ST-7.6 (brief: `notes-repo/docs/work/briefs/toolkit-skill-profiles.md`) |
+| **Branch** | `skill-profiles` (local commits only; no push, publish, fleet release or fleet sync without the owner's go) |
+
+---
+
+## Executive Summary
+
+Adopters choose skills with a hand-written `skillExclude` that the toolkit never checks. Excluding a skill that a kept workflow still invokes leaves a dead reference and gives no warning. This TODO adds three things. First, toolkit-owned profiles that allow-list skills and roles (`knowledge`, `agent`, `app`), selected with `"skillProfile"` and adjustable locally with `skillInclude` / `skillExclude`. Second, a closure check that fails closed when a kept skill or role still invokes a dropped skill in either name form (`review-x` or `/review:x`, `/name`). Third, removal of newly excluded, unmodified outputs on update. It also removes the stale `/sweep`, `/retro`, `/onboard` and optional `review-*` cross-calls from the kept workflows at their source. Finally, it modernises the most-used workflows' prose: shouted emphasis and duplicated rules go, every gate stays, and the result is measured before and after.
+
+Wave shape: role-based by subsystem. Engine code (`_lib`, updater, render) and skill prose are disjoint file sets, so they run in parallel. The prose rewrite runs after the caller cleanup because both touch the same workflow files.
+
+---
+
+## Dependency Graph
+
+```
+Wave 1 (parallel, disjoint files)
+  SP-1.1 profile+closure lib ─┐
+  SP-1.2 profiles data ───────┤
+  SP-2.1 sweep/retro/onboard callers (A) ─┐
+  SP-2.2 sweep/retro/onboard callers (B) ─┤
+  SP-2.3 review-* callers ─────────────────┤
+  SP-2.4 roles + research callers ─────────┤
+  SP-2.5 review-chain callers ─────────────┤
+  SP-3.1 prose metrics + baseline ─────────┤
+                                           │
+Wave 2                                     ▼
+  SP-1.3 wire selection + fail-closed (updater/install/render CLI) ◄─ SP-1.1, SP-1.2
+  SP-3.2 run-todo prose        ◄─ SP-2.1, SP-3.1
+  SP-3.3 do + todo prose       ◄─ SP-3.1
+  SP-3.4 review/verification/handoff prose ◄─ SP-2.2, SP-2.3, SP-3.1
+  SP-3.5 builder + debugging + design prose ◄─ SP-2.2, SP-3.1
+  SP-3.6 end/prime/council/create-new-project/run-tests prose ◄─ SP-2.3, SP-3.1
+                                           │
+Wave 3                                     ▼
+  SP-1.4 role exclusion through render/install/update ◄─ SP-1.3
+                                           │
+Wave 4                                     ▼
+  SP-1.5 prune newly excluded outputs ◄─ SP-1.4
+  SP-1.6 profile guard test + docs + measurement report ◄─ SP-1.4, SP-2.*, SP-3.*
+```
+
+---
+
+## Phase 1: Profiles and closure
+
+**Goal:** A project selects a toolkit profile, the toolkit computes the effective skill and role set, and the toolkit refuses any set that leaves a dangling invocation.
+
+---
+
+### Epic SP-1: Profile engine
+
+**Objective:** Make the skill and role selection toolkit-owned, dependency-closed and carried by fleet sync.
+
+---
+
+* **Story SP-1.1 (M): Profile resolution and reference-graph closure library**
+  * **As a** toolkit maintainer, **I want** one library that resolves a project's effective skill/role set and lists dangling invocations, **So that** the updater, installer, render check and tests share one decision.
+  * **AC:**
+    * [x] New `.agents/core/_lib/skill-profiles.js` exports `loadProfiles(toolkitRoot)`, `resolveSelection({ toolkitRoot, config })` and `findDanglingReferences({ root, keptSkills, keptRoles })`.
+    * [x] `resolveSelection` returns `{ excludedSkills: Set, excludedRoles: Set, keptSkills: Set, keptRoles: Set, errors: string[] }`. With no `skillProfile`, the behaviour matches today: every toolkit skill except `skillExclude`, and every role. With a profile, the kept skills are the profile's skills plus `skillInclude`, minus `skillExclude`. The kept roles are the profile's `roles` (every role when that field is absent).
+    * [x] An unknown profile name, or an unknown skill or role name in a profile, `skillInclude` or `skillExclude`, is an error that names the offending value. The one exception is a renamed skill in `RENAMED_SKILLS`, which maps to its new name as it does today.
+    * [x] The universe of skills is the toolkit's `.agents/skills/*` directories that contain a `SKILL.md`. The universe of roles is `.agents/roles/*.md`.
+    * [x] `findDanglingReferences` scans every `.md` and `.json` file under each kept skill directory, and each kept role after `stripExcludedSkills` has removed the frontmatter and `## Skills` path references. It reports `{ caller, file, line, target, form }` for every reference to a dropped skill in any of these forms: the hyphenated name when it contains a hyphen (bounded by non-`[\w-]`), the `/name` slash form (not part of a path), a `skills/name/` path, and the colon command form derived from `.agents/adapters/workflows.json` (`review:x`, `/review:x`, `create:new-project`).
+    * [x] A reference on a line that contains `if installed` or `when installed` (case-insensitive) is optional and is not reported.
+    * [x] A role that names its own same-named skill (`qa-engineer` role → `qa-engineer` skill) is reported only when that skill is dropped and the role is kept. Frontmatter `name:` lines are not references.
+    * [x] Unit tests cover the cases above, including each name form, the optional-line marker, the renamed-skill mapping, and that a self-reference in the skill's own directory is ignored.
+  * **Estimate:** M
+  * **Complexity:** 6
+  * **Release:** core
+  * **Risk tier:** deep — security-style control: a fail-closed validator for every adopter's delivery set (wide blast radius)
+  * **Dependencies:** None
+  * **Files:**
+    * `.agents/core/_lib/skill-profiles.js` — new library
+    * `.agents/core/_lib/__tests__/skill-profiles.test.js` — new tests
+  * **Agent budget:** 0 modified, 2 created — within ≤5/≤2 cap
+  * **Ownership:** production general-purpose; tests Main Agent (run-todo Step 2b); review fresh code-reviewer
+  * **Research notes:** Name forms, verified against the live tree: `wf[name]` maps a workflow to `.claude/commands/{ns}/{x}.md`, and the colon form is `{ns}:{x}`. A prototype scanner (Key Findings 1) found the full caller list, which caused no false positives in the knowledge profile. `stripExcludedSkills` lives in `.agents/core/_lib/agent-merger.js:298` (it removes frontmatter skills and `## Skills` path bullets). `RENAMED_SKILLS` / `withRenamedSkills` live in `.agents/core/template-updater.js:96-101`; move or re-export them so the library does not require the updater (that would be a circular require, since the updater will require the library). Runtime helpers stay zero-dependency.
+
+* **Story SP-1.2 (S): Ship the three profiles**
+  * **As a** project owner, **I want** `knowledge`, `agent` and `app` profiles shipped with the toolkit, **So that** fleet sync carries profile changes and no adopter hand-curates a list.
+  * **AC:**
+    * [x] New `.agents/adapters/skill-profiles.json`: `{ "profiles": { name: { "description", "skills": [...], "roles"?: [...] } } }`, sorted names.
+    * [x] `app`: every toolkit skill that exists today, and no `roles` field (all roles).
+    * [x] `knowledge`: every toolkit skill except `sweep`, `retro`, `onboard`, `review-timeline`, `review-check-templates`, `review-changelog`, `review-promote-memories`, `review-qa`, `review-update-docs`, `review-personalize`, `review-feedback`. It keeps `review-specialize` (see Key Findings 3), and has no `roles` field.
+    * [x] `agent`: skills `content-formats`, `ghostwriting`, `remember`, `research`; roles `shadow`, `product-strategist`. This matches Shadow's current kept set (Key Findings 4).
+    * [x] The file renders and ships like the other `.agents/adapters/*.json` metadata. `node .agents/core/render-shared-agents.js --check` stays clean.
+  * **Estimate:** XS
+  * **Complexity:** 2
+  * **Release:** core
+  * **Risk tier:** standard — delivery data; its validity is enforced by SP-1.1/SP-1.6
+  * **Dependencies:** None
+  * **Files:**
+    * `.agents/adapters/skill-profiles.json` — new
+  * **Agent budget:** 0 modified, 1 created — within cap
+  * **Ownership:** production Main Agent; tests covered by SP-1.6; review fresh code-reviewer
+  * **Research notes:** `.agents/adapters/` is runtime and delivery metadata. `canonicalFiles` walks it and render projects nothing for unknown adapter files, so the file ships under `.agents/` only. Putting it in `.agents/config/` would also render `.claude/profiles…`, which is noise. Shadow's current exclude list is `Domdhi.Shadow/.claude/update-config.json`, and its kept skills are the 4 listed.
+
+* **Story SP-1.3 (M): Wire selection into the updater, installer and render check, failing closed**
+  * **As a** project owner, **I want** `"skillProfile"` honoured everywhere `skillExclude` is today, with a clear refusal on a dangling invocation, **So that** a lean profile can never ship a dead reference.
+  * **AC:**
+    * [x] `readUpdateConfig` accepts an optional `skillProfile` (string) and `skillInclude` (string array). Any other type is the existing `CONFIG` refusal, and the `CONFIG` message names the new keys.
+    * [x] `loadExcludedSkills(targetClaudeDir, toolkitRoot?)` returns `resolveSelection(...).excludedSkills`. Its existing callers and the shape of its result are unchanged. A new `loadExcludedRoles` returns `excludedRoles`. The default `toolkitRoot` is the running code's own root (`path.join(__dirname, '..', '..')`), so a fleet sync resolves against the workshop's profiles.
+    * [x] Before any mutation, the update and install front doors run `resolveSelection` and `findDanglingReferences` against the source toolkit. Any error or dangling reference refuses the run with a new `PROFILE` front-door code. The output lists each `caller → target (file:line)` and suggests the minimal extra exclusions (or `skillInclude` additions) that would close the set. Nothing is written.
+    * [x] `render-shared-agents.js --check` runs the same closure check on the local tree and exits 1 with the same listing when it finds a dangling reference.
+    * [x] New CLI `.agents/core/skill-profile.js` with `check [--root DIR]` (prints the effective set and closure result, exit 0/1) and `suggest <skill>...` (prints the callers that must also be dropped, transitively). It is projected to `.claude/core/` and `.codex/core/` by the existing render.
+    * [x] Tests: a profile config resolves; a bad `skillProfile` or `skillInclude` type is refused; a config that excludes `sweep` while keeping `verification-before-completion` *before* SP-2 lands is the fixture for the refusal (use a synthetic toolkit fixture, not the live tree); the listing names file and line; `--check` exits 1.
+  * **Estimate:** M
+  * **Complexity:** 7
+  * **Release:** core
+  * **Risk tier:** deep — release gate on every adopter update/install (front-door refusal path, wide blast radius)
+  * **Dependencies:** SP-1.1, SP-1.2
+  * **Files:**
+    * `.agents/core/template-updater.js` — config keys, `loadExcludedSkills`/`loadExcludedRoles`, PROFILE refusal
+    * `.agents/core/install.js` — PROFILE refusal at the install front door
+    * `.agents/core/render-shared-agents.js` — closure in `--check`
+    * `.agents/core/skill-profile.js` — new CLI
+    * `.agents/core/__tests__/skill-profile.test.js` — new tests
+  * **Agent budget:** 3 modified, 2 created — within cap
+  * **Ownership:** production general-purpose; tests Main Agent; review fresh code-reviewer
+  * **Research notes:** `FRONT_DOOR_MESSAGES` sit at `template-updater.js:74`, and front doors use fixed text that never echoes config bytes. Keep that rule for `CONFIG`; for `PROFILE` the listing is toolkit file paths and skill names, not config bytes. `preflightFrontDoor` is at `template-updater.js:~185-211` and calls `readUpdateConfig`. The install front door goes through `preflightFrontDoor` too (install.js:42 imports it). `render-shared-agents.js:20` already calls `loadExcludedSkills(root/.claude)`. Recurring constraint: front doors must refuse before any write, and tests snapshot the tree (`snapshotTree`) to prove it (template-updater.test.js:1484).
+
+* **Story SP-1.4 (L): Role exclusion through render, install and update**
+  * **As a** project on the `agent` profile, **I want** dropped roles never rendered or copied, **So that** Shadow ships only the roles it uses and the closure check covers only shipped roles.
+  * **AC:**
+    * [x] `renderSharedAgents` and `syncSharedAgents` accept `options.excludedRoles`. An excluded role produces no `.claude/agents/{name}.md`, no `.codex/agents/{name}.toml` and no `.agents/roles/{name}.md` copy.
+    * [x] A new `isExcludedRolePath(rel, excludedRoles)` is applied wherever `isExcludedSkillPath` guards previous outputs and copies (shared-agents.js:575, :692, template-updater.js:366, install.js:436/:486). An excluded role's earlier output is therefore never reported as a conflict.
+    * [x] The legacy `.claude/agents/*.md` merge path in the updater (`mergeAgentFile`, template-updater.js:~474) skips excluded roles.
+    * [x] With no profile and no excluded roles, the render output is byte-identical to today (the existing render and updater tests pass unchanged).
+    * [x] Tests: on a fixture adopter with `skillProfile: "agent"`, install and update produce exactly the `shadow` and `product-strategist` agents in both runtimes, plus the 4 skills.
+  * **Estimate:** L
+  * **Complexity:** 8
+  * **Release:** core
+  * **Risk tier:** deep — the shared render/update pipeline imported by every adopter (wide blast radius)
+  * **Dependencies:** SP-1.3
+  * **Files:**
+    * `.agents/core/_lib/shared-agents.js` — role skip + `isExcludedRolePath`
+    * `.agents/core/template-updater.js` — thread `excludedRoles`
+    * `.agents/core/install.js` — thread `excludedRoles`
+    * `.agents/core/render-shared-agents.js` — pass `excludedRoles`
+    * `.agents/core/__tests__/skill-profile-roles.test.js` — new tests
+  * **Agent budget:** 4 modified, 1 created — within cap
+  * **Ownership:** production general-purpose; tests Main Agent; review fresh code-reviewer
+  * **Research notes:** Role rendering is at `shared-agents.js:~463-480` (`/^\.agents\/roles\/([^/]+)\.md$/`). `options.excludedSkills` is threaded at shared-agents.js:408/410/450/467/575/650/670/692/740/766/775. Mirror each of these for roles. Do not overload the skills Set. Memory `lib-extraction-incomplete-callsite-migration`: when you add a threaded option, grep every call site of `renderSharedAgents`/`syncSharedAgents` and pass it everywhere. A missed site silently renders the role back.

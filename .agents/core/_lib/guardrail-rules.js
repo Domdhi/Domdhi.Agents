@@ -17,6 +17,11 @@
  *   zeroAccessPaths   : path glob — read AND write blocked
  *   readOnlyPaths     : path glob — write AND delete blocked; read allowed
  *   noDeletePaths     : path glob — delete blocked; read/write allowed
+ *   subagentReadOnlyPaths : path glob — write AND delete blocked for a SUBAGENT
+ *                       only (the caller passes `{agentId}` to checkPathAccess);
+ *                       the main thread and reads are unaffected. Holds the gate,
+ *                       its judges, the hooks, the guardrail rules and settings so
+ *                       an implementer cannot weaken the judge that grades it.
  *
  * Fail-safe posture: when validation fails at the top level, return
  * emptyRules() (block-all defaults). When a single dangerousPatterns entry
@@ -40,7 +45,7 @@ const { parseYaml } = require('./yaml-parser');
 
 // Path-glob tiers — plain strings only (no regex-source requirement; these
 // are file-path globs, not bash-command patterns).
-const STRING_TIER_KEYS = ['zeroAccessPaths', 'readOnlyPaths', 'noDeletePaths'];
+const STRING_TIER_KEYS = ['zeroAccessPaths', 'readOnlyPaths', 'noDeletePaths', 'subagentReadOnlyPaths'];
 
 /**
  * Escalation marker an agent appends to a command to opt a `nudge` match into
@@ -107,6 +112,138 @@ function findFirstInvalidTierItem(value, { requireRegex = false } = {}) {
 }
 
 /**
+ * Built-in copy of the shipped `subagentReadOnlyPaths` entries. The path hook (Write, Edit,
+ * MultiEdit, NotebookEdit) and the Bash guard hold a subagent to this list when the rules file
+ * is missing, unreadable, malformed, or parses but lacks the tier key (see
+ * `applySubagentDefaults`), so a deleted, corrupted or truncated rules file cannot switch the
+ * wall off exactly when an implementer wants it off. A test pins this list equal to the shipped
+ * `.agents/config/guardrail-rules.yaml` tier in content and order, and a second test walks the
+ * require() graph of the hooks and judges and fails when a reachable file is not matched here:
+ * edit both lists together. Same glob rules as the rules file (`globMatchesPath`).
+ */
+const BUILTIN_SUBAGENT_READ_ONLY_PATHS = Object.freeze([
+    'gate.config.json',
+    '.agents/core/gate.js',
+    '.agents/core/_lib/gate-receipt.js',
+    '.agents/core/_lib/failure-ledger.js',
+    '.agents/core/_lib/freeze-state.js',
+    '.agents/core/_lib/guardrail-rules.js',
+    '.agents/core/ac-verify.js',
+    '.agents/core/ship-check.js',
+    '.agents/core/commit.js',
+    '.agents/core/todo-completion.js',
+    '.agents/core/story-checkpoint.js',
+    '.agents/core/plan-check.js',
+    '.agents/core/release-slice.js',
+    '.agents/core/runtime-context.js',
+    '.agents/core/git-hooks.js',
+    '.agents/core/build-lock-recovery.js',
+    '.agents/core/_lib/attribution-ledger.js',
+    '.agents/core/_lib/command-blocker.js',
+    '.agents/core/_lib/fs-safe.js',
+    '.agents/core/_lib/gate-summary.js',
+    '.agents/core/_lib/git-hook-protocol.js',
+    '.agents/core/_lib/git.js',
+    '.agents/core/_lib/hook-input.js',
+    '.agents/core/_lib/hook-telemetry.js',
+    '.agents/core/_lib/jsonl-writer.js',
+    '.agents/core/_lib/owned-process-tree.js',
+    '.agents/core/_lib/project-root.js',
+    '.agents/core/_lib/run-pointer.js',
+    '.agents/core/_lib/secret-engine-bin.js',
+    '.agents/core/_lib/shell-command-split.js',
+    '.agents/core/_lib/telemetry-paths.js',
+    '.agents/core/_lib/yaml-parser.js',
+    '.agents/core/_lib/daily-log-paths.js',
+    '.agents/core/_lib/doc-drift.js',
+    '.agents/core/_lib/frontmatter.js',
+    '.agents/core/_lib/hook-spawners.js',
+    '.agents/core/_lib/jaccard.js',
+    '.agents/core/_lib/memory-context.js',
+    '.agents/core/_lib/memory-decay.js',
+    '.agents/core/_lib/memory-extract.js',
+    '.agents/core/_lib/memory-index-divergence.js',
+    '.agents/core/_lib/memory-ingest.js',
+    '.agents/core/_lib/memory-lint.js',
+    '.agents/core/_lib/memory-notes.js',
+    '.agents/core/_lib/memory-paths.js',
+    '.agents/core/_lib/memory-recall.js',
+    '.agents/core/_lib/memory-sync.js',
+    '.agents/core/_lib/output-paths.js',
+    '.agents/core/_lib/run-stamp.js',
+    '.agents/core/_lib/sqlite-backend.js',
+    '.agents/core/constants.js',
+    '.agents/core/daily-log.js',
+    '.agents/core/handoff-path.js',
+    '.agents/core/memory-capture.js',
+    '.agents/core/memory-manager-cli.js',
+    '.agents/core/memory-manager.js',
+    '.agents/core/profile.js',
+    '.agents/hooks/',
+    '.claude/hooks/',
+    '.codex/hooks/',
+    '.claude/core/',
+    '.codex/core/',
+    '.agents/config/guardrail-rules.yaml',
+    'guardrail-rules.yaml',
+    '.agents/adapters/claude/settings.json',
+    '.claude/settings.json',
+    '.claude/settings.local.json',
+    '.agents/adapters/codex/',
+    '.codex/hooks.json',
+    '.codex/hook-identities.json',
+    'docs/.output/.state/telemetry/ac-verify/',
+    'docs/.output/.state/telemetry/ship-seal.json',
+    'docs/.output/.state/telemetry/gate-failures.jsonl',
+    'docs/.output/.state/telemetry/gate-receipt.json',
+    'docs/.output/.state/telemetry/gate-receipts/',
+    'docs/.output/.state/freeze-state.json',
+    'vitest.config.mjs',
+    'tools/run-toolkit-tests.cjs',
+    '.agents/core/__tests__/_helpers/vitest-tmp-sandbox.setup.mjs',
+    '.agents/core/__tests__/_helpers/tmp-sandbox.js',
+    'vitest.config.ts',
+    'vitest.config.mts',
+    'vitest.config.cts',
+    'vitest.config.js',
+    'vitest.config.cjs',
+    'vite.config.ts',
+    'vite.config.mts',
+    'vite.config.cts',
+    'vite.config.js',
+    'vite.config.mjs',
+    'vite.config.cjs',
+    'node_modules/',
+    // SF-4.3: the improvement loop's judges and test data
+    '.agents/skills/skill-creator/agents/',
+    '.agents/skills/skill-creator/scripts/',
+    'evals/',
+    'tools/harness-eval-tasks/',
+    'holdout/',
+    'tools/skill-holdout/',
+    'docs/.output/evolution/skills/*/ledger.json',
+    'docs/.output/evolution/skills/revert-candidates.json',
+    'docs/.output/evolution/skills/_decisions.md',
+]);
+
+/**
+ * Hold a subagent to the built-in tier when the loaded rules cannot be trusted to carry it.
+ * `rules.rulesParsed` is true only when the shipped file parsed AND named the
+ * `subagentReadOnlyPaths` key (a key lifted to empty by the project override still counts):
+ * the shipped file always has the key, so a missing key means a truncated file, a tampered
+ * file or an update not yet rendered, and the wall must not vanish with it. Returns `rules`
+ * unchanged when it is trustworthy, otherwise a copy carrying the built-in list. Only the
+ * subagent tier is replaced: every other tier keeps what the file said.
+ *
+ * @param {object} rules  Rules from `loadRules`, or an `emptyRules()`-shaped object
+ * @returns {object}
+ */
+function applySubagentDefaults(rules) {
+    if (rules && rules.rulesParsed === true) return rules;
+    return { ...(rules || {}), subagentReadOnlyPaths: [...BUILTIN_SUBAGENT_READ_ONLY_PATHS] };
+}
+
+/**
  * Empty-rules sentinel returned when the YAML file is missing, malformed,
  * or schema-invalid. Block-safe: empty arrays for every tier means nothing
  * is blocked BUT nothing dangerous is passed through either — callers can
@@ -121,6 +258,7 @@ function emptyRules() {
         zeroAccessPaths: [],
         readOnlyPaths: [],
         noDeletePaths: [],
+        subagentReadOnlyPaths: [],
     };
 }
 
@@ -138,7 +276,8 @@ function emptyRules() {
  *   - Top-level non-obj  → return emptyRules()
  *   - block/confirm      → must be array (or empty `{}`/missing). Else emptyRules().
  *   - Path-glob keys     → must be array of strings (or empty `{}`/missing).
- *                          (zeroAccessPaths/readOnlyPaths/noDeletePaths)
+ *                          (zeroAccessPaths/readOnlyPaths/noDeletePaths/
+ *                          subagentReadOnlyPaths)
  *                          Invalid item type → emptyRules() (block-safe).
  *   - Command-pattern keys (F12) — dangerousPatterns, block_patterns,
  *                          nudge_patterns, confirm_patterns → must additionally
@@ -161,7 +300,15 @@ function emptyRules() {
  * those pass validation.
  *
  * @param {string} yamlPath - Absolute path to the guardrail-rules.yaml file
- * @returns {{ block_patterns: string[], confirm_patterns: string[], dangerousPatterns: string[], zeroAccessPaths: string[], readOnlyPaths: string[], noDeletePaths: string[], path_rules?: object }}
+ * A successfully loaded ruleset carries a non-enumerable `rulesParsed` flag: the file parsed
+ * to a mapping that names the `subagentReadOnlyPaths` key (an empty key counts, and so does one
+ * the project override lifted to empty: that is a deliberate choice). It is absent on every
+ * fail-safe `emptyRules()` return and on a parsed file that lacks the key, which lets the hooks
+ * tell "the rules carry the subagent wall" from "they do not" and hold a subagent to the
+ * built-in defaults (`applySubagentDefaults`). The shipped file always names the key, so a
+ * missing one means tampering, truncation or an update not yet rendered (fail closed).
+ *
+ * @returns {{ block_patterns: string[], confirm_patterns: string[], dangerousPatterns: string[], zeroAccessPaths: string[], readOnlyPaths: string[], noDeletePaths: string[], subagentReadOnlyPaths: string[], path_rules?: object }}
  */
 function loadShippedRules(yamlPath) {
     if (!fs.existsSync(yamlPath)) {
@@ -233,7 +380,7 @@ function loadShippedRules(yamlPath) {
         }
     }
 
-    return {
+    const rules = {
         block_patterns:    validated.block_patterns,
         nudge_patterns:    validated.nudge_patterns,
         confirm_patterns:  validated.confirm_patterns,
@@ -241,8 +388,16 @@ function loadShippedRules(yamlPath) {
         zeroAccessPaths:   validated.zeroAccessPaths,
         readOnlyPaths:     validated.readOnlyPaths,
         noDeletePaths:     validated.noDeletePaths,
+        subagentReadOnlyPaths: validated.subagentReadOnlyPaths,
         ...(parsed.path_rules ? { path_rules: parsed.path_rules } : {}),
     };
+    return parsed.subagentReadOnlyPaths !== undefined ? markRulesParsed(rules) : rules;
+}
+
+/** Attach the non-enumerable `rulesParsed` flag (see loadShippedRules). */
+function markRulesParsed(rules) {
+    Object.defineProperty(rules, 'rulesParsed', { value: true, enumerable: false });
+    return rules;
 }
 
 // ── Project-owned override ───────────────────────────────────────────────────
@@ -252,17 +407,18 @@ function loadShippedRules(yamlPath) {
 // ships or overwrites it, so a project can adjust the shipped tiers without
 // editing a managed file that every update would then refuse.
 //
-//   - Any tier key (the seven in ALL_TIER_KEYS) lists ADDITIONS, unioned with the
+//   - Any tier key (the eight in ALL_TIER_KEYS) lists ADDITIONS, unioned with the
 //     shipped entries. Additions can only strengthen the ruleset.
-//   - `except:` lifts EXACT shipped entries from `readOnlyPaths` and `noDeletePaths`
-//     only (configuration files a project edits routinely). The zero-access tier and
+//   - `except:` lifts EXACT shipped entries from `readOnlyPaths`, `noDeletePaths` and
+//     `subagentReadOnlyPaths` only (configuration files a project edits routinely, and
+//     subagent-wall entries a project's own agents must write). The zero-access tier and
 //     the command tiers cannot be loosened from here.
 //
 // Fail closed: a file that cannot be read or parsed, names an unknown key, holds a
 // non-list tier, an invalid regex or an exception outside the two tiers is refused
 // as a whole with a stderr warning and the shipped rules stand. A stale exception
 // (an entry the shipped tier no longer holds) warns and the rest applies.
-const OVERRIDE_EXCEPT_KEYS = ['readOnlyPaths', 'noDeletePaths'];
+const OVERRIDE_EXCEPT_KEYS = ['readOnlyPaths', 'noDeletePaths', 'subagentReadOnlyPaths'];
 const OVERRIDE_MAX_BYTES = 64 * 1024;
 
 function overridePathFor(yamlPath) {
@@ -340,7 +496,10 @@ function applyProjectOverride(rules, yamlPath) {
 function loadRules(yamlPath) {
     const rules = loadShippedRules(yamlPath);
     if (!fs.existsSync(yamlPath)) return rules;
-    return applyProjectOverride(rules, yamlPath);
+    // applyProjectOverride copies the rules on a successful merge, which drops the
+    // non-enumerable flag; carry it across.
+    const merged = applyProjectOverride(rules, yamlPath);
+    return rules.rulesParsed === true ? markRulesParsed(merged) : merged;
 }
 
 /**
@@ -514,6 +673,17 @@ function evaluate(command, rules) {
 // ── Path tier checker — A3 ───────────────────────────────────────────────────
 
 /**
+ * Case-fold a path string the way Windows (NTFS) compares names: upper-case, then lower-case.
+ * Plain `toLowerCase` leaves characters that only fold through their upper-case form
+ * (`U+017F` long s uppercases to `S`) distinct from the ASCII letter NTFS treats them as,
+ * so a name spelled with one would slip past a lexical match. Both sides of every
+ * comparison go through the same fold, so ordinary paths match exactly as before.
+ */
+function fold(value) {
+    return value.toUpperCase().toLowerCase();
+}
+
+/**
  * Test whether a file-path glob matches a given absolute path.
  *
  * Simple glob semantics:
@@ -521,19 +691,19 @@ function evaluate(command, rules) {
  *   - `*` matches any non-slash characters
  *   - otherwise plain substring/suffix match
  *
- * Matching is case-insensitive on Windows path strings (since the repo is
- * a Windows host in practice); comparison uses forward-slash normalized paths.
+ * Matching is case-insensitive (NTFS-style fold, see `fold`); comparison uses
+ * forward-slash normalized paths. Plain entries are unanchored suffix matches.
  */
 function globMatchesPath(glob, absPath) {
     if (typeof glob !== 'string' || typeof absPath !== 'string') return false;
-    const normGlob = glob.replace(/\\/g, '/');
-    const normPath = absPath.replace(/\\/g, '/');
+    const normGlob = fold(glob.replace(/\\/g, '/'));
+    const normPath = fold(absPath.replace(/\\/g, '/'));
 
     // Directory-prefix glob (ends with /)
     if (normGlob.endsWith('/')) {
-        const gl = normGlob.toLowerCase();        // e.g. "bin/"
+        const gl = normGlob;                      // e.g. "bin/"
         const glNoSlash = gl.slice(0, -1);        // "bin"
-        const pl = normPath.toLowerCase();
+        const pl = normPath;
         // Segment-boundary anchored (m2): a `bin/` glob must match the directory
         // itself or files under it, but NOT an unrelated path that merely
         // contains the substring (`cabin/foo`, `cobweb/`). It matches when:
@@ -558,25 +728,38 @@ function globMatchesPath(glob, absPath) {
         }
     }
 
-    // Plain filename or relative path — endsWith match
-    return normPath.toLowerCase().endsWith('/' + normGlob.toLowerCase())
-        || normPath.toLowerCase().endsWith(normGlob.toLowerCase());
+    // Plain filename or relative path — endsWith match. This is an UNANCHORED suffix match
+    // (`gate.config.json` also matches `x-gate.config.json`): harmless for a deny list, which only
+    // ever over-blocks, but never reuse this matcher for an allow list.
+    return normPath.endsWith('/' + normGlob) || normPath.endsWith(normGlob);
 }
 
 /**
  * Check whether an operation on an absolute path is allowed under the
- * four-tier schema. `zeroAccess` takes precedence over `readOnly` over
- * `noDelete` — first matching tier wins.
+ * tier schema. `zeroAccess` takes precedence over `readOnly` over the
+ * subagent tier over `noDelete` — first matching tier wins.
+ *
+ * `context` is optional: `{ agentId, agentType }` from the hook payload. A caller
+ * that omits it (or passes an `agentId` of `undefined`) gets exactly the behaviour
+ * of the original three-argument form. ANY defined `agentId` — an empty string,
+ * zero, an object, `null` — marks a subagent, because the payload field is present
+ * only when the hook fires inside a subagent and a value we cannot interpret must
+ * not be read as "the main thread". `agentType` alone does NOT mark a subagent
+ * (`claude --agent X` stamps it on the main thread). A subagent's write or delete
+ * of a `subagentReadOnlyPaths` match is blocked; a read is allowed.
  *
  * @param {string} absPath   Absolute filesystem path (or repo-relative)
  * @param {'read'|'write'|'delete'} operation
  * @param {object} rules     Rules object from loadRules()
+ * @param {{ agentId?: *, agentType?: string }} [context]
  * @returns {{ allowed: boolean, reason?: string, tier?: string }}
  */
-function checkPathAccess(absPath, operation, rules) {
+function checkPathAccess(absPath, operation, rules, context) {
     const zeroAccess = Array.isArray(rules.zeroAccessPaths) ? rules.zeroAccessPaths : [];
     const readOnly   = Array.isArray(rules.readOnlyPaths)   ? rules.readOnlyPaths   : [];
     const noDelete   = Array.isArray(rules.noDeletePaths)   ? rules.noDeletePaths   : [];
+    const subagentRO = Array.isArray(rules.subagentReadOnlyPaths) ? rules.subagentReadOnlyPaths : [];
+    const isSubagent = context !== null && typeof context === 'object' && context.agentId !== undefined;
 
     // Tier 1: zeroAccessPaths — blocks ALL operations
     for (const glob of zeroAccess) {
@@ -597,6 +780,19 @@ function checkPathAccess(absPath, operation, rules) {
                     allowed: false,
                     tier: 'readOnlyPaths',
                     reason: `Path is read-only (matched: ${glob})`,
+                };
+            }
+        }
+    }
+
+    // Tier 2b: subagentReadOnlyPaths — blocks write + delete for a subagent only
+    if (isSubagent && (operation === 'write' || operation === 'delete')) {
+        for (const glob of subagentRO) {
+            if (globMatchesPath(glob, absPath)) {
+                return {
+                    allowed: false,
+                    tier: 'subagentReadOnlyPaths',
+                    reason: `Path is read-only for subagents (matched: ${glob})`,
                 };
             }
         }
@@ -624,6 +820,8 @@ module.exports = {
     evaluate,
     checkPathAccess,
     globMatchesPath, // exposed for tests + potential reuse
+    BUILTIN_SUBAGENT_READ_ONLY_PATHS,
+    applySubagentDefaults,
     hasEscalationMarker,
     ESCALATION_MARKER,
 };

@@ -2,7 +2,7 @@
 
 Detect documentation drift by comparing planning docs against actual project state. Run after stories, after epics, or on-demand to catch misalignment early.
 
-**Operating standard — read-only by design, fix-ready output, chains into resolution.** This command diagnoses drift; it does not rewrite the docs. That read-only stance is intentional and is full compliance with "resolve it or don't report it," not an exception: the drift report is **fix-ready** (each item names what the doc says, what reality shows, and the specific reconciliation), and it chains into resolution via `/review:update-docs`. The loop closes by handing the orchestrator an actionable report, not by dead-ending in a list. Canonical: `.claude/skills/verification-before-completion/SKILL.md`.
+**Operating standard — read-only by design, fix-ready output, chains into resolution.** This command diagnoses drift; it does not rewrite the docs. That read-only stance is intentional and is full compliance with "resolve it or don't report it," not an exception: the drift report is **fix-ready** (each item names what the doc says, what reality shows, and the specific reconciliation), and it chains into resolution via `/review:update-docs` if installed (otherwise the orchestrator applies the fixes). The loop closes by handing the orchestrator an actionable report, not by dead-ending in a list. Canonical: `.claude/skills/verification-before-completion/SKILL.md`.
 
 ## Telemetry (run first)
 
@@ -58,7 +58,7 @@ Glob: docs/TODO_*.md
 
 Launch applicable agents **in parallel** based on scope. Each agent auto-loads its skills via frontmatter.
 
-> **Read-only enforcement.** Every dispatched agent below has Write/Edit tools for other work it does — that does NOT extend to this command. Each Task prompt in 2a/2b/2c MUST include an explicit "do not edit or write any files" instruction, not just an implicit assumption from the command's own contract. This is a real gap: an agent can self-authorize a "helpful" doc edit during a check-sync dispatch, breaking the read-only contract that this command's chained resolution step (`/review:update-docs`) depends on. A drifted-but-unedited report is correct behavior; a self-healed doc is not, no matter how confident the agent is.
+> **Read-only enforcement.** Every dispatched agent below has Write/Edit tools for other work it does — that does NOT extend to this command. Each Task prompt in 2a/2b/2c MUST include an explicit "do not edit or write any files" instruction, not just an implicit assumption from the command's own contract. This is a real gap: an agent can self-authorize a "helpful" doc edit during a check-sync dispatch, breaking the read-only contract that this command's chained resolution step (`/review:update-docs`, if installed) depends on. A drifted-but-unedited report is correct behavior; a self-healed doc is not, no matter how confident the agent is.
 
 **2a. Architecture sync** (if scope is `all` or `architecture`) — `subagent_type: "architect"`
 
@@ -91,7 +91,7 @@ Task prompt:
    - MODIFIED — item exists in both but the doc's description no longer matches reality
    - REMOVED — item is documented but no longer exists in reality
 6. Rate overall: SYNCED, MINOR_DRIFT, or MAJOR_DRIFT
-7. **Do not edit or write any files — report findings only, even for drift you're confident how to fix.** Fixes chain through `/review:update-docs`, not through this dispatch.
+7. **Do not edit or write any files — report findings only, even for drift you're confident how to fix.** Fixes chain through `/review:update-docs` if installed (else the orchestrator), not through this dispatch.
 
 **2b. Story status sync** (if scope is `all` or `stories`) — `subagent_type: "project-planner"`
 
@@ -135,7 +135,7 @@ Run the drift detector for legacy-named and duplicated planning docs the create-
 node .claude/core/_lib/doc-drift.js
 ```
 
-Exit 1 means drift was found — fold every reported item (legacy docs, duplicates, **and misplaced TODOs**) into the report as a drift finding (recommend reconciling via `/onboard`'s Step 6b or manual cleanup). Exit 0 means clean.
+Exit 1 means drift was found — fold every reported item (legacy docs, duplicates, **and misplaced TODOs**) into the report as a drift finding (recommend manual cleanup). Exit 0 means clean.
 
 **Superseded-stack banner check (recurring shape — 3-for-3 in field audits):** for every doc whose header/attribute table or status line names a tech stack, deployment target, or repo layout, check whether it describes a since-replaced state (pre-migration stack, pre-consolidation tree) **without a superseded/stale banner pointing to the current source of truth**. Three independent audits each found one (an architecture overview, a rebuild plan, a backlog's Tech Stack row) — a cold reader takes an unbannered header as current fact. Report any such doc as drift with the reconciliation "add a superseded banner → current ADR/CLAUDE.md," not a full rewrite.
 
@@ -219,7 +219,7 @@ Assemble agent results + dead reference check into the final report, including t
 
 ## When to Run
 
-- After completing an epic (suggested by `/retro`)
+- After completing an epic (suggested by a retrospective)
 - After a batch of stories (suggested by `/do` post-implementation)
 - Before starting a new phase
 - On-demand when something feels off

@@ -20,8 +20,9 @@ const PROJECT_ROOT = process.env.CLAUDE_PROJECT_DIR || path.resolve(__dirname, '
 
 // ── Telemetry ────────────────────────────────────────────────────
 
-function computeTelemetry() {
-  const telemetryPath = getJsonlPath(PROJECT_ROOT, 'command-usage.jsonl');
+// `root` is optional (run-scoreboard.js passes a project root); the default stays the module-scope root.
+function computeTelemetry(root = PROJECT_ROOT) {
+  const telemetryPath = getJsonlPath(root, 'command-usage.jsonl');
 
   if (!fs.existsSync(telemetryPath)) return null;
 
@@ -144,7 +145,7 @@ function computeGit() {
 
 // ── TODOs ────────────────────────────────────────────────────────
 
-function findTodoFiles() {
+function findTodoFiles(root = PROJECT_ROOT) {
   const found = new Set();
   const SKIP_DIRS = new Set(['.archive', '.output', 'node_modules', '.git']);
 
@@ -167,7 +168,7 @@ function findTodoFiles() {
     }
   };
 
-  scanDir(path.join(PROJECT_ROOT, 'docs'));
+  scanDir(path.join(root, 'docs'));
   return [...found].sort();
 }
 
@@ -264,8 +265,8 @@ function parseTodoFileStories(filePath) {
   return stories;
 }
 
-function computeTodos() {
-  const files = findTodoFiles();
+function computeTodos(root = PROJECT_ROOT) {
+  const files = findTodoFiles(root);
   if (files.length === 0) return null;
 
   const totals = { total: 0, done: 0, in_progress: 0, blocked: 0, deferred: 0, pending: 0 };

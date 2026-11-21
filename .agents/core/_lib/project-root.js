@@ -38,6 +38,17 @@ function resolveProjectRoot(fallbackDir) {
     const explicit = process.env.AGENTS_PROJECT_DIR || process.env.AGENT_SOURCE_ROOT || process.env.CODEX_PROJECT_DIR;
     if (!explicit && process.env.CLAUDE_PROJECT_DIR) return process.env.CLAUDE_PROJECT_DIR;
     const sourceRoot = explicit ? path.resolve(explicit) : fallbackDir;
+    return resolveMainWorktree(sourceRoot) || sourceRoot;
+}
+
+/**
+ * The MAIN worktree root of the repository that contains `sourceRoot`, via
+ * `git rev-parse --git-common-dir`, or null when it cannot be told (not a git
+ * repo, git unavailable, or a relocated git dir). Standard layout only: the
+ * parent of the common dir is trusted solely when it is named ".git".
+ * Shared by resolveProjectRoot() and the run-pointer root resolver.
+ */
+function resolveMainWorktree(sourceRoot) {
     try {
         const common = execFileSync('git', ['rev-parse', '--git-common-dir'], {
             cwd: sourceRoot,
@@ -46,20 +57,19 @@ function resolveProjectRoot(fallbackDir) {
             stdio: ['ignore', 'pipe', 'ignore'],
         }).trim();
         if (common) {
-            // `--git-common-dir` is relative ("​.git") from the main worktree and
+            // `--git-common-dir` is relative (".git") from the main worktree and
             // absolute ("/main/.git") from a linked one; resolving against the
             // cwd normalizes both to the same absolute "<mainRoot>/.git".
             const abs = path.resolve(sourceRoot, common);
-            // Standard layout only: trust the parent of the common dir solely
-            // when it is named ".git". A relocation (--separate-git-dir / GIT_DIR)
-            // would otherwise anchor the store somewhere surprising — fall through
-            // to sourceRoot and let AGENT_SHARED_STATE_ROOT be the escape hatch.
+            // A relocation (--separate-git-dir / GIT_DIR) would otherwise anchor
+            // the store somewhere surprising: return null and let the caller fall
+            // back (AGENT_SHARED_STATE_ROOT is the escape hatch).
             if (path.basename(abs) === '.git') return path.dirname(abs);
         }
     } catch {
-        // not a git repo, or git unavailable — use the fallback
+        // not a git repo, or git unavailable
     }
-    return sourceRoot;
+    return null;
 }
 
 /**
@@ -99,4 +109,4 @@ function resolveWorktreeRoot(fallbackDir) {
     return fallbackDir;
 }
 
-module.exports = { resolveProjectRoot, resolveWorktreeRoot };
+module.exports = { resolveProjectRoot, resolveWorktreeRoot, resolveMainWorktree };

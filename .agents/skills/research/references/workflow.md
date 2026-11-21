@@ -60,8 +60,8 @@ Use the Task tool with `subagent_type: "product-strategist"` to conduct the rese
 2. Research type (market/technical/domain/competitive)
 3. Where to write output (`{OUTPUT_PATH}`)
 4. Whether to append to existing research or start fresh
-5. The `product-strategist` agent auto-loads the `project-planning` skill via frontmatter.
-6. Instruction to: state questions upfront, document methodology, present findings with confidence levels, cite sources — applying the **Claim Discipline** defined in `project-planning/references/brainstorm-research.md § Claim Discipline` (that section is authoritative; the bullets below are a condensed pointer for the delegate, because `references/*` is progressive-disclosure and not auto-loaded with the skill — when editing, change the skill section first and keep this in sync):
+5. The `product-strategist` agent auto-loads the `project-planning` skill via frontmatter if installed.
+6. Instruction to: state questions upfront, document methodology, present findings with confidence levels, cite sources — applying the **Claim Discipline** defined in `project-planning/references/brainstorm-research.md § Claim Discipline` (if installed; that section is authoritative; the bullets below are a condensed pointer for the delegate, because `references/*` is progressive-disclosure and not auto-loaded with the skill — when editing, change the skill section first and keep this in sync):
    - Permit explicit uncertainty ("I don't have enough information") rather than filling gaps with confident-sounding inference.
    - Ground each claim in an extracted quote or source reference before stating its implication (quote-first).
    - Per-claim cite-or-retract: every factual assertion carries a source at the claim site, or the claim is omitted / reframed as an open question.
@@ -93,5 +93,5 @@ Follow the **Post-Command Commit Convention** in `.agents/startup-reference.md`.
 **Key findings**: {1-2 sentence summary}
 
 **Committed**: {hash} — `docs: /research — {summary}`
-**Next step**: Run `/create:project-brief` to capture strategic vision, or `/create:project-requirements` if requirements are clear.
+**Next step**: Run `/create:project-brief` if installed to capture strategic vision, or `/create:project-requirements` if installed when requirements are clear.
 ```

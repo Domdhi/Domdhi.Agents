@@ -311,6 +311,112 @@ describe('runInstall — conflict + headless keep-existing', () => {
   });
 });
 
+// SF-1.9 (M-3): re-running the installer on a project that already has .claude/settings.json keeps the
+// adopter's file, but the template's permissions.deny wall must still reach it (the updater does this
+// through --merge; the installer's own "keep" path used to ship no deny at all).
+describe('runInstall — kept settings.json still receives the permissions.deny wall (SF-1.9)', () => {
+  const TEMPLATE_DENY = ['Read(**/.env)', 'Edit(**/.env)', 'Bash(git push *--force*)'];
+  const template = { permissions: { allow: ['Bash(git status)'], deny: TEMPLATE_DENY }, hooks: { Stop: [] } };
+  const adopter = {
+    permissions: { allow: ['Bash(npm:*)'], ask: ['Bash(npm publish*)'], deny: ['Bash(rm:*)'] },
+    hooks: { SessionStart: [{ matcher: '', hooks: [{ type: 'command', command: 'echo adopter' }] }] },
+    env: { KEEP: '1' },
+  };
+  const quietInstall = (opts) => {
+    const quiet = { log: console.log, warn: console.warn, error: console.error };
+    console.log = console.warn = console.error = () => {};
+    try { return runInstall(opts); } finally { Object.assign(console, quiet); }
+  };
+  const seed = (adopterText) => {
+    const source = buildSource(tmp, ['core/install.js']);
+    fs.writeFileSync(path.join(source, '.claude', 'settings.json'), JSON.stringify(template, null, 2) + '\n');
+    const target = buildTarget(tmp);
+    fs.mkdirSync(path.join(target, '.claude'), { recursive: true });
+    const settingsPath = path.join(target, '.claude', 'settings.json');
+    fs.writeFileSync(settingsPath, adopterText);
+    return { source, target, settingsPath };
+  };
+  const readOut = (settingsPath) => JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+
+  it('headlessKeep_unionsTheTemplateDenyIntoTheAdopterFile_andKeepsEverythingElse', () => {
+    const { source, target, settingsPath } = seed(JSON.stringify(adopter, null, 2) + '\n');
+
+    const stats = quietInstall({ source, target, dryRun: false, interactive: false });
+
+    expect(stats.ok).toBe(true);
+    const out = readOut(settingsPath);
+    expect(out.permissions.deny).toEqual(['Bash(rm:*)', ...TEMPLATE_DENY]);
+    // Only the deny union is applied: the adopter's allow, ask, hooks and env are exactly as they were.
+    expect(out.permissions.allow).toEqual(['Bash(npm:*)']);
+    expect(out.permissions.ask).toEqual(['Bash(npm publish*)']);
+    expect(out.hooks).toEqual(adopter.hooks);
+    expect(out.env).toEqual(adopter.env);
+    expect(stats.conflicts).toContain('settings.json');
+  });
+
+  it('keepAll_alsoUnionsTheDeny', () => {
+    const { source, target, settingsPath } = seed(JSON.stringify(adopter, null, 2) + '\n');
+
+    quietInstall({ source, target, keepAll: true });
+
+    expect(readOut(settingsPath).permissions.deny).toEqual(['Bash(rm:*)', ...TEMPLATE_DENY]);
+  });
+
+  it('secondInstall_leavesTheFileByteIdentical', () => {
+    const { source, target, settingsPath } = seed(JSON.stringify(adopter, null, 2) + '\n');
+    quietInstall({ source, target });
+    const afterFirst = fs.readFileSync(settingsPath, 'utf8');
+
+    quietInstall({ source, target });
+
+    expect(fs.readFileSync(settingsPath, 'utf8')).toBe(afterFirst);
+  });
+
+  it('dryRun_writesNothing', () => {
+    const text = JSON.stringify(adopter, null, 2) + '\n';
+    const { source, target, settingsPath } = seed(text);
+
+    quietInstall({ source, target, dryRun: true });
+
+    expect(fs.readFileSync(settingsPath, 'utf8')).toBe(text);
+  });
+
+  it('adopterFileWithAUtf8Bom_getsTheDeny_andIsWrittenBackWithoutTheBom', () => {
+    const { source, target, settingsPath } = seed('﻿' + JSON.stringify(adopter, null, 2) + '\n');
+
+    quietInstall({ source, target });
+
+    const text = fs.readFileSync(settingsPath, 'utf8');
+    expect(text.charCodeAt(0)).not.toBe(0xFEFF);
+    expect(JSON.parse(text).permissions.deny).toEqual(['Bash(rm:*)', ...TEMPLATE_DENY]);
+  });
+
+  it('adopterFileWithComments_isLeftByteIdentical_andTheRunSaysTheDenyWasNotApplied', () => {
+    const text = '{\n  // my comment\n  "permissions": { "deny": [] }\n}\n';
+    const { source, target, settingsPath } = seed(text);
+    const warnings = [];
+    const quiet = { log: console.log, warn: console.warn, error: console.error };
+    console.log = console.error = () => {};
+    console.warn = (msg) => warnings.push(String(msg));
+    let stats;
+    try { stats = runInstall({ source, target }); } finally { Object.assign(console, quiet); }
+
+    expect(fs.readFileSync(settingsPath, 'utf8')).toBe(text);
+    expect(stats.denyUnionSkipped).toBe(true);
+    expect(warnings.join('\n')).toContain('permissions.deny union NOT applied');
+  });
+
+  it('freshTarget_withNoSettingsJson_copiesTheTemplateVerbatim', () => {
+    const source = buildSource(tmp, ['core/install.js']);
+    fs.writeFileSync(path.join(source, '.claude', 'settings.json'), JSON.stringify(template, null, 2) + '\n');
+    const target = buildTarget(tmp);
+
+    quietInstall({ source, target });
+
+    expect(JSON.parse(fs.readFileSync(path.join(target, '.claude', 'settings.json'), 'utf8'))).toEqual(template);
+  });
+});
+
 describe('runInstall — conflict + overwriteAll', () => {
   it('overwrites conflicting files when overwriteAll is true', () => {
     const newContent = '# new install.js content';

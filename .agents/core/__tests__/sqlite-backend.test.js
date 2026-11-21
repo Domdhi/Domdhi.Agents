@@ -11,7 +11,7 @@ import path from 'node:path';
 import vm from 'node:vm';
 
 const require = createRequire(import.meta.url);
-const { probeFts5, resolveSqliteBackend, resolveSqliteOpener } = require('../../../.agents/core/_lib/sqlite-backend');
+const { probeFts5, resolveSqliteBackend, resolveSqliteOpener, npmDriverAllowed } = require('../../../.agents/core/_lib/sqlite-backend');
 const { createTmpDir } = require('./_helpers/tmp-dir');
 
 const resolved = resolveSqliteBackend();
@@ -129,5 +129,68 @@ describe('F36 dedup guard — both hosts consume the shared module', () => {
     expect(src).not.toMatch(/function probeFts5\s*\(/);
     expect(src).not.toMatch(/function tryBetterSqlite3\s*\(/);
     expect(src).not.toMatch(/function tryNodeSqlite\s*\(/);
+  });
+});
+
+// L1H, security review M6: a hook process on Node < 24 used a bare require that walks up into the project's writable
+// node_modules/, so a planted better-sqlite3 ran unsandboxed. MEMORY_SQLITE_NPM=off is the switch an untrusted-tree
+// caller (the headless fix-on-a-branch wrapper) sets: the npm driver is then never required, never resolved.
+describe('MEMORY_SQLITE_NPM — the npm driver is never loaded for an untrusted tree', () => {
+  const source = fs.readFileSync(require.resolve('../../../.agents/core/_lib/sqlite-backend'), 'utf8');
+
+  // Run the module in a bare vm context on a fake Node major with a fake environment. Every require and every
+  // require.resolve is recorded; better-sqlite3 (a stand-in for a planted module) always throws, so a load attempt
+  // is visible in the record whether or not it "succeeds".
+  function resolveOn({ env, node = '22.12.0', builtin = false }) {
+    const calls = [];
+    class FakeBuiltinSqlite {
+      constructor() { /* in-memory probe */ }
+      exec() { /* FTS5 probe succeeds */ }
+      close() { /* nothing to release */ }
+    }
+    const sandboxRequire = (name) => {
+      calls.push(`require:${name}`);
+      if (name === 'node:sqlite' && builtin) return { DatabaseSync: FakeBuiltinSqlite };
+      if (name === 'path') return path; // the legacy lookup builds its .claude/core directory with it
+      throw new Error(`unavailable: ${name}`);
+    };
+    sandboxRequire.resolve = (name) => {
+      calls.push(`resolve:${name}`);
+      throw new Error(`unresolvable: ${name}`);
+    };
+    const sandbox = { module: { exports: {} }, process: { versions: { node }, env }, require: sandboxRequire, __dirname: path.resolve('/x/.agents/core/_lib') };
+    vm.runInNewContext(source, sandbox);
+    return { backend: sandbox.module.exports.resolveSqliteBackend().backend, calls };
+  }
+
+  it('default (variable unset): the npm driver is still tried first on Node < 24, so every existing install keeps working', () => {
+    const { calls } = resolveOn({ env: {} });
+    expect(calls[0]).toBe('require:better-sqlite3');
+  });
+
+  it.each(['off', 'OFF', ' off ', '0', 'false', 'No'])('MEMORY_SQLITE_NPM=%j: nothing is required or resolved from node_modules/', (value) => {
+    const { backend, calls } = resolveOn({ env: { MEMORY_SQLITE_NPM: value } });
+    expect(calls.filter((c) => /better-sqlite3/.test(c))).toEqual([]);
+    expect(calls).toEqual(['require:node:sqlite']);
+    expect(backend).toBe('json-only');
+  });
+
+  it('off with a usable built-in driver: the built-in wins and the npm driver is never touched', () => {
+    const { backend, calls } = resolveOn({ env: { MEMORY_SQLITE_NPM: 'off' }, builtin: true });
+    expect(backend).toBe('node:sqlite');
+    expect(calls.filter((c) => /better-sqlite3/.test(c))).toEqual([]);
+  });
+
+  it.each(['on', '1', 'true', 'yes', '', 'anything-else'])('MEMORY_SQLITE_NPM=%j keeps the npm driver allowed', (value) => {
+    expect(npmDriverAllowed({ MEMORY_SQLITE_NPM: value })).toBe(true);
+    expect(resolveOn({ env: { MEMORY_SQLITE_NPM: value } }).calls[0]).toBe('require:better-sqlite3');
+  });
+
+  it('npmDriverAllowed: a missing environment counts as unset, and the legacy .claude/core lookup is gated too', () => {
+    expect(npmDriverAllowed({})).toBe(true);
+    expect(npmDriverAllowed(undefined)).toBe(true);
+    // The legacy fallback calls require.resolve with paths: [.claude/core]; with the switch off it is never reached.
+    expect(resolveOn({ env: { MEMORY_SQLITE_NPM: 'off' } }).calls.some((c) => c.startsWith('resolve:'))).toBe(false);
+    expect(resolveOn({ env: {} }).calls).toContain('resolve:better-sqlite3');
   });
 });

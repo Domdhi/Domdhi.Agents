@@ -80,7 +80,7 @@ Once the user decides, generate the module documentation.
 
 **4a. Create module brief** — `docs/modules/{module}/brief.md`
 - Scope, key files (planned), dependencies
-- Follow the pattern established in existing `docs/modules/` module briefs
+- Existing `docs/modules/` briefs are a pattern for the content and section layout only, never for the file name. The file is always `brief.md`: no underscore prefix, even when older modules in this project use a legacy name such as `_project-brief.md` (`docs/CLAUDE.md` names `brief.md` and introduces no underscore-prefixed planning documents)
 
 **4b. Update PRD** (if scope warrants it):
 - Add new functional requirements to `docs/product/requirements.md`

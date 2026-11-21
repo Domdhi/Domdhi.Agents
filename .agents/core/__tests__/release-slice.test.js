@@ -256,3 +256,89 @@ describe('workflow wiring', () => {
         expect(text).toContain('**Later slice go:**');
     });
 });
+
+// Additive exports for plan-check.js (wave 2): the story-header scanner with block ends and the extra fields.
+describe('additive exports: findHeaderStories and dependenciesOf', () => {
+    const { findHeaderStories, dependenciesOf } = require('../release-slice');
+    const scan = text => findHeaderStories(text.split('\n'));
+
+    it('findHeaderStories_blockEnds_atTheNextStoryHeaderAClosingHeadingARuleOrTheEndOfTheText', () => {
+        const text = [
+            '* **Story A-1.1 (S): one**',       // 0
+            '  * **Dependencies:** None',       // 1
+            '* **Story A-1.2 (S): two**',       // 2  <- ends A-1.1
+            '  * **Dependencies:** A-1.1',      // 3
+            '---',                              // 4  <- ends A-1.2
+            '* **Story A-1.3 (S): three**',     // 5
+            '### Epic A-2: next',               // 6  <- ends A-1.3
+            '* **Story A-2.1 (S): four**',      // 7
+            '  * **Dependencies:** None',       // 8
+        ].join('\n');
+        expect(scan(text).stories.map(story => [story.id, story.line, story.end])).toEqual([
+            ['A-1.1', 1, 2], ['A-1.2', 3, 4], ['A-1.3', 6, 6], ['A-2.1', 8, 9],
+        ]);
+    });
+
+    it('findHeaderStories_headingStoryEnds_atAHeadingOfTheSameOrShallowerDepth', () => {
+        const text = ['## Story B-1.1: one', '* **Dependencies:** None', '#### detail', 'prose', '## Story B-1.2: two'].join('\n');
+        expect(scan(text).stories.map(story => [story.id, story.end])).toEqual([['B-1.1', 4], ['B-1.2', 5]]);
+    });
+
+    it('findHeaderStories_capturesAfterFilesAndAgentBudgetBesideTheOriginalFields', () => {
+        const text = [
+            '* **Story C-1.1 (S): one**',
+            '  * **Release:** core',
+            '  * **Risk tier:** deep - why',
+            '  * **Dependencies:** C-0.1',
+            '  * **After:** C-0.2',
+            '  * **Files:** `a.js` (new)',
+            '  * **Agent budget:** 0 modified, 1 created',
+        ].join('\n');
+        const { fields } = scan(text).stories[0];
+        expect(Object.keys(fields).sort()).toEqual(['after', 'agent budget', 'dependencies', 'files', 'release', 'tier']);
+        expect(fields.files).toEqual({ value: '`a.js` (new)', line: 6 });
+        expect(fields.after.value).toBe('C-0.2');
+        expect(fields['agent budget'].value).toBe('0 modified, 1 created');
+    });
+
+    it('findHeaderStories_firstOccurrenceOfAFieldWins_andFencedHeadersAreIgnored', () => {
+        const text = ['* **Story D-1.1 (S): one**', '  * **Files:** `first.js`', '  * **Files:** `second.js`', '```', '* **Story D-9.9 (S): fenced**', '```'].join('\n');
+        const { stories, unclosedFence } = scan(text);
+        expect(stories.map(story => story.id)).toEqual(['D-1.1']);
+        expect(stories[0].fields.files.value).toBe('`first.js`');
+        expect(unclosedFence).toBe(false);
+    });
+
+    it('findHeaderStories_unclosedFence_isReported', () => {
+        expect(scan('* **Story E-1.1 (S): one**\n```\nstray').unclosedFence).toBe(true);
+    });
+
+    it.each([
+        ['None', []],
+        ['', []],
+        ['F-1.1', ['F-1.1']],
+        ['Story F-1.1, F-1.2', ['F-1.1', 'F-1.2']],
+        ['F-1.1 and F-1.2; F-1.3', ['F-1.1', 'F-1.2', 'F-1.3']],
+    ])('dependenciesOf_%j_is_%j', (cell, expected) => {
+        expect(dependenciesOf(cell)).toEqual(expected);
+    });
+});
+
+describe('M3: an inline field after a header story\'s scalar field is not part of its value', () => {
+    const header = fields => `# T\n\n## Story F-1.1: first\n**Release:** core\n**Risk tier:** standard\n**Wave:** 1\n**Dependencies:** None\n\n## Story F-1.2: second\n${fields}\n`;
+    const storyOf = (result, id) => result.stories.find(story => story.id === id);
+
+    it('checkReleaseSlices_dependenciesWithAnInlineAfter_keepsOnlyTheDependencyIds', () => {
+        const result = checkReleaseSlices(header('**Release:** core\n**Risk tier:** standard\n**Wave:** 2\n**Dependencies:** F-1.1 · **After:** F-1.3'));
+
+        expect(storyOf(result, 'F-1.2').dependencies).toEqual(['F-1.1']);
+        expect(result.errors).toEqual([]);
+    });
+
+    it('checkReleaseSlices_releaseAndWaveWithInlineFields_areValidValues', () => {
+        const result = checkReleaseSlices(header('**Release:** later · **After:** F-1.1\n**Risk tier:** deep\n**Wave:** 3 · **After:** F-1.1\n**Dependencies:** F-1.1'));
+
+        expect(result.errors).toEqual([]);
+        expect(storyOf(result, 'F-1.2')).toMatchObject({ release: 'later', tier: 'deep', wave: 3, dependencies: ['F-1.1'] });
+    });
+});

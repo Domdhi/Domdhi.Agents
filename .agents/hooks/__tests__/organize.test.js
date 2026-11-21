@@ -166,6 +166,23 @@ describe('organize', () => {
             expect(result).not.toBeNull();
             expect(typeof result.feedback).toBe('string');
             expect(result.feedback).toMatch(/Organized/);
+            // ...and tells the model the new path through an output field Claude Code reads (first adopter run,
+            // 2026-11-20: agents dispatched after plan approval were briefed with the old, moved path).
+            const context = result.hookOutput.hookSpecificOutput;
+            expect(context.hookEventName).toBe('PostToolUse');
+            expect(context.additionalContext).toContain('my-plan.md → docs/.output/plans/');
+            expect(context.additionalContext).toContain(`${datedDir}/`);
+        });
+
+        it('processEvent_onlyScreenshotsMoved_printsNoModelContext', () => {
+            process.env.CLAUDE_PROJECT_DIR = tmp.root;
+            tmp.write('docs/.output/.state/screenshots/shot.png', 'png');
+
+            const result = processEvent({});
+
+            expect(result).not.toBeNull();
+            expect(result.feedback).toMatch(/screenshots/);
+            expect(result.hookOutput).toBeNull();
         });
 
         it('processEvent_alreadyOrganizedPlan_notMoved', () => {

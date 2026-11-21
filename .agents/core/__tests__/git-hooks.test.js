@@ -49,7 +49,7 @@ describe('install', () => {
       expect(text).toBe(hooks.renderHook(name));
       expect(text).not.toContain('\r');
       expect(text.startsWith('#!/bin/sh\n')).toBe(true);
-      expect(text).toContain(`# domdhi-agents managed hook: ${name} v2`);
+      expect(text).toContain(`# domdhi-agents managed hook: ${name} v3`);
       if (!isWin) expect(fs.statSync(hookFile(name)).mode & 0o111).toBe(0o111);
     }
     expect(R.git(repo, ['status', '--porcelain']).stdout).toBe('');

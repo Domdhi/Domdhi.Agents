@@ -24,7 +24,8 @@
     "fs-safe:lint": "node .claude/core/fs-safe-lint.js",
     "branch:audit": "node .claude/core/branch-audit.js",
     "analytics:skills": "node .claude/core/skill-analytics.js",
-    "feedback:rollup": "node tools/feedback-aggregate.js"
+    "feedback:rollup": "node tools/feedback-aggregate.js",
+    "scoreboard": "node .claude/core/run-scoreboard.js"
   },
   "devDependencies": {
     "@vitest/coverage-v8": "^5.0.3",

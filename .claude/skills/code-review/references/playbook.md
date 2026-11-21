@@ -1,10 +1,10 @@
 # Code Review Playbook
 
-Structured review workflow that routes review depth based on change type and directory risk. Use alongside the `code-review` skill — this playbook provides the routing logic while the main skill provides the report template and checklists.
+Routes review depth by change type and directory risk. Use alongside the `code-review` skill: this playbook provides the routing logic, the main skill provides the report template, severity tiers and checklists.
 
 ## Intake Triage
 
-Classify every review before starting analysis. The classification determines which checklist to use.
+Classify every review before starting analysis; the classification picks the checklist.
 
 ### Change Type Classification
 
@@ -19,7 +19,7 @@ Classify every review before starting analysis. The classification determines wh
 | **Security-Sensitive** | Touches auth, crypto, permissions, secrets, input validation | Deep Review (mandatory) |
 | **Architecture-Impacting** | New patterns, new dependencies, cross-module changes, schema changes | Deep Review (mandatory) |
 
-**When multiple types apply, use the deepest route.** A refactor that also adds a new export is a "New Feature" review.
+When multiple types apply, use the deepest route. A refactor that also adds a new export is a "New Feature" review.
 
 ---
 
@@ -38,8 +38,7 @@ For low-risk changes. Target: 5-10 minutes.
 
 ### Fast-Lane Verdict
 
-If all items pass: **Approved**
-If any item fails: escalate to Standard Review for that item
+If all items pass: **Approved**. If any item fails, escalate that item to Standard Review.
 
 ---
 
@@ -56,7 +55,7 @@ All Fast-Lane items, plus:
 - [ ] **Error paths return meaningful context** (no swallowed exceptions, no bare `catch {}`)
 - [ ] **New code has tests** (unit tests for logic, integration tests for data access)
 - [ ] **Tests are meaningful** (not just coverage padding — they assert real behavior)
-- [ ] **Coverage claims are verified, not trusted** — a "covered" file can still be fictitiously tested if assertions key off mocked/seeded data that never exercised the real code path. Spot-check that the asserted behavior actually ran. (See the AC-vs-Test anti-patterns in `two-stage-review.md`.)
+- [ ] **Coverage claims are verified, not trusted**: a "covered" file can still be fictitiously tested if assertions key off mocked or seeded data that never exercised the real code path. Spot-check that the asserted behavior ran. (See the AC-vs-Test anti-patterns in `two-stage-review.md`.)
 - [ ] **No N+1 queries or unbounded collections** in data access paths
 - [ ] **Logging is appropriate** (enough to debug, not so much it's noisy)
 
@@ -96,7 +95,7 @@ All Standard items, plus:
 
 ## Risk-Based Routing
 
-When a **Risk Map** exists in the `code-reviewer` agent's `## Project Context` section, use it to adjust review depth per file. This section is populated by `/review:specialize` — if it hasn't been run, fall through to the No Risk Map Fallback below.
+When a **Risk Map** exists in the `code-reviewer` agent's `## Project Context` section, use it to adjust review depth per file. `/review:specialize` populates it; if it has not been run, use the No Risk Map Fallback below.
 
 ### Risk Map Decision Tree
 
@@ -105,7 +104,7 @@ For each changed file:
   1. Match file path against risk map patterns
   2. Determine risk tier: HIGH / MEDIUM / LOW
   3. Route to checklist:
-     - HIGH  → Deep Review (mandatory, all sections)
+     - HIGH  → Deep Review (all sections)
      - MEDIUM → Standard Review
      - LOW   → Fast-Lane Review
 ```
@@ -115,40 +114,29 @@ For each changed file:
 When a single PR contains files across multiple risk tiers:
 - The **overall PR verdict** uses the highest risk tier's checklist
 - But **per-file findings** note the applicable tier
-- This prevents a LOW-risk config change from dragging a HIGH-risk auth change through only a fast-lane review
+- This keeps a LOW-risk config change from pulling a HIGH-risk auth change through only a fast-lane review
 
 ### No Risk Map Fallback
 
-If no risk map exists (project hasn't run `/specialize`), default all files to **MEDIUM** risk (Standard Review). This is conservative without being paranoid.
+If no risk map exists (the project has not run `/specialize`), default all files to **MEDIUM** risk (Standard Review).
 
 ---
 
 ## Severity Classification
 
-| Severity | Definition | Action | Examples |
-|----------|-----------|--------|----------|
-| **CRITICAL** | Active exploitability, data loss, crash in production | Must fix before merge | SQL injection, auth bypass, unhandled null on critical path, secret in code |
-| **MAJOR** | Real bug, performance issue, architecture violation, missing validation | Should fix before merge | N+1 query, swallowed exception, cross-layer violation, missing auth check |
-| **MINOR** | Code smell, missed optimization, readability issue | Fix at developer's discretion | Verbose naming, duplicated constant, missing log context |
-| **NIT** | Style, formatting, naming preference | Optional, non-blocking | Bracket placement, import ordering, comment wording |
-
-### Severity Escalation Rules
-
-- A MINOR finding in a HIGH-risk file escalates to MAJOR
-- A pattern of 3+ similar MINOR findings suggests a systemic issue — escalate one to MAJOR with a note
-- CRITICAL findings in test files are downgraded to MAJOR (tests don't run in production)
+Severity tiers, escalation rules and the MAJOR-fix-inline discipline are defined once, in Section 3 of `.claude/skills/code-review/SKILL.md`. Use them as written.
 
 ### High-risk defect classes invisible to build/tests/grep (always check explicitly)
 
-These defect classes pass the build, pass the tests, and survive grep-based review — only an explicit checklist item catches them.
+These defect classes pass the build and the tests and survive grep-based review; only an explicit checklist item catches them.
 
-- **Revocation/deny primitive fail-open.** A resolver that builds an allow/grant union then subtracts revocations (or denials) must put that subtraction in its OWN try/catch and return DENIED on error — never fall back to the un-revoked union. Trace the catch's return value; a "fail closed" comment in the code is not proof it actually does. Null-guard the comparison used to match revocation records — a naive equality check on a nullable/optional field can silently no-op the revocation and let a denied grant through.
-- **A read-path refactor accompanied by a test-fixture change that makes it pass.** When a diff changes WHERE a value is read (field, file, API) and ALSO edits the fixture/assertion guarding that read, treat the fixture change as a masked regression until proven otherwise: demand a corpus/real-data scan showing the new source actually holds the expected values (code-truth is not data-truth — a vestigial field can read plausibly and be a constant on every real record). Evidence: CR-3.4 (2026-07-16) silently flipped a confidence read to a vestigial always-1.0 field and updated the fixture to green it — the promoter's entire ranking gradient collapsed and only a corpus scan surfaced it.
-- **Security/enforcement string matching via bare substring instead of normalized + boundary-anchored match.** Any allow/block/recognition decision built on `includes()`, an unanchored regex, or a prefix test is evadeable (whitespace variants, path prefixes, lookalike names) or over-matches (`bin/` matching `cabin/`). Check every enforcement comparison for: input normalization first (whitespace, case, path), then a boundary-anchored match (word boundary, exact basename, path-segment equality). One sweep found FIVE distinct defects of this one class (memory `security-matching-needs-boundary-not-substring`); commit-guard's `/^git\b/` missing `/usr/bin/git` was a sixth.
+- **Revocation/deny primitive fail-open.** A resolver that builds an allow/grant union then subtracts revocations (or denials) must put that subtraction in its own try/catch and return DENIED on error, never fall back to the un-revoked union. Trace the catch's return value; a "fail closed" comment is not proof. Null-guard the comparison used to match revocation records: a naive equality check on a nullable field can silently no-op the revocation and let a denied grant through.
+- **A read-path refactor accompanied by a test-fixture change that makes it pass.** When a diff changes WHERE a value is read (field, file, API) and ALSO edits the fixture/assertion guarding that read, treat the fixture change as a masked regression until proven otherwise: demand a corpus or real-data scan showing the new source holds the expected values (code-truth is not data-truth; a vestigial field can read plausibly and be a constant on every real record). Evidence: CR-3.4 (2026-07-16) flipped a confidence read to a vestigial always-1.0 field and updated the fixture to green it; the promoter's ranking gradient collapsed and only a corpus scan surfaced it.
+- **Security/enforcement string matching via bare substring instead of normalized + boundary-anchored match.** Any allow/block/recognition decision built on `includes()`, an unanchored regex, or a prefix test is evadeable (whitespace variants, path prefixes, lookalike names) or over-matches (`bin/` matching `cabin/`). Check every enforcement comparison for input normalization first (whitespace, case, path), then a boundary-anchored match (word boundary, exact basename, path-segment equality). One sweep found five defects of this class (memory `security-matching-needs-boundary-not-substring`); commit-guard's `/^git\b/` missing `/usr/bin/git` was a sixth.
 - **An allowlist or validation regex anchored with `$`.** In Python, .NET, PCRE, Java and Perl, `$` also matches before a final newline, so `^[a-z0-9-]+$` accepts `"name\n"`; in Ruby `^`/`$` are line anchors and accept any line. Use the end-of-input anchor (`\z` in .NET, Ruby, PCRE and Java; `\Z` in Python, or `re.fullmatch`) for any security or identity check. JavaScript's `$` without the `m` flag is end of input. (From the largest adopter's memory review, 2026-11.)
-- **A completeness claim counted in the wrong unit.** A sweep, guard or migration that says "all N covered" is only as complete as the unit it counted. If the defect lives per call site, query or entry point, a count of files proves nothing. Check that the counted unit is the one the defect lives in.
-- **A merge/sync operation that silently suppresses part of its intended effect while still reporting success.** A merger, syncer, or propagator with a defensive fallback path (collision guard, freshness check, conflict skip) can quietly withhold the update it was invoked to deliver — and still return its normal success status/message. Trace every fallback branch to its return value: if the operation did less than asked, the caller must be able to tell (distinct status, visible WARN), or the suppression compounds invisibly on every subsequent run. Worked example: `skill-merger.js`'s heading-collision guard froze the template head on a benign collision while reporting "merged (preserved project additions)" (finding F2, `260716-0823-code-review.md`).
-- **Cross-object field-swap fix proposed without a type/taxonomy check.** When a finding recommends reading a computed value from a DIFFERENT object than the one currently used (e.g. "use `otherEntity.Category` instead of `thisEntity.Category`"), verify BOTH objects' property TYPES and value domains actually match before recommending it — two identically-named fields on sibling entities can be independent taxonomies (e.g. one is an enum, the other a free-text string) with no overlapping values. A plausible-sounding one-liner that assumes shared type/taxonomy compiles as a hypothesis, not a fact; grep both entities' property declarations first.
+- **A completeness claim counted in the wrong unit.** A sweep, guard or migration that says "all N covered" is only as complete as the unit it counted. If the defect lives per call site, query or entry point, a count of files proves nothing.
+- **A merge/sync operation that silently suppresses part of its intended effect while still reporting success.** A merger, syncer or propagator with a defensive fallback path (collision guard, freshness check, conflict skip) can quietly withhold the update it was invoked to deliver and still return its normal success status. Trace every fallback branch to its return value: if the operation did less than asked, the caller must be able to tell (distinct status, visible WARN), or the suppression compounds on every later run. Example: `skill-merger.js`'s heading-collision guard froze the template head on a benign collision while reporting "merged (preserved project additions)" (finding F2, `260716-0823-code-review.md`).
+- **Cross-object field-swap fix proposed without a type/taxonomy check.** When a finding recommends reading a computed value from a DIFFERENT object than the one currently used (e.g. "use `otherEntity.Category` instead of `thisEntity.Category`"), verify both objects' property types and value domains match before recommending it: two identically-named fields on sibling entities can be independent taxonomies (one an enum, the other free text) with no overlapping values. Grep both entities' property declarations first.
 
 ---
 
@@ -161,7 +149,7 @@ These defect classes pass the build, pass the tests, and survive grep-based revi
 
 ## Review Output Format
 
-The playbook routes the review depth, but findings are reported using the `code-review` skill's report template. The playbook adds one section to the report:
+Findings are reported with the `code-review` skill's report template; the playbook adds one section:
 
 ### Risk Assessment Section
 

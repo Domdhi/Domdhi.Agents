@@ -2,37 +2,25 @@ Judge two outputs A and B in a blind comparison — without knowing which skill 
 
 ## Why Blind
 
-Knowing that output A came from the "new skill" biases judgment toward it. The blind setup forces evaluation on evidence, not provenance. Preserve this: do not read skill filenames, version markers, or any metadata that would identify which config produced which output before completing Step 5.
+Knowing output A came from the "new skill" biases judgment toward it. Do not read skill filenames, version markers or any metadata that identifies which config produced which output until you have finished scoring (through Step 5).
 
 ## Seven Steps
 
 ### Step 1: Read Both Outputs
 
-Read output A and output B in full. Note what each contains, what it attempts, and where it succeeds or fails on its own terms.
+Read A and B in full and note what each attempts and where it succeeds or fails on its own terms.
 
 ### Step 2: Understand the Task
 
-Read the eval prompt. What was the agent asked to do? What would a successful response look like? What is the most important thing the prompt requires?
+Read the eval prompt: what was asked, what a successful response looks like, and the single most important thing the prompt requires.
 
 ### Step 3: Build a Rubric
 
-Generate a rubric before scoring. Two categories:
-
-**Content** — Does the output correctly address the task? Is it complete? Are claims accurate?
-- Correctness: factual accuracy, no hallucinated details
-- Completeness: all required elements present
-- Accuracy: precision of terminology, file paths, command syntax
-
-**Structure** — Is the output organized in a way that makes it easy to use?
-- Organization: logical flow, appropriate grouping
-- Formatting: headings, code blocks, lists used correctly
-- Usability: could a reader act on this without additional context?
-
-State the rubric explicitly before assigning scores. This prevents post-hoc rationalization.
+State the rubric before scoring, so it cannot be rationalized afterwards. Content: correctness (no hallucinated details), completeness, accuracy (terminology, paths, command syntax). Structure: organization, formatting, usability (could a reader act on it without more context).
 
 ### Step 4: Score Each Output
 
-Score A and B independently on each dimension, 1–5.
+Score A and B independently on each dimension, 1-5.
 
 | Dimension | Output A | Output B |
 |-----------|----------|----------|
@@ -46,11 +34,11 @@ Score A and B independently on each dimension, 1–5.
 
 ### Step 5: Check Assertions
 
-If assertions are provided, evaluate each against both outputs. Record pass/fail per output per assertion. Assertion pass-rate is a secondary signal — rubric scores are primary.
+If assertions are provided, record pass/fail per output per assertion. This is a secondary signal; rubric scores are primary.
 
 ### Step 6: Determine Winner
 
-Add rubric scores. The higher total wins. When the margin is ≤2 points, re-examine the most important dimension for the specific task and break the tie there. Ties should be rare — if you're tempted to call it a draw, identify which output you would rather receive as a user and give that output the win.
+The higher total wins. When the margin is 2 points or less, re-examine the dimension that matters most for this task and break the tie there. Avoid calling a draw: pick the output you would rather receive as a user.
 
 ### Step 7: Write `comparison.json`
 
@@ -97,9 +85,6 @@ Add rubric scores. The higher total wins. When the margin is ≤2 points, re-exa
 
 Write `comparison.json` to the eval directory. The post-hoc analyzer reads this file — use exact field names.
 
-## Bias Prevention Checklist
+## Bias check
 
-Before finalizing:
-- Did you evaluate what each output *contains*, not which config you're *rooting for*?
-- Are strengths and weaknesses backed by specific quotes or observations, not impressions?
-- Is the decision rationale specific enough that a reader could verify it by re-reading the outputs?
+Judge what each output contains, not which config you are rooting for. Back strengths and weaknesses with quotes or specific observations, and make the rationale specific enough that a reader could verify it from the outputs.

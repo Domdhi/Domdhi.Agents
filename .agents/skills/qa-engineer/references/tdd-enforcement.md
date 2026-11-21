@@ -1,6 +1,6 @@
 # TDD Enforcement Reference
 
-**Load this when:** implementing any feature or bugfix, writing or changing tests, or tempted to skip writing a failing test first.
+Load this when implementing a feature or bugfix, writing or changing tests, or tempted to skip the failing test. The point of test-first is that a test written before the code says what the code should do, while a test written after only records what it happens to do.
 
 ---
 
@@ -10,30 +10,26 @@
 NO PRODUCTION CODE WITHOUT A FAILING TEST FIRST
 ```
 
-Write code before the test? Delete it. Start over. Implement fresh from tests.
+Code written before its test is deleted and re-implemented from the tests. It is not kept as "reference" or adapted while writing the tests; adapting it is testing after.
 
-**No exceptions:**
-- Don't keep it as "reference"
-- Don't "adapt" it while writing tests
-- Don't look at it
-- Delete means delete
+Exploration is fine as a throwaway: discard it, then start with the test.
 
 ---
 
 ## Red-Green-Refactor
 
-### RED — Write Failing Test
+### RED: write one failing test
 
-Write one minimal test showing what should happen. Then verify it fails correctly:
+Write one minimal test for the behavior, run it, and confirm it fails (not errors) with the expected message because the feature is missing, not because of a typo:
 
 ```bash
 npm test path/to/test.test.ts
 ```
 
-Confirm the test fails (not errors), failure message is expected, and it fails because the feature is missing — not because of typos. If the test passes immediately, you're testing existing behavior. Fix the test.
+A test that passes immediately is testing existing behavior; fix the test. Name the behavior and assert on real code:
 
-**Good test:**
 ```typescript
+// Good: names the behavior, runs the real function
 test('retries failed operations 3 times', async () => {
   let attempts = 0;
   const operation = () => {
@@ -45,25 +41,20 @@ test('retries failed operations 3 times', async () => {
   expect(result).toBe('success');
   expect(attempts).toBe(3);
 });
-```
 
-**Bad test:**
-```typescript
+// Bad: vague name, and it tests the mock rather than the code
 test('retry works', async () => {
-  const mock = jest.fn()
-    .mockRejectedValueOnce(new Error())
-    .mockResolvedValueOnce('success');
+  const mock = jest.fn().mockRejectedValueOnce(new Error()).mockResolvedValueOnce('success');
   await retryOperation(mock);
   expect(mock).toHaveBeenCalledTimes(3);
-}); // Vague name, tests mock not code
+});
 ```
 
-### GREEN — Minimal Code
+### GREEN: minimal code
 
-Write the simplest code to pass the test. Don't add features, refactor other code, or "improve" beyond the test.
+Write the simplest code that passes, with no extra features or unrelated refactoring, then run the tests to confirm they pass:
 
 ```typescript
-// Good — just enough to pass
 async function retryOperation<T>(fn: () => Promise<T>): Promise<T> {
   for (let i = 0; i < 3; i++) {
     try { return await fn(); } catch (e) { if (i === 2) throw e; }
@@ -72,41 +63,17 @@ async function retryOperation<T>(fn: () => Promise<T>): Promise<T> {
 }
 ```
 
-Then verify all tests pass: `npm test path/to/test.test.ts`
+### REFACTOR: after green only
 
-### REFACTOR — Clean Up
-
-After green only: remove duplication, improve names, extract helpers. Keep tests green. Don't add behavior. Then repeat for the next test.
+Remove duplication, improve names, extract helpers, keeping the tests green and adding no behavior. Then take the next test.
 
 ---
 
-## Common Rationalizations (All Wrong)
+## Red Flags: STOP and Start Over
 
-| Excuse | Reality |
-|--------|---------|
-| "Too simple to test" | Simple code breaks. Test takes 30 seconds. |
-| "I'll test after" | Tests passing immediately prove nothing. |
-| "Tests after achieve same goals" | Tests-after = "what does this do?" Tests-first = "what should this do?" |
-| "Already manually tested" | Ad-hoc ≠ systematic. No record, can't re-run. |
-| "Deleting X hours is wasteful" | Sunk cost fallacy. Unverified code is technical debt. |
-| "Keep as reference, write tests first" | You'll adapt it. That's testing after. Delete means delete. |
-| "Need to explore first" | Fine. Throw away exploration, start with TDD. |
-| "TDD will slow me down" | TDD is faster than debugging. Pragmatic = test-first. |
+Code before the test; a test that passes immediately; being unable to say why a test failed; "tests added later"; "just this once"; "already spent hours, deleting is wasteful" (sunk cost; unverified code is debt); "TDD is dogmatic, I'm being pragmatic" (test-first is faster than debugging); "too simple to test" (simple code breaks); "already tested it manually" (ad-hoc runs leave no record and cannot be re-run).
 
----
-
-## Red Flags — STOP and Start Over
-
-- Code before test
-- Test passes immediately
-- Can't explain why test failed
-- "Tests added later"
-- Rationalizing "just this once"
-- "Already spent X hours, deleting is wasteful"
-- "TDD is dogmatic, I'm being pragmatic"
-- "This is different because..."
-
-**All of these mean: Delete code. Start over.**
+Any of these means: delete the code and start over from the test.
 
 ---
 
@@ -116,82 +83,32 @@ Before marking work complete:
 
 - [ ] Every new function/method has a test written first
 - [ ] Watched each test fail before implementing
-- [ ] Each test failed for expected reason (feature missing, not typo)
+- [ ] Each test failed for the expected reason (feature missing, not a typo)
 - [ ] Wrote minimal code to pass each test
 - [ ] All tests pass
 - [ ] Output pristine (no errors, warnings)
 - [ ] Tests use real code (mocks only if unavoidable)
 - [ ] Edge cases and errors covered
 
-Can't check all boxes? You skipped TDD. Start over.
+A box that cannot be checked means TDD was skipped: start over.
 
 ---
 
 ## Testing Anti-Patterns
 
-### Anti-Pattern 1: Testing Mock Behavior
+**Testing mock behavior.** Asserting that a mock exists proves nothing about the product. Before asserting on a mock element, ask whether the test covers real behavior or just mock existence.
 
 ```typescript
-// BAD: Testing that the mock exists
-test('renders sidebar', () => {
-  render(<Page />);
-  expect(screen.getByTestId('sidebar-mock')).toBeInTheDocument();
-});
-
-// GOOD: Test real component or don't mock it
-test('renders sidebar', () => {
-  render(<Page />);
-  expect(screen.getByRole('navigation')).toBeInTheDocument();
-});
+// BAD: tests that the mock exists
+expect(screen.getByTestId('sidebar-mock')).toBeInTheDocument();
+// GOOD: test the real component, or don't mock it
+expect(screen.getByRole('navigation')).toBeInTheDocument();
 ```
 
-**Gate:** Before asserting on any mock element — ask: "Am I testing real behavior or just mock existence?" If testing mock existence, stop.
+**Test-only methods in production.** A `destroy()` that only tests call looks like production API. Before adding a method to a production class, ask whether only tests use it; if so, put it in a test utility (`export async function cleanupSession(session: Session) { /* ... */ }`).
 
-### Anti-Pattern 2: Test-Only Methods in Production
+**Mocking without understanding.** Before mocking a method, know its side effects and whether the test depends on them. If it does, mock at a lower level: mock slow server startup (`vi.mock('MCPServerManager')`), not the catalog call that writes the config the test reads (`discoverAndCacheTools`).
 
-```typescript
-// BAD: destroy() only used in tests
-class Session {
-  async destroy() { /* cleanup */ }  // Looks like production API!
-}
+**Incomplete mocks.** Mock the complete data structure as it exists in reality, not just the fields the immediate test uses. Partial mocks hide structural assumptions and fail silently when downstream code reads a field you left out. When mocks get this complex, consider an integration test instead.
 
-// GOOD: Put cleanup in test utilities
-export async function cleanupSession(session: Session) { /* ... */ }
-```
-
-**Gate:** Before adding any method to a production class — ask: "Is this only used by tests?" If yes, put it in test utilities instead.
-
-### Anti-Pattern 3: Mocking Without Understanding
-
-```typescript
-// BAD: Mock prevents config write the test depends on
-vi.mock('ToolCatalog', () => ({
-  discoverAndCacheTools: vi.fn().mockResolvedValue(undefined)
-}));
-
-// GOOD: Mock at the correct level
-vi.mock('MCPServerManager'); // Just mock slow server startup
-```
-
-**Gate:** Before mocking any method — understand what side effects the real method has. Does the test depend on any of them? If yes, mock at a lower level.
-
-### Anti-Pattern 4: Incomplete Mocks
-
-Mock the COMPLETE data structure as it exists in reality, not just fields your immediate test uses. Partial mocks hide structural assumptions and cause silent failures when downstream code accesses fields you didn't include.
-
-### Anti-Pattern 5: Tests as Afterthought
-
-Testing is part of implementation, not optional follow-up. TDD would have caught this. You cannot claim complete without tests.
-
----
-
-## Quick Reference
-
-| Anti-Pattern | Fix |
-|--------------|-----|
-| Assert on mock elements | Test real component or unmock it |
-| Test-only methods in production | Move to test utilities |
-| Mock without understanding | Understand dependencies first, mock minimally |
-| Incomplete mocks | Mirror real API completely |
-| Tests as afterthought | TDD — tests first |
-| Over-complex mocks | Consider integration tests instead |
+**Tests as an afterthought.** Testing is part of implementation, not follow-up; work is not complete without tests.

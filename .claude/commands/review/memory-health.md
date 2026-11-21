@@ -112,7 +112,6 @@ If any condition above is not met, **persist before reporting:** Write the full 
 {- "Consider archiving {archive_count} memories below 0.1 confidence using memory-manager."}
 {- "Fix lint issues: {summary of failing checks}."}
 {- For `corrected_in_place` or `id_drift`: "Write the corrected memory under an id that states the current claim, then `node .claude/core/memory-manager.js supersede <category> <oldId> <newId>`; do not edit the old body again."}
-{- "Run /retro to re-validate stale pattern memories from recent epics."}
 {If nothing actionable was found beyond the silent threshold, write: "Memory system is near-healthy — monitor decay over the next few sessions."}
 ```
 

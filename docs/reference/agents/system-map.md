@@ -58,6 +58,17 @@ Implementations live in `.agents/core/`. Run native helpers through the active r
 | `runtime-context.js`, `_lib/project-root.js`, `_lib/memory-paths.js` | Installed assets, source checkout and ignored shared-state roots |
 | `gate.js`, `commit.js` | Application/toolkit gate routing and staged secret-scanned commits |
 | `build-lock-recovery.js`, `_lib/owned-process-tree.js` | Gate lock recovery: evidence for stale build/test locks and, on Windows, owned process-tree leases. See [gate lock recovery](gate-lock-recovery.md) |
+| `plan-check.js` | Read-only TODO validation (dependency order and cycles, Story Index parity, same-wave file collisions, agent budgets) and the derived waves, ready set and isolation groups (`--waves [--open]`, `--ready`, `--overlap`) |
+| `ac-verify.js` | Runs each acceptance criterion's `verify:` binding behind a positive allowlist and records the result (`run`), probes the recorded red (`red`), and baselines or checks the story's test files and bindings (`freeze`, `check`, `unfreeze`) |
+| `ship-check.js` | The mechanical ship check behind `SHIP_CHECK_OK`: `seal` runs ac-verify and writes the ship seal after the gate, `verify` judges the seal at commit time through `commit.js --ship-check`, with an audited `--skip` |
+| `story-checkpoint.js` | Input-hash checkpoint per story (`hash`, `check`): a resumed `/run-todo` skips a done story only while its block, Files and dependencies are unchanged (exit 0 skip, 1 rerun) |
+| `_lib/failure-ledger.js` | Gate-failure signature ledger and run budget (`record`, `streak`, `last`, `budget`); run as `.claude/core/_lib/failure-ledger.js` |
+| `run-record.js` | A `/do` or `/run-todo` run's id, session pointer, waves and result (`start`, `wave`, `finish`, `current`); `finish` exits 0 passed, 1 failed, 10 needs-human, 11 blocked, 12 budget-exhausted, 13 killed |
+| `run-trace.js` | Per-run trace joining telemetry rows, the run file, the plan's Wave Log and session time split (`report RUN_ID`); `snapshot` keeps wave row counts through log rotation |
+| `run-scoreboard.js` | Read-only "are the agents good" roll-up of gate pass rate, TODO completion and run records (`--json`, `--rolling N`, `--timesplit FILE`) |
+| `gate-signal.js` | Classifies the last local gate result as green, red, killed, stale or unknown (the default mode always exits 0); `--only-if-red` and `--mark-seen` serve `/listen gate` and the [scheduled run](guides/scheduled-runs.md) |
+| `agent-issue-log.js` | `add` appends one structured row (skill, step, failure signature, run) to the day's agent-issue log that `skill-evolution.js intake` parses back |
+| `_lib/improvement-scope.js` | What an improvement run may edit: `snapshot`, `check` (a diff against the editable and protected sets) and `classify`; run as `.claude/core/_lib/improvement-scope.js` |
 | `intake.js`, `intake-github.js` | Project-owned intake identity, policy and authorized delivery. See the [intake guide](guides/intake.md) |
 | `uninstall.js` | Reviewed, approval-bound removal of unchanged template files recorded in the render ledger; edited, unlisted and linked files are kept |
 | `context-audit.js` | Read-only inventory of instruction-file sizes with optional baseline and per-file budget comparison |

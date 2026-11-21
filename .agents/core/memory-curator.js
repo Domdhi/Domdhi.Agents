@@ -22,6 +22,7 @@ const { readConcepts } = require('./_lib/concept-reader');
 const { resolveProjectRoot } = require('./_lib/project-root');
 const { memoryPaths } = require('./_lib/memory-paths');
 const { redactSecretsForWrite } = require('./secret-safe-write');
+const { safeMkdirp, safeWrite } = require('./_lib/fs-safe');
 const {
     checkClaudeCli,
     invokeModel,
@@ -327,8 +328,10 @@ If there are no candidates in a category, return an empty array for it. Emit onl
         // Write to pending-curation/{YYYY-MM-DD}/{HH-MM-SS}.json (AC#5)
         const date = now.toISOString().slice(0, 10);
         const time = now.toISOString().slice(11, 19).replace(/:/g, '-');
+        // The hook that spawns this child is unsandboxed and the state folder is whatever the working tree makes
+        // it (L1H, review C1 part 2): refuse a symlinked ancestor instead of writing through it.
         const outDir = path.join(this.pendingDir, date);
-        fsSync.mkdirSync(outDir, { recursive: true });
+        safeMkdirp(outDir);
         const outPath = path.join(outDir, `${time}.json`);
         // The payload embeds model output derived from UNTRUSTED memory/daily-log
         // text; this raw write bypasses the PreToolUse secret-scanner, so scan +
@@ -336,7 +339,7 @@ If there are no candidates in a category, return an empty array for it. Emit onl
         const safeJson = redactSecretsForWrite(
             JSON.stringify(payload, null, 2), outPath, 'memory-curator'
         );
-        fsSync.writeFileSync(outPath, safeJson, 'utf8');
+        safeWrite(outPath, safeJson, 'utf8');
         process.stdout.write(`[memory-curator] wrote ${outPath}\n`);
         return payload;
     }

@@ -1,4 +1,4 @@
-import { it, expect } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { createRequire } from 'node:module';
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -211,4 +211,242 @@ it('workflow blocks index cascade on selected-story verification after the TODO 
   expect(block).toContain('todo-completion.js "{TODO_PATH}" --stories "{comma-separated wave story IDs}"');
   expect(block).toContain('never tick a box to tidy the table');
   expect(block).toContain('Do not proceed to 8b');
+});
+
+// ── SF-1.1: `verify:` bindings on criterion objects ─────────────────
+//
+// Pinned contract: an AC checkbox bullet may carry `verify: <command> [=> exit N]`. The parsed
+// binding is `criterion.verify = { command, expectedExit }` (expectedExit defaults to 0). A
+// bullet without a binding has NO `verify` key, so the existing criterion shape is unchanged.
+// A malformed binding yields an error `{ code: 'BAD_VERIFY', storyId, line, message }`, which makes
+// the result not ok (CLI exit 1). The bullet's `text` stays the full bullet content, binding included.
+
+const story = (...bullets) => `## Story NI-1 [x]\n**AC:**\n${bullets.map(b => `- [x] ${b}`).join('\n')}\n`;
+
+describe('verify binding parse (SF-1.1)', () => {
+  it.each([
+    ['plain command, default exit', 'Given X, then Y. verify: node check.js', { command: 'node check.js', expectedExit: 0 }],
+    ['explicit exit 0', 'Then Y. verify: node check.js => exit 0', { command: 'node check.js', expectedExit: 0 }],
+    ['explicit non-zero exit', 'Then Y. verify: node check.js => exit 3', { command: 'node check.js', expectedExit: 3 }],
+    ['upper boundary exit 255', 'Then Y. verify: node check.js => exit 255', { command: 'node check.js', expectedExit: 255 }],
+    ['arguments and quotes are kept verbatim', 'Then Y. verify: node check.js "two words" --flag=1 => exit 1', { command: 'node check.js "two words" --flag=1', expectedExit: 1 }],
+    ['extra whitespace is trimmed', 'Then Y. verify:   node check.js   =>   exit   2  ', { command: 'node check.js', expectedExit: 2 }],
+    ['binding with no prose before it', 'verify: git status => exit 0', { command: 'git status', expectedExit: 0 }],
+  ])('%s', (_label, bullet, expected) => {
+    const result = verify(story(bullet));
+    expect(result.ok).toBe(true);
+    expect(result.errors).toEqual([]);
+    expect(result.stories[0].criteria[0].verify).toEqual(expected);
+  });
+
+  it('keeps the bullet text unchanged (binding included) and the criterion keys exactly as before', () => {
+    const bullet = 'Then Y. verify: node check.js => exit 0';
+    const criterion = verify(story(bullet)).stories[0].criteria[0];
+    expect(criterion.text).toBe(bullet);
+    expect(Object.keys(criterion).sort()).toEqual(['checked', 'disposition', 'line', 'text', 'verify']);
+  });
+
+  it('a bullet with no binding has no verify key, so the existing criterion shape is unchanged', () => {
+    const criterion = verify(story('Plain criterion with no command')).stories[0].criteria[0];
+    expect(Object.keys(criterion).sort()).toEqual(['checked', 'disposition', 'line', 'text']);
+    expect(criterion.verify).toBeUndefined();
+  });
+
+  it('the result envelope keeps its exact keys and unchecked entries keep their exact shape', () => {
+    const result = verify('## Story NI-1 [x]\n- [ ] Open work verify: node check.js => exit 0\n');
+    expect(Object.keys(result).sort()).toEqual(['errors', 'ok', 'stories', 'unchecked']);
+    expect(result.unchecked).toEqual([{ storyId: 'NI-1', line: 2, text: 'Open work verify: node check.js => exit 0' }]);
+    expect(result.errors.some(error => error.code === 'UNCHECKED_CRITERION')).toBe(true);
+  });
+
+  it('only the bullets that carry a binding get a verify field, in a mixed story', () => {
+    const result = verify(story('First verify: node a.js', 'Second is manual', 'Third verify: node c.js => exit 4'));
+    expect(result.stories[0].criteria.map(c => c.verify)).toEqual([
+      { command: 'node a.js', expectedExit: 0 },
+      undefined,
+      { command: 'node c.js', expectedExit: 4 },
+    ]);
+  });
+
+  it('a binding does not change the completion verdict of the story', () => {
+    expect(verify(story('Done verify: node check.js')).ok).toBe(true);
+    expect(verify('## Story NI-1 [ ]\n- [x] Done verify: node check.js\n').errors.map(e => e.code)).toEqual(['STORY_NOT_COMPLETE']);
+  });
+
+  it('a word that merely ends in verify: is not a binding', () => {
+    const result = verify(story('We reverify: node check.js after release'));
+    expect(result.errors).toEqual([]);
+    expect(result.stories[0].criteria[0].verify).toBeUndefined();
+  });
+
+  it('a non-checkbox Verify line inside the story is not a binding and not an error', () => {
+    const result = verify('* **Story NI-1 (S): First** [x]\n  * **AC:**\n    * [x] Done\n  * **Verify:** after render: node tools/run.cjs focused a.test.js\n');
+    expect(result.ok).toBe(true);
+    expect(result.stories[0].criteria).toHaveLength(1);
+    expect(result.stories[0].criteria[0].verify).toBeUndefined();
+  });
+
+  it('nested and numbered checkbox bullets carry bindings too', () => {
+    const result = verify('## Story NI-1 [x]\n- [x] Parent\n  * [x] Nested verify: node n.js => exit 2\n1. [x] Numbered verify: node m.js\n');
+    expect(result.stories[0].criteria.map(c => c.verify)).toEqual([undefined, { command: 'node n.js', expectedExit: 2 }, { command: 'node m.js', expectedExit: 0 }]);
+  });
+
+  it.each([
+    ['missing exit code', 'Then Y. verify: node check.js => exit'],
+    ['non-numeric exit code', 'Then Y. verify: node check.js => exit abc'],
+    ['negative exit code', 'Then Y. verify: node check.js => exit -1'],
+    ['exit code above 255', 'Then Y. verify: node check.js => exit 256'],
+    ['fractional exit code', 'Then Y. verify: node check.js => exit 1.5'],
+    ['empty command before the arrow', 'Then Y. verify: => exit 0'],
+    ['empty command, no arrow', 'Then Y. verify:'],
+    ['two arrows', 'Then Y. verify: node check.js => exit 1 => exit 2'],
+    ['trailing text after the exit code', 'Then Y. verify: node check.js => exit 1 and more'],
+  ])('malformed binding (%s) yields BAD_VERIFY with the bullet line', (_label, bullet) => {
+    const result = verify(story('Fine verify: node ok.js', bullet));
+    expect(result.ok).toBe(false);
+    const bad = result.errors.filter(error => error.code === 'BAD_VERIFY');
+    expect(bad).toHaveLength(1);
+    expect(bad[0]).toMatchObject({ code: 'BAD_VERIFY', storyId: 'NI-1', line: 4 });
+    expect(typeof bad[0].message).toBe('string');
+    expect(bad[0].message.length).toBeGreaterThan(0);
+    expect(result.errors.map(error => error.code)).toEqual(['BAD_VERIFY']);
+    expect(result.stories[0].criteria[1].verify).toBeUndefined();
+    expect(result.stories[0].criteria[0].verify).toEqual({ command: 'node ok.js', expectedExit: 0 });
+  });
+
+  it('each malformed bullet is its own BAD_VERIFY error', () => {
+    const result = verify(story('A verify: node a.js => exit x', 'B verify: node b.js => exit y'));
+    expect(result.errors.map(error => [error.code, error.line])).toEqual([['BAD_VERIFY', 3], ['BAD_VERIFY', 4]]);
+  });
+
+  it('BAD_VERIFY on an unselected story does not fail the selected story', () => {
+    const text = '## Story NI-1 [x]\n- [x] Fine verify: node ok.js\n## Story NI-2 [x]\n- [x] Broken verify: node b.js => exit nope\n';
+    expect(verify(text).ok).toBe(true);
+  });
+
+  it('CLI exits non-zero and reports BAD_VERIFY for a malformed binding even in a finished story', () => {
+    const tmp = createTmpDir();
+    try {
+      const file = tmp.write('todo.md', '## Story NI-1 [x]\n- [x] Done verify: node check.js => exit abc\n');
+      const result = spawnSync(process.execPath, [script, file, '--stories', 'NI-1'], { encoding: 'utf8' });
+      expect(result.status).toBe(1);
+      expect(JSON.parse(result.stdout).errors.map(error => error.code)).toEqual(['BAD_VERIFY']);
+    } finally { tmp.cleanup(); }
+  });
+
+  it('CLI prints the parsed binding on the criterion and exits 0 for a well-formed one', () => {
+    const tmp = createTmpDir();
+    try {
+      const file = tmp.write('todo.md', '## Story NI-1 [x]\n- [x] Done verify: node check.js => exit 2\n');
+      const result = spawnSync(process.execPath, [script, file, '--stories', 'NI-1'], { encoding: 'utf8' });
+      expect(result.status).toBe(0);
+      expect(JSON.parse(result.stdout).stories[0].criteria[0].verify).toEqual({ command: 'node check.js', expectedExit: 2 });
+    } finally { tmp.cleanup(); }
+  });
+});
+
+// ── Review fixes (wave 1): verify parsing hardening ─────────────────
+
+describe('review fix m6: a binding written in a variant form is BAD_VERIFY, not a silent manual criterion', () => {
+  it.each([
+    ['a capital Verify:', 'Then Y. Verify: node check.js'],
+    ['an all-caps VERIFY:', 'Then Y. VERIFY: node check.js'],
+    ['a space before the colon', 'Then Y. verify : node check.js'],
+    ['a full-width colon', 'Then Y. verify： node check.js'],
+    ['a backtick-wrapped binding', 'Then Y. `verify: node check.js`'],
+    ['a double-backtick-wrapped binding', 'Then Y. ``verify: node check.js``'],
+    ['a bold-labelled binding followed by a command', 'Then Y. **verify:** node check.js'],
+    ['an italic-labelled binding followed by a command', 'Then Y. *verify:* npm test'],
+    ['a capital Verify inside backticks', 'Then Y. `Verify: git status`'],
+  ])('%s yields BAD_VERIFY with the bullet line and no verify field', (_label, bullet) => {
+    const result = verify(story('Fine verify: node ok.js', bullet));
+
+    expect(result.ok).toBe(false);
+    expect(result.errors.map(error => [error.code, error.storyId, error.line])).toEqual([['BAD_VERIFY', 'NI-1', 4]]);
+    expect(result.errors[0].message).toMatch(/variant form/);
+    expect(result.stories[0].criteria[1].verify).toBeUndefined();
+  });
+
+  it.each(['node', 'npx', 'npm', 'git', 'pytest', 'dotnet', 'cargo', 'go'])('every allowed command head (%s) is recognised after a variant label', (head) => {
+    expect(verify(story(`Then Y. Verify: ${head} something`)).errors.map(error => error.code)).toEqual(['BAD_VERIFY']);
+  });
+
+  it.each([
+    ['a code-span mention of the label with a placeholder', 'Given `verify: <command> => exit N`, then it runs'],
+    ['a code-span mention of the label alone', 'A criterion with no `verify:` is manual'],
+    ['a code-span mention followed by prose', 'The `verify:` line is parsed by the helper'],
+    ['a capital Verify followed by prose', 'Verify the output looks right'],
+    ['a Verify label followed by prose that is not a command', 'Verify: the page renders'],
+    ['a bold prose label', '**E2E verify:** seed a store, run it, then read the log'],
+    ['a bold prose label that mentions an arrow', '**E2E verify:** seed a store => exit 0'],
+    ['a bold label ahead of a real binding', '**Check** verify: node real.js'],
+  ])('leaves %s alone', (_label, bullet) => {
+    const result = verify(story(bullet));
+
+    expect(result.errors).toEqual([]);
+    if (bullet.startsWith('**Check**')) expect(result.stories[0].criteria[0].verify).toEqual({ command: 'node real.js', expectedExit: 0 });
+    else expect(result.stories[0].criteria[0].verify).toBeUndefined();
+  });
+
+  it('a real binding next to a defanged mention is still the binding', () => {
+    const result = verify(story('Given `Verify: node old.js` is gone. verify: node new.js => exit 1'));
+
+    expect(result.errors).toEqual([]);
+    expect(result.stories[0].criteria[0].verify).toEqual({ command: 'node new.js', expectedExit: 1 });
+  });
+
+  it('the toolkit TODOs that mention the label in prose still parse (no false BAD_VERIFY)', () => {
+    const text = '## Story NI-1 [x]\n- [x] Given an AC bullet carrying `verify: <command> => exit N`, when it runs, then it records\n- [x] An edit to a `verify:` line is detected\n';
+    expect(verify(text).errors).toEqual([]);
+  });
+});
+
+describe('review fix F8: a bold label is not a binding, and a checkbox marker is rejected', () => {
+  it('"**E2E verify:** text" is a manual criterion with no verify field and no error', () => {
+    const result = verify(story('**E2E verify:** seed a tmp store + an injection event'));
+
+    expect(result.ok).toBe(true);
+    expect(result.stories[0].criteria[0].verify).toBeUndefined();
+  });
+
+  it('"**verify:**" and "verify:**" labels are not bindings either', () => {
+    expect(verify(story('**verify:** seed a store')).stories[0].criteria[0].verify).toBeUndefined();
+    expect(verify(story('Run it. verify:** seed a store')).stories[0].criteria[0].verify).toBeUndefined();
+  });
+
+  it.each(['[ ]', '[x]', '[X]', '[>]', '[!]', '[~]', '[*]', '[B]', '[C]'])('a %s marker inside the command is BAD_VERIFY', (marker) => {
+    const result = verify(story(`Then Y. verify: node check.js ${marker} => exit 0`));
+
+    expect(result.errors.map(error => [error.code, error.line])).toEqual([['BAD_VERIFY', 3]]);
+    expect(result.errors[0].message).toMatch(/checkbox marker/);
+    expect(result.stories[0].criteria[0].verify).toBeUndefined();
+  });
+
+  it('a marker in the prose before the binding does not matter, and brackets that are not markers are fine', () => {
+    const result = verify(story('Then [see note] Y. verify: node check.js "a[0]" => exit 2'));
+
+    expect(result.errors).toEqual([]);
+    expect(result.stories[0].criteria[0].verify).toEqual({ command: 'node check.js "a[0]"', expectedExit: 2 });
+  });
+});
+
+describe('review fix n7: story ids that would collide as record file names', () => {
+  const ids = (list) => subject().verifyTodoCompletion('## Story NI-1 [x]\n- [x] Done\n', { storyIds: list });
+
+  it.each(['CON', 'con', 'PRN', 'AUX', 'NUL', 'Nul', 'COM1', 'com9', 'LPT1', 'lpt9', 'NUL.1', 'con.x-1'])('refuses the Windows device name %s', (id) => {
+    expect(ids([id]).errors.map(error => error.code)).toEqual(['INVALID_STORY_IDS']);
+  });
+
+  it.each(['CON-1', 'NULL', 'COM10', 'LPT', 'CONSOLE', 'X.CON', 'SF-1.1'])('still accepts %s', (id) => {
+    expect(ids([id]).errors.map(error => error.code)).not.toContain('INVALID_STORY_IDS');
+  });
+
+  it('refuses two ids that differ only by case', () => {
+    expect(ids(['SF-1.1', 'sf-1.1']).errors.map(error => error.code)).toEqual(['INVALID_STORY_IDS']);
+    expect(ids(['A', 'b', 'B']).errors.map(error => error.code)).toEqual(['INVALID_STORY_IDS']);
+  });
+
+  it('still accepts distinct ids', () => {
+    expect(ids(['SF-1.1', 'SF-1.2']).errors.map(error => error.code)).not.toContain('INVALID_STORY_IDS');
+  });
 });

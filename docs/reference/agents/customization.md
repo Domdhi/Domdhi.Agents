@@ -51,13 +51,31 @@ Runtime model/tool/memory settings belong in the applicable native `shared-agent
 
 The shared head refreshes under default merging. Inline blocks are reanchored to their headings; if an upstream heading disappears, the merger recovers the block at EOF and reports the orphan. Marker examples inside fenced code do not create ownership boundaries. Substantial project knowledge belongs in a separate project-added skill directory. See [skill-merger.js](../../../.agents/core/_lib/skill-merger.js) and [skill authoring](../../../.agents/skills/skill-authoring/SKILL.md).
 
-To opt out of shared skill delivery, configure the target project's `.claude/update-config.json`:
+## Choosing skills and roles: profiles
+
+A project chooses which shared skills and roles it receives in its `.claude/update-config.json`:
 
 ```json
-{ "skillExclude": ["tailwind-css-patterns", "design-taste-frontend"] }
+{ "skillProfile": "knowledge", "skillInclude": ["tailwind-css-patterns"], "skillExclude": ["review-status"] }
 ```
 
-Exclusions apply to canonical sources and native projections. Invalid project update configuration refuses mutation. Existing project files are not implicitly disposable because a skill is excluded.
+- `skillProfile` selects a toolkit profile from `.agents/adapters/skill-profiles.json`. A profile is an allow-list of skills and roles, so a new toolkit skill stays out of it until the toolkit adds it there. Fleet sync carries profile changes.
+  - `app`: the full toolkit, for application repositories.
+  - `knowledge`: planning, project creation, the builders and the workflow core, without the `sweep`/`retro`/`onboard` maintenance chain.
+  - `agent`: writing and research (`ghostwriting`, `content-formats`, `research`, `remember`), with the `shadow` and `product-strategist` roles.
+- `skillInclude` adds skills to the profile, and `skillExclude` removes them. Without `skillProfile`, every skill except `skillExclude` is delivered, and every role ships.
+- Project-bespoke skills and roles are never excluded, because a profile only governs toolkit skills.
+
+**Closure check.** The selection must be closed: no kept skill or role may still invoke a dropped skill. Invocations count in any form: `/name`, `review-x`, `/review:x`, or a `skills/name/` path. Update and install refuse an open selection before writing anything, and `render-shared-agents.js --check` fails on one. The refusal lists each `caller → dropped skill (file:line)` and the smallest fix. Two commands help:
+
+```sh
+node .claude/core/skill-profile.js check            # the effective set, and whether it is closed
+node .claude/core/skill-profile.js suggest sweep    # which kept skills would also have to go
+```
+
+A workflow that names an optional workflow writes "if installed" on the same line (for example, ``Run `/review:feedback` if installed.``). The check treats that line as optional. A knowledge skill's bare name in prose (`tailwind-css-patterns` in a list of examples) is a mention, not an invocation.
+
+**Switching to a leaner selection.** The next update removes the toolkit outputs that the selection now drops: generated skills, commands, agents and Codex projections, plus their canonical `.agents/` copies. It removes them only when they are unedited. An edited generated output is reported as a conflict, and the update stops until you move or delete it. A customised canonical copy, such as a personalised role, is kept with a warning. `--dry-run` lists the removals as `PRUNE` lines.
 
 ## Settings merge
 

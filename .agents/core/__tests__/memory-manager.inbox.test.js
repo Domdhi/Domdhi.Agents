@@ -281,4 +281,36 @@ describe('memory-manager inbox', () => {
 
   });
 
+
+  describe('a draft path is accepted as its id (first adopter run, 2026-11-20)', () => {
+    it('inboxPromote takes the draft path that inbox-list prints', async () => {
+      const file = writeInboxFile('2026-11-20-1444-path-id', makeDraft({ suggested_id: 'path-id-memory' }));
+      const m = makeManager();
+
+      const result = await m.inboxPromote(file);
+
+      expect(result.promoted).toBe(true);
+      expect(fs.existsSync(file)).toBe(false);
+    });
+
+    it('inboxDiscard takes the draft path too', async () => {
+      const file = writeInboxFile('2026-11-20-1445-path-discard', makeDraft());
+      const m = makeManager();
+
+      expect((await m.inboxDiscard(file)).discarded).toBe(true);
+      expect(fs.existsSync(file)).toBe(false);
+    });
+
+    it('a .json path outside the inbox is still refused', async () => {
+      const outside = path.join(tmp.root, 'elsewhere.json');
+      fs.writeFileSync(outside, JSON.stringify(makeDraft()));
+      const m = makeManager();
+
+      const result = await m.inboxPromote(outside);
+
+      expect(result.promoted).toBe(false);
+      expect(result.error).toMatch(/Invalid inbox id/);
+      expect(fs.existsSync(outside)).toBe(true);
+    });
+  });
 });

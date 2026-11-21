@@ -1,0 +1,178 @@
+# TODO: Software factory — executable done, a real graph, automated starts, and self-improving agents
+
+| Attribute | Value |
+|-----------|-------|
+| **Status** | Specification Complete |
+| **Author** | the owner |
+| **Created** | 2026-11-18 |
+| **Basis** | `docs/.output/findings/research/261118-0919-loops-graphs-software-factory.md` (and its four raw reports) |
+| **Branch** | `main` (toolkit work commits straight to main; unattended work may use a local `auto/...` branch that the owner merges and removes; no push, publish or fleet sync without the owner's go) |
+| **Model rule** | Every subagent runs MODEL at high effort (`model: "model"`, `effort: "high"`); `security-auditor` keeps its MODEL pin. The one recorded exception (Owner Decision 3): after two identical-signature failures a `deep`-tier subagent gets one attempt, with both signatures and excerpts in its brief. |
+
+---
+
+## Executive Summary
+
+Domdhi.Agents already has a harness, a dependency graph (Story Index, waves, `/review:optimize-backlog`), an independent review cadence, a real judge (`gate.js` with receipts) and an improvement loop (`/sweep`, `/review:evolve-skills`, the differential eval). What it lacks is what turns a semi-automatic assistant into a factory: **"done" a program can check**, **walls that are structure rather than requests**, **a trigger that needs no human at the keyboard**, and **a loop that measures and improves the agents without letting them edit their own judge**.
+
+This TODO reuses and fixes what exists. Four epics, each a stage of the research plan:
+
+1. **SF-1 Executable done and real walls (10 stories).** Each acceptance criterion gets a `verify:` command; a recorded red run; a mechanical ship check that backs the prose `SHIP_CHECK_OK`; a failure-signature ledger with a one-shot stronger-tier retry; walls for subagent writes, `permissions.deny`, and one action-authority matrix.
+2. **SF-2 The graph you already have, tightened (6 core + 1 later).** A deterministic `plan-check` helper replacing "write a short script", a `needs output of` vs `merely after` story field, derived waves, per-story checkpoints keyed by input hash, worktree per overlapping writer.
+3. **SF-3 Automated starts (8 core + 1 later).** A run record and run id, row stamping and a run trace, a gate-state detector feeding `/listen`, a headless contract for `/do` and `/run-todo`, and a documented scheduled detect-only run (a systemd timer on WSL). The fix-on-a-branch trigger is a later slice.
+4. **SF-4 Self-improvement (5 core + 6 later).** Core measures whether the agents are good (scoreboard, structured issue log, protected set, an accept/reject verdict, intake fixes). The later slice, behind a ship gate, lets the loop run: a persistent regression suite with a held-out split, an apply helper that restores on failure, a ledger, and a scheduled propose-only cycle.
+
+**Wave shape: role-based within each epic, ordered by hotspot** — 20 waves; core (29 stories) is waves 1 to 15, later (8 stories) is waves 16 to 20. the owner chose to run everything in one pass (Owner Decision 1), so the ship gate after wave 15 is pre-approved. The order still holds for a reason: every later step depends on executable done and real walls, and the self-modifying part comes after the measurement it depends on.
+
+---
+
+## Dependency Graph
+
+```
+SF-1 (walls last)                  SF-2                         SF-3                      SF-4
+SF-1.1 -> SF-1.2 -> SF-1.3 -> SF-1.4 -> SF-1.6 -> SF-1.7
+SF-1.5 ------------------------^ (feeds 1.6)
+                                    SF-2.1 -> SF-2.2 -> SF-2.3 -> SF-2.5 -> SF-2.6
+                                       \-> SF-2.4 -----------------^
+SF-3.4 -> SF-3.5 -> SF-3.8
+SF-1.6 -> SF-3.1 -> SF-3.2 ---\
+              \-> SF-3.3 -----+-> SF-3.7 -> SF-3.6 (also needs 1.6, 1.7, 2.6)
+SF-3.1 -> SF-4.1                                         SF-3.6 -> SF-4.2 -> SF-4.5
+SF-1.9 -> SF-1.8 -> SF-1.10     SF-1.8 -> SF-4.3 -> SF-4.5      SF-4.4 -> SF-4.5
+------------------------------ ship gate after wave 15 ------------------------------
+LATER: SF-2.7 (after 2.3,2.5,2.6)   SF-3.9 (after 3.1,3.4,3.5,3.6,1.5,1.8,1.9)
+       SF-4.6 (after 3.6,4.4) -> SF-4.7, SF-4.8;  SF-4.9 (after 4.3,4.4) -> SF-4.10 -> SF-4.11
+```
+
+---
+
+## Seams and Main Flow
+
+**Seams.** Each is defined once here; stories reference it by name.
+
+* **`verify:` binding** — one command per acceptance criterion, written inline on the AC checkbox bullet as `verify: <command> => exit N` (default `=> exit 0`). Written by `/todo` and `/create-project-epics-todo` authoring (SF-1.7), parsed by `todo-completion.js` into a `verify` field on the criterion object (SF-1.1), executed by `ac-verify.js` (SF-1.1). The text must never contain a checkbox marker (`status.js:307` and `metrics.js:241` match one unanchored on every line under a story). A criterion without one is `manual` (or `[CI-pending]`) and never fails the run.
+* **ac-verify record** — `docs/.output/.state/telemetry/ac-verify/{storyId}.json`: `story, acLine, command, expectedExit, exit, met, status (ran|refused|timeout|tree-changed), durationMs, outputTail (≤2 KB), codeHash, head, ranAt`; `met` is true only when `status` is `ran` and `exit` equals `expectedExit`. `codeHash` is `codeTreeHash` from `gate-receipt.js` (SF-1.1): the tree hash excluding `docs/.output/`, `docs/work/`, `docs/TODO_*.md` and explicit extra paths, i.e. everything a wave edits after its gate. Also `{storyId}.freeze.json` (check-file blobs, a hash of the `verify:` lines, and a re-baseline history). Written by `ac-verify.js` (SF-1.1, SF-1.2); read by `ship-check.js` (SF-1.3).
+* **ship seal** — `docs/.output/.state/telemetry/ship-seal.json`: `head, receiptId|null, mode (receipt|summary), codeHash, recordsHash, docs, sealedAt`. `codeHash` uses the same `codeTreeHash` as the ac-verify records; `recordsHash` hashes the ac-verify records on disk at seal time. Written by `ship-check.js seal` (SF-1.3) after the last code edit, which is after the Step 7 review fixes; read by `ship-check.js verify` and `commit.js --ship-check` (SF-1.4). A project that does not use receipts gets `mode: summary` (lower assurance, documented); `shipCheck.enabled: false` in the gate config turns the check off. Wiring in the workflows is SF-1.6 and SF-1.7.
+* **failure ledger** — `docs/.output/.state/telemetry/gate-failures.jsonl`, rows `{ts, head, sig, legs, passed, killed}` plus optional `cls` (`environment`) and `log` (absolute log path); `head` is a working-tree identity using the `codeTreeHash` exclusions, not the commit id; a passing run writes a `passed: true` row (it resets the streak) and a killed or timed-out run writes a neutral row with `killed` set (wave 1 review F13). Written once per failing gate run by `gate.js` through `_lib/failure-ledger.js`, and by `failure-ledger.js record --output-file` for a failing focused run (SF-1.5). Read by `damage-control.cjs` (SF-1.5), the retry dispatch's `PRIOR FAILURE` block (SF-1.6), the budget printer (SF-1.5), the run record (SF-3.1), the issue-log signature (SF-4.2) and the intake gate-failure signal (SF-4.5). Counting rule: same signature on a changed tree is a genuine repeat; same signature on the same tree is a no-op; differing outcomes on the same tree is flaky. Flaky and environment classes never count toward escalation. A pass resets the streak; KILLED and TIMED OUT are neutral.
+* **plan `**Budget:**` line** — `**Budget:** attempts=3 gate-failures=6 dispatches=40 minutes=240` (comma or space separated; `attempts` = two standard attempts plus one `deep`-tier subagent attempt per story). Defined in the run-plan template (SF-1.6); parsed by `parseBudget` in `failure-ledger.js` (SF-1.5), which `run-record.js` imports (SF-3.1); exhaustion is computed by `failure-ledger.js budget` (exit 12). One budget shape and one parser.
+* **plan Wave Log lines** — `- **Red:**` (SF-1.6), `- **Story checkpoints:** {ID}={hash12}@{receiptId}` (SF-2.5). The completion section gains one tracked `**Run record:** {json}` line (SF-3.1). No per-story files and no second tracker (`run-todo` workflow rule at line 850).
+* **run id and session pointer** — run id seeded from the plan stamp (`_lib/run-stamp.js`); pointer `docs/.output/.state/telemetry/current-run-{session_id}.json` `{run_id, plan, wave, story, since}`. Written by `run-record.js` (SF-3.1), whose `start` is called when the plan is created so the pointer exists for the whole run (SF-3.6); read by the row writers (SF-3.2, SF-3.3). An env var cannot carry it (the Bash tool keeps no shell state).
+* **run result and exit codes** — `run-record.js finish` exits 0 passed, 1 failed, 2 invalid input, 10 needs-human, 11 blocked, 12 budget-exhausted, 13 killed (distinct from `gate.js` exit 3 for a held lock). Consumed by the headless contract (SF-3.6), the scheduled recipe (SF-3.8), the scoreboard (SF-4.1) and the propose-only cycle (SF-4.11).
+* **`**After:**` story field** — optional soft ordering. `**Dependencies:**` means "needs output of" (every existing TODO already treats it so). Defined in the story template (SF-2.2); read by `plan-check.js` (SF-2.1 parses, SF-2.2 documents). It never creates a `DEP_ORDER` error.
+* **gate signal** — `gate-signal.js` JSON `{state: green|red|killed|stale|unknown, signature, reason, ts, failureNames[]}`; seen-state file `docs/.output/.state/telemetry/listen-gate-seen.json` holds the last recorded signature. Defined in SF-3.4; consumed by `/listen` (SF-3.5).
+* **protected set** — the single list of paths no improvement run and no subagent may edit: gate, hooks, guardrail rules, settings, eval tasks, holdout, grader prompts, judge code. Enforced two ways: `subagentReadOnlyPaths` in the path hook (SF-1.8: the gate, its judges, hooks, guardrail rules and settings) and `improvement-scope.js assertDiffInScope` (SF-4.3: adds tests, judge code, eval tasks and holdout, and covers Bash writes after the fact). SF-4.3 depends on SF-1.8 so no entry is defined twice; its own `guardrail-rules.yaml` edit is Main Agent direct because SF-1.8 puts that file in the subagent tier.
+* **action-authority matrix** — T0 free, T1 cheap undo, T2 outward, T3 irreversible; columns action, tier, undo cost, approver, enforcement point. Home is a new section in `.agents/startup-reference.md` (SF-1.10); the scheduled recipe (SF-3.8) and the apply helper (SF-4.9) cite it and never restate it.
+
+**Main flow, end to end.** `/todo` writes a story with a `verify:` per AC and, where relevant, an `After:` (SF-1.7, SF-2.2) and `plan-check` validates the plan (SF-2.1). `/run-todo` derives waves (SF-2.3), starts a run record (SF-3.1, SF-3.6), writes tests, records the red run (SF-1.1, SF-1.6), dispatches in an isolated worktree when writers overlap (SF-2.6), gates, runs `ac-verify`, seals and commits through `commit.js --ship-check` (SF-1.3, SF-1.4). A failed gate feeds the ledger (SF-1.5); the second identical failure gives a `deep`-tier subagent one attempt with both prior failures; the third stops. A story skipped on resume is checked against its input hash (SF-2.4, SF-2.5). Rows carry the run id (SF-3.2, SF-3.3) and a run trace is assembled (SF-3.7). A scheduled job runs `/listen gate --only-if-red` (SF-3.4, SF-3.5, SF-3.8), writes an intake item, and a human decides. The scoreboard (SF-4.1) turns run records into "are the agents good"; the issue log (SF-4.2), intake (SF-4.5), verdict (SF-4.4) and protected set (SF-4.3) make the improvement loop trustworthy; the later slice runs it (SF-4.6 to SF-4.11). Every step has an owner; the apply and trigger stories that touch code unattended are `later`.
+
+---
+
+## Phase 1: Executable done and real walls
+
+**Goal:** A story can be proven done by running commands the implementer cannot edit, wave commits are refused without evidence, failures are remembered, and the walls are structure.
+
+---
+
+### Epic SF-1: Executable done and real walls
+
+**Objective:** Convert the strongest prose rules (ship token, red-first, three-strike stop, no weakened tests) into helpers, hooks and settings that fail closed.
+
+---
+
+* **Story SF-1.1 (L): `ac-verify.js` — parse, run and record `verify:` bindings, the recorded-red command, and the shared code-tree hash**
+  * **As a** toolkit maintainer, **I want** each acceptance criterion's `verify:` command run and recorded, **So that** "done" and "red" are program output rather than the agent's statement.
+  * **AC:**
+    * [x] Given an AC bullet carrying `verify: <command> => exit N`, when `ac-verify.js run --todo T --stories S` runs, then each command executes from the repo root with `shell: false`, one record per command is written to `docs/.output/.state/telemetry/ac-verify/{storyId}.json` with the fields in the ac-verify record seam (including `expectedExit`, `exit`, `met`, `status`, `codeHash`), and the process exits 0 only when every record has `status: ran` and `met: true`.
+    * [x] Tokenization is whitespace splitting with single and double quotes grouping one token and no escapes; an unbalanced quote is refused. A command is refused (not executed, record `status: refused`, non-zero exit) when it contains a semicolon, ampersand, pipe, redirection, backtick or `$(`; when its first token is outside `node`, `npx`, `npm`, read-only `git` subcommands, `pytest`, `dotnet`, `cargo`, `go`; for `node` when it carries `-e`, `--eval`, `-p` or `--print`; for `npm` unless the subcommand is `test`, `t`, `run` or `run-script`; and for `npx` unless the second token is an executable present in `node_modules/.bin`. There are no project-declared heads in this version.
+    * [x] The time cap defaults to 300 seconds (overridable by `AC_VERIFY_TIMEOUT_MS`); output is capped at 2 KB in `outputTail`; a run past the cap is killed and recorded `status: timeout`; a command killed by a signal records `exit: null` and `met: false`.
+    * [x] Given `ac-verify.js red --todo T --stories S` and a command that exits 0 before implementation, then it reports a vacuous check and exits non-zero; given an infrastructure failure (`Cannot find module`, `SyntaxError`, `ENOENT`, `No test files found`, zero tests collected per the gate's classifier), then it exits non-zero naming the class; given a real failure, then it prints one `expected | saw | file:line` digest per criterion (first failing line when the runner is not vitest) and exits 0; zero bindings for a story is reported, not an error.
+    * [x] A criterion with no `verify:` is counted as `manual` and never fails; a story with no bindings is reported `no-bindings` and the manual count is printed; `todo-completion.js` returns the parsed `verify` on each criterion object, a malformed `=> exit N` yields a `BAD_VERIFY` error and non-zero exit, and the existing result shape and the `unchecked` assertions in `todo-completion.test.js` are unchanged.
+    * [x] `_lib/gate-receipt.js` exports `hashTreeEntries(entries, {exclude})` factored from the existing hash lines (byte-identical output with no exclusion, so existing receipts still verify) and `codeTreeHash(root, {extraExclude})`, which excludes `docs/.output/`, `docs/work/`, `docs/TODO_*.md` and the extra paths; `ac-verify.js` stamps every record with `codeTreeHash`.
+    * [x] An unknown story id, an unreadable TODO, an unwritable record directory and a thrown exception inside the runner each exit non-zero (fail closed), proven by adversarial tests; every child spawn sets `windowsHide`.
+  * **Estimate:** L
+  * **Complexity:** 8
+  * **Release:** core
+  * **Risk tier:** deep — runs commands sourced from an editable document (command-injection surface) and defines the code hash the judge compares
+  * **Dependencies:** None
+  * **Files:**
+    * `.agents/core/ac-verify.js` — new CLI plus exports (`run`, `red`), same shape as `todo-completion.js`
+    * `.agents/core/__tests__/ac-verify.test.js` — new
+    * `.agents/core/todo-completion.js` — add `verify` to the criterion object near line 148
+    * `.agents/core/__tests__/todo-completion.test.js` — add the parse case
+    * `.agents/core/_lib/gate-receipt.js` — export `hashTreeEntries` (factored from lines 664-665) and `codeTreeHash`
+    * `.agents/core/_lib/__tests__/gate-receipt.test.js` — byte-identity and exclusion cases
+  * **Agent budget:** 4 modified, 2 created — within ≤5/≤2 cap
+  * **Ownership:** production general-purpose; tests Main Agent per `/run-todo` Step 2b
+  * **Research notes:** No runner exists (grep of `.agents/core` for a done_when runner: none). Parser anchors: criterion regex `todo-completion.js:137`, criterion object `:148-151`. Reuse `gate.js` exports `parseTestOutput`, `isZeroCollected`, `testPassed` (`gate.js:2096`; the module is requirable under a foreign argv, comment `:105-108`), `_lib/git.js` (argv array, no shell) and `_lib/shell-command-split.js` `splitCommandSegments` (`:87`, only to detect chaining). Record pattern: `_lib/attribution-ledger.js` (JSONL append, CLI `append|read`). Honest claim: the allowlist and metacharacter refusal reduce accidents; they do not make an allowlisted `node` or `npm` command safe. The controls are the hash freeze of the `verify:` lines (SF-1.2) and review (security-auditor applies). Precedent for the shape: `tools/native-smoke.cjs` `shellCommandRefusal` and `READ_ONLY_COMMANDS` (workshop-only, cannot be imported). The code hash moves here from the ship check because the record and the seal must use one definition: the exclusion set covers everything a wave edits after its gate (TODO, plan, handoff, review reports and memory live under `docs/.output/`, `docs/work/` or `docs/TODO_*.md`). Consumers of AC bullets that must not break: `status.js:307` and `:235`, `metrics.js:241` (a checkbox marker inside `verify:` text would be miscounted), `_lib/epic-overlap.js` (Files only). Real TODOs use three AC shapes; inline-on-checkbox is the only one common to all. Hidden holdout checks (strip `verify:` from the context package) are out of scope.
+  * **Premise check:** `grep` of `.agents/core` for a done_when runner → none; `node .claude/core/todo-completion.js --self-test` → ok (research agent run, 2026-11-18).
+  * **Verify:** after the orchestrator render: `node tools/run-toolkit-tests.cjs focused .agents/core/__tests__/ac-verify.test.js .agents/core/__tests__/todo-completion.test.js .agents/core/_lib/__tests__/gate-receipt.test.js .agents/core/__tests__/gate-receipts.test.js .agents/core/__tests__/windows-hide-guard.test.js`
+
+* **Story SF-1.2 (M): `ac-verify.js` freeze, check and unfreeze — tamper evidence for check files and `verify:` lines**
+  * **As a** toolkit maintainer, **I want** the check files and `verify:` lines frozen when a story is dispatched, **So that** an implementer who weakens a test is caught even when the edit bypasses the path hook.
+  * **AC:**
+    * [x] Given `ac-verify.js freeze --todo T --stories S`, then it writes `{storyId}.freeze.json` with the sha256 blob of each test file in the stories' Files lists (a test file is a path containing `__tests__/`, `/tests/`, `.test.`, `.spec.` or a `test_` basename) and a sha256 of the stories' `verify:` lines, and calls `setFrozen` from `freeze-state.js` for those files so `path-guardrail.cjs` blocks Write and Edit on them (exact absolute-path match).
+    * [x] Given a baseline already exists, then `freeze` requires `--reason`, rewrites the baseline and appends the reason to the file's history, so a legitimate test edit by the Main Agent is re-baselined with an audit trail; without `--reason` it exits non-zero.
+    * [x] Given an edit, deletion or rename of a frozen file, or an edit to a `verify:` line, when `ac-verify.js check --todo T --stories S` runs, then it exits non-zero and names the file or line; given no change, it exits 0; a Files list with no test files yields a baseline holding only the `verify:` hash and a printed warning.
+    * [x] Given a Bash `sed -i` edit of a frozen check file (a write the path hook does not see), then `check` still reports it.
+    * [x] `ac-verify.js unfreeze` removes only the entries `freeze` added to `freeze-state.json` and leaves other entries and the `{storyId}.freeze.json` baseline in place, so `check` still works afterwards.
+    * [x] Malformed or missing baselines and an exception inside `check` exit non-zero.
+  * **Estimate:** M
+  * **Complexity:** 6
+  * **Release:** core
+  * **Risk tier:** deep — tamper detection feeding the ship check
+  * **Dependencies:** SF-1.1
+  * **Files:**
+    * `.agents/core/ac-verify.js` — add `freeze`, `check`, `unfreeze`
+    * `.agents/core/__tests__/ac-verify.test.js` — add cases
+  * **Agent budget:** 2 modified, 0 created — within ≤5/≤2 cap
+  * **Ownership:** production general-purpose; tests Main Agent per `/run-todo` Step 2b
+  * **Research notes:** `_lib/freeze-state.js` (`isFrozen`, `setFrozen`, `:56-75`) is already enforced for Write and Edit by `path-guardrail.cjs:88-95` and for delete targets by `guardrail.cjs`; exact absolute-path equality only (no globs); state file is gitignored `docs/.output/.state/freeze-state.json`. No skill calls it today (grep `freeze-state` in `.agents/skills`: none), so this story is its first user. It blocks the Main Agent too, which is why `freeze --reason` re-baselines. Bash writes (`sed -i`, `cp`, `mv`, `tee`, `python -c`) are not path-checked (`guardrail.cjs:336-352` covers delete-style ops only); the hash check is the role-independent backstop and also works under Codex. Freeze-state matches exact absolute paths, so it is inert inside a worktree (SF-2.6): `check` runs after integration in the main checkout. `ship-check verify` (SF-1.3) calls `check`.
+  * **Premise check:** grep `freeze-state` in `.agents/skills` → none (research agent run, 2026-11-18).
+  * **Verify:** after the orchestrator render: `node tools/run-toolkit-tests.cjs focused .agents/core/__tests__/ac-verify.test.js`
+
+* **Story SF-1.3 (L): `ship-check.js` — seal, verify and audited skip**
+  * **As a** toolkit maintainer, **I want** the ship token backed by a check, **So that** a wave cannot be committed without matching gate evidence, met `verify:` records, an untampered freeze, a clean completion check and a logged review.
+  * **AC:**
+    * [x] Given `ship-check.js seal [--docs <paths>]`, then it requires gate evidence in one of two modes: `receipt` when the project uses receipts (`verifyReceiptForRoot` must be ok; otherwise it refuses non-zero with a `Fix:` line) or `summary` when it does not (`_latest-summary.json` `overall === true`, not killed, and newer than the newest non-doc tracked file; documented as lower assurance). It then writes the ship seal `{head, receiptId|null, mode, codeHash, recordsHash, docs, sealedAt}` using `codeTreeHash` and a hash of the ac-verify records on disk. `--docs` paths that escape the repo are refused.
+    * [x] Given `ship-check.js verify --kind wave --plan P --wave N --todo T --stories A,B`, then it exits 0 only when all hold: the seal exists and its `head` equals HEAD; the recomputed `codeHash` equals the seal's (any code edit after the seal forces a re-gate and re-seal); the `recordsHash` equals the hash of the records now on disk; every record for the stories has `status: ran`, `met: true` and the seal's `codeHash`; `ac-verify.js check` passes for every story; `verifyTodoCompletion` is ok; and the plan contains `**Review — Wave N**` (accepting `—`, `–` or `-`) with its five bullets non-empty.
+    * [x] Red tests cover each bad record class: exit mismatch, `refused`, `timeout`, a missing record, a record with a stale `codeHash`, and a story with no bindings (printed as a manual count, not a failure).
+    * [x] Given `--kind task` with no `--todo` (ad-hoc `/do`), then the completion check and the record check are skipped by the named rule `no-todo` and printed; the seal, gate evidence and freeze checks still apply; with `--todo` the review-entry requirement alone is skipped.
+    * [x] Given `--skip "<reason>"`, then an empty reason exits 2, an audited bypass event is recorded the way `commit.js` records a scan bypass (`emitGuardrailHit({decision:'bypass'})`), todo-completion and the review entry are still required, and no bypass is silent.
+    * [x] The gate config accepts `shipCheck.enabled` (default true) and `shipCheck.requireReceipt`; when `enabled` is false, `verify` prints a notice and exits 0; the toolkit's own config sets receipts on.
+    * [x] Missing seal, malformed seal, missing receipt and a thrown exception each exit non-zero (fail closed); refusal text carries `Fix:` lines in the shape `pull-request.js` uses (`:258-263`).
+    * [x] `seal` does not trust ac-verify records already on disk (any agent can write them, wave 1 security m7): it runs `ac-verify.js run` and `ac-verify.js check` for the stories itself, against the current tree, and seals the records it just produced; `verify` re-runs `ac-verify.js check`. (Carried forward from the wave 1 security review.)
+  * **Estimate:** L
+  * **Complexity:** 8
+  * **Release:** core
+  * **Risk tier:** deep — it is the judge that decides whether a wave may be committed, and it carries an audited bypass (security-auditor applies)
+  * **Dependencies:** SF-1.1, SF-1.2
+  * **Files:**
+    * `.agents/core/ship-check.js` — new
+    * `.agents/core/__tests__/ship-check.test.js` — new
+  * **Agent budget:** 0 modified, 2 created — within ≤5/≤2 cap
+  * **Ownership:** production general-purpose; tests Main Agent per `/run-todo` Step 2b
+  * **Research notes:** As written, a receipt can never match the tree at wave-commit time: `gate.js` writes the receipt at gate time (Step 5), then Steps 7 and 8 edit review reports, the TODO, tracker, agent log, plan, handoff and memory, all tracked and inside the hash (the hash excludes only `docs/.output/.state/`, `gate-receipt.js:26,640,663`), so `verify-receipt` at Step 8f is always NOT VERIFIED. Hence two phases: seal the code-only hash after the last code edit (after the Step 7 review fixes), compare at commit. The code hash and its exclusion rule are defined in SF-1.1. Reuse: `verifyReceiptForRoot` (`:736-751`), `todo-completion.js verifyTodoCompletion` (`:33-174`), `pull-request.js` receipt refusal shape (`:258-263`; the import is at `:202`), `commit.js recordScanBypass` (`:138-145`), the optional `receipts.requireFullForPr` toggle as the template for the adopter switch (`pull-request.js:258`, `gate-receipt.js:757-763`). Review entry shape: `**Review — Wave {N}**` with five bullets (`review-cadence.md:44-51`, run-todo workflow `:941-947`); nothing parses it today. `SHIP_CHECK_OK` appears only in markdown (VBC:33-41, run-todo `:746-749`, do `:559-572`, `code-review/SKILL.md:20,61`). Only `gate.js test` and `gate.js full test` write a receipt (`gate.js:1646-1662`), so the toolkit runs `gate.js test` per wave (Owner Decision 2); an adopter whose project does not use receipts gets the summary mode. Limits to state: a concurrent writer's uncommitted file changes the code hash (the gate has the same property, `gate-receipt.js:567`); editing `gate.js` mid-wave changes the engine hash (`:708-717`) and invalidates the receipt, which is the intended behavior.
+  * **Premise check:** `grep -rn SHIP_CHECK_OK .agents tools` → four markdown files, zero `.js/.cjs/.json` or tests; `node .claude/core/gate.js verify-receipt` → `NOT VERIFIED` exit 1 (research agent and the independent review re-ran both, 2026-11-18).
+  * **Verify:** after the orchestrator render: `node tools/run-toolkit-tests.cjs focused .agents/core/__tests__/ship-check.test.js .agents/core/__tests__/ac-verify.test.js .agents/core/__tests__/gate-receipts.test.js .agents/core/__tests__/windows-hide-guard.test.js`
+
+* **Story SF-1.4 (M): `commit.js --ship-check` opt-in precheck**
+  * **As a** toolkit maintainer, **I want** wave commits to run the ship check before staging, **So that** the wall is in the commit helper, not only in prose.
+  * **AC:**
+    * [x] `commit.js` parses the boolean `--ship-check` and the options `--sc-kind wave|task`, `--sc-plan P`, `--sc-wave N`, `--sc-todo T`, `--sc-stories A,B` and `--sc-skip REASON`; `--paths` consumption does not swallow them regardless of flag order.
+    * [x] Given `--ship-check`, then `ship-check.verify` runs after the message is read and before anything is staged; on refusal the index is untouched, the exit is 1 and the reasons are printed; a thrown or timed-out precheck also refuses (exit 1, index untouched).
+    * [x] `--dry-run` runs the check and reports without staging; `--amend` runs it; `--paths` combinations are tested; `--no-scan` and `CLAUDE_COMMIT_NO_SCAN` do not bypass it.
+    * [x] Given no `--ship-check`, every existing `commit.test.js` case passes unchanged (docs, toolkit and fleet commits are unaffected).
+    * [x] The new text avoids the phrase "each commit route" (a guard in `git-hooks.review.test.js:1259-1267` fails on it).
+  * **Estimate:** M
+  * **Complexity:** 6
+  * **Release:** core
+  * **Risk tier:** deep — the helper every commit goes through
+  * **Dependencies:** SF-1.3
+  * **Files:**
+    * `.agents/core/commit.js` — flags in `parseArgs` (`:43-79`) and the precheck in `main` (`:232-341`)
+    * `.agents/core/__tests__/commit.test.js` — real-repo refusal and pass cases
+  * **Agent budget:** 2 modified, 0 created — within ≤5/≤2 cap
+  * **Ownership:** production Main Agent direct (`commit.test.js` builds real git repos); tests Main Agent
+  * **Research notes:** `commit.js` has no precheck hook: parse, message read (before the dry-run bail, `:236-249`), staging, `git write-tree` capture, `runScan` (`:183-214`), TOCTOU re-check, `git commit`. `--paths` collects every following token not starting with `-` (`:43-79`), hence the explicit ordering test. Exports `:347`. Making the check unconditional would need a `commit-guard.cjs` rule or the managed git pre-commit hook (592-line guard with an evasion matrix); deliberately not done here. This is a wall for wave commits only when the workflow passes the flag (SF-1.6, SF-1.7), and `shipCheck.enabled` lets an adopter turn it off. The audited `--skip` path is reviewed with SF-1.3; this story does not touch the secret-scan path (standard review).
+  * **Premise check:** read of `commit.js:232-341` → no precheck hook (research agent, 2026-11-18).
+  * **Verify:** after the orchestrator render: `node tools/run-toolkit-tests.cjs focused .agents/core/__tests__/commit.test.js .agents/core/__tests__/git-hooks.review.test.js`

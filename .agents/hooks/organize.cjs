@@ -15,6 +15,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { safeMkdirp, reportRefusal } = require('../core/_lib/fs-safe');
 
 // ── Shared Utilities ────────────────────────────────────────────────
 
@@ -185,8 +186,15 @@ function organizePlans(results) {
         const time = timePrefix(plan.created);
 
         // Create target directory
+        // A symlinked ancestor (L1H, review C1 part 2) would make the rename below land a working-tree
+        // file outside the checkout: refuse it, say so once, and leave this plan where it is.
         const dateFolderPath = path.join(targetDir, dateFolderName);
-        fs.mkdirSync(dateFolderPath, { recursive: true });
+        try {
+            safeMkdirp(dateFolderPath, projectDir);
+        } catch (error) {
+            if (reportRefusal(error)) continue;
+            throw error;
+        }
 
         // Build new filename
         const nameParts = [time];
@@ -377,7 +385,7 @@ function organizeScreenshots(results) {
 
         const dateFolderName = dateFolder(earliest);
         const targetPath = uniquePath(path.join(verifyDir, dateFolderName, slug));
-        fs.mkdirSync(targetPath, { recursive: true });
+        safeMkdirp(targetPath, projectDir);
 
         let moved = 0;
         for (const f of rootFiles) {
@@ -409,7 +417,7 @@ function organizeScreenshots(results) {
         if (looseFiles.length > 0) {
             const slug = getSlug(looseFiles);
             const targetPath = uniquePath(path.join(datePath, slug));
-            fs.mkdirSync(targetPath, { recursive: true });
+            safeMkdirp(targetPath, projectDir);
 
             let moved = 0;
             for (const f of looseFiles) {
@@ -427,7 +435,9 @@ function organizeScreenshots(results) {
  * Re-callable: results array is local per invocation.
  *
  * @param {object} _parsedJson — Hook event payload (unused; files discovered via filesystem)
- * @returns {{ feedback: string } | null}
+ * @returns {{ feedback: string, hookOutput: object | null } | null} `feedback` is the summary; `hookOutput` is what the
+ *   CLI prints for Claude Code: a PostToolUse `additionalContext` naming each moved plan's new path (null when no plan
+ *   moved), so an agent that approved a plan and dispatches others after it uses the path the plan now has.
  */
 function processEvent(_parsedJson) {
     const results = [];
@@ -437,13 +447,19 @@ function processEvent(_parsedJson) {
     try {
         organizePlans(results);
         organizeScreenshots(results);
-    } catch {
-        // Swallow — never block or crash the PostToolUse hook on an organize failure.
+    } catch (error) {
+        // Swallow — never block or crash the PostToolUse hook on an organize failure. A refused symlink
+        // write (fs-safe) leaves one stderr line; any other failure stays silent as before.
+        reportRefusal(error);
     }
 
     if (results.length === 0) return null;
 
-    return { feedback: `Organized ${results.length} item(s):\n${results.join('\n')}` };
+    const plans = results.filter(line => line.startsWith('plan: '));
+    const hookOutput = plans.length
+        ? { hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: `The organize hook moved ${plans.length === 1 ? 'the plan file' : 'plan files'}; use the new path from now on (the old one no longer exists), including in briefs to other agents:\n${plans.map(line => `- ${line.slice('plan: '.length).replace(' -> ', ' → ')}`).join('\n')}` } }
+        : null;
+    return { feedback: `Organized ${results.length} item(s):\n${results.join('\n')}`, hookOutput };
 }
 
 // ── Main ────────────────────────────────────────────────────────────
@@ -457,11 +473,9 @@ if (require.main === module) {
     });
     const result = processEvent({});
 
-    if (!result) {
-        process.exit(0);
-    }
-
-    console.log(JSON.stringify(result));
+    // Claude Code reads only its own output fields: print the plan-move context when there is one, nothing otherwise
+    // (a screenshot move needs no model attention).
+    if (result && result.hookOutput) console.log(JSON.stringify(result.hookOutput));
     process.exit(0);
 }
 

@@ -1,10 +1,10 @@
 # Project Brief
 
-Expert in capturing strategic product vision. Produces concise briefs that inform PRDs and architecture documents downstream.
+Captures the strategic product vision in a concise brief that informs the PRD and architecture downstream. A good brief says who hurts, how, and what must be true for the product to succeed, and stops there: it never says which tool to use.
 
 ## Document Template
 
-The document you produce — the canonical, scaffold-blessed template — lives in `../assets/brief.md` (raw, with the `<!-- @@template -->` first-line marker). Read it to know the artifact's structure; `scaffold.js` seeds `docs/product/brief.md` from the same file.
+The canonical, scaffold-blessed template is `../assets/brief.md` (raw, with the `<!-- @@template -->` first-line marker). `scaffold.js` seeds `docs/product/brief.md` from it.
 
 ## Required Sections Checklist
 
@@ -18,27 +18,17 @@ A project brief is COMPLETE when it has:
 - [ ] Out of Scope defined
 - [ ] Open Questions (even if empty — acknowledge there are none)
 
-## Quality Criteria
+## What good looks like
 
-### Good Brief
-- Vision fits in a tweet (concise, compelling)
-- Problem is specific: "HR managers spend 3 hours/week on manual reports" not "reporting is hard"
-- Features map directly to user pain points
-- Out of scope is explicit (prevents scope creep)
-- Constraints are realistic, not aspirational
-- **Stays in problem-space** — captures *what must be true*, never *which tool to use*. The architecture phase picks the stack.
+- The vision fits in a tweet. The problem is specific ("HR managers spend 3 hours/week on manual reports", not "reporting is hard"). Features map to user pain as outcomes, not solutions.
+- Out of scope is explicit, and constraints are realistic rather than aspirational.
+- It stays in problem space: what must be true, never which tool. The architecture phase picks the stack.
 
-### Bad Brief
-- Vision is generic: "improve the user experience"
-- No personas defined
-- Features are solutions, not outcomes
-- No success metrics
-- Missing constraints (everything is possible!)
-- **Makes premature tool picks** — "use Web3Forms", "host on Netlify", "store in Redis". These anchor the architecture phase and collide with its reasoning. (See Cross-Cutting Rule 4 in `SKILL.md`.)
+A weak brief has a generic vision ("improve the user experience"), no personas or success metrics, no constraints, or makes premature tool picks that anchor the architecture phase (Cross-Cutting Rule 4 in `SKILL.md`).
 
-### Constraint vs. pick (the load-bearing distinction)
+### Constraint vs. pick
 
-The `Constraints → Technical` line is where tool picks leak in. Discipline it:
+The `Constraints → Technical` line is where tool picks leak in. A constraint comes from the user's reality and every valid solution must honor it; a pick chooses one tool when others would satisfy the constraint equally well, which is the architect's call.
 
 | Keep (constraint — bounds the solution space) | Defer to architecture (pick — selects one option) |
 |---|---|
@@ -47,7 +37,7 @@ The `Constraints → Technical` line is where tool picks leak in. Discipline it:
 | "vanilla JS only, no framework" | "use Alpine.js for the form" |
 | "send the operator an email on each lead" | "use Resend for transactional email" |
 
-A constraint comes from the user's reality and *every* valid solution must honor it. A pick chooses one tool when others would satisfy the constraint just as well — that's the architect's call. If the user volunteers a pick, record it under Open Questions or as a noted preference "for the architecture phase to weigh," not as settled.
+A volunteered pick goes under Open Questions or as a noted preference "for the architecture phase to weigh", not as settled.
 
 ## Interview Questions
 
@@ -60,6 +50,6 @@ A constraint comes from the user's reality and *every* valid solution must honor
 7. "Are there any regulatory or compliance requirements?"
 
 ## Output Paths
-- Reads from: brainstorm/research docs if available — feature-scoped: `docs/modules/{feature}/brainstorm.md`; general: `docs/.output/findings/research/{date}-{slug}.md`
+- Reads from: brainstorm/research docs if available (feature-scoped `docs/modules/{feature}/brainstorm.md`; general `docs/.output/findings/research/{date}-{slug}.md`)
 - Produces: `docs/product/brief.md`
 - Feeds into: `docs/product/requirements.md` (via `/create:project-requirements`)

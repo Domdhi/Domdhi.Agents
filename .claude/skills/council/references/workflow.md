@@ -2,7 +2,7 @@
 
 A council advises on known options inside the authorized task. Independent stakeholders take positions; the Main Agent chairs, verifies evidence and records a decision for every council-able card. A remaining split is resolved by the chair, with dissent preserved. Results do not authorize implementation or outward actions.
 
-Use `/review:code-review --council` for code findings, `/brainstorm` for new options and `/investigate` for fact-finding. This workflow does not use `core/council.js`, whose finding-survival rules belong to code review.
+Use `/review:code-review --council` for code findings, `/brainstorm` for new options and `/investigate` for fact-finding. This workflow does not use `core/council.js`; its finding-survival rules belong to code review.
 
 ## Runtime and inputs
 
@@ -36,7 +36,7 @@ Write each card from current evidence: a one-sentence question, labeled options 
 
 Classify each card:
 
-- **Owner-only:** outward or irreversible actions, access/security-posture changes, legal/HR/policy positions and personal preferences. Record advice separately from authorization. Honor authorization already given; never ask for it again just because a council ran. A new choice outside that authorization stays owner-only.
+- **Owner-only:** outward or irreversible actions, access/security-posture changes, legal/HR/policy positions and personal preferences. Record advice separately from authorization. Honor authorization already given; do not ask again just because a council ran. A new choice outside that authorization stays owner-only.
 - **Fact answered by chair:** a direct read/search settles it; cite the answer without a panel.
 - **Council-able:** reversible design, scope, priority or approach choices within the authorized task.
 
@@ -59,17 +59,17 @@ Omit model overrides by default so native role settings apply. For higher-stakes
 
 ### 3. Round 1 — independent positions
 
-Read the prompt templates in this skill's `references/prompts.md` (relative to the skill root). Give every panelist the same cards and evidence. Tell agents they are read-only, including memory files; no builds/tests or nested delegation. Scope each agent to its assigned lens and the cards. They cannot see other answers; agreement earns nothing.
+Read the prompt templates in this skill's `references/prompts.md` (relative to the skill root). Give every panelist the same cards and evidence. Tell agents they are read-only, including memory files, with no builds/tests or nested delegation, and scoped to their lens and the cards. They cannot see other answers.
 
-Launch independent calls together when capacity permits. If the session has fewer free slots than panelists, run isolated batches and release finished agents before starting the rest. Keep earlier answers out of later Round 1 prompts. Never exceed runtime capacity or omit seats silently. If dispatch is unavailable, record council-able cards as not run; do not invent votes.
+Launch independent calls together when capacity permits. If the session has fewer free slots than panelists, run isolated batches and release finished agents before starting the rest. Keep earlier answers out of later Round 1 prompts. Do not exceed runtime capacity or omit seats silently. If dispatch is unavailable, record council-able cards as not run; do not invent votes.
 
 Require exactly one option per card, reasoning, file:line evidence, confidence and what would change the vote. Retry a failed call or malformed reply once, within that round, with the same evidence and a format reminder. After that, mark its affected votes missing/invalid. Record attempts; retries do not create extra seats or rounds.
 
 ### 4. Verify and tally before accepting any result
 
-For each decisive factual claim, the chair MUST read the cited source/line or run an appropriate read-only check. Log **holds** or **struck** with the reason. Separate factual claims from judgments; disagreement about a preference or tradeoff is not a false fact.
+For each decisive factual claim, the chair reads the cited source/line or run an appropriate read-only check. Log **holds** or **struck** with the reason. Separate factual claims from judgments; disagreement about a preference or tradeoff is not a false fact.
 
-A vote resting on a struck decisive claim is **invalid for that card** until corrected in Round 2. Striking an unverified claim excludes it as a factual premise; it does not establish that the claim is false. A missing or invalid vote is not an abstention or evidence for another option. The denominator stays the selected panel size `N`; a majority is `floor(N / 2) + 1` (2/3, 3/4 or 3/5). Never shrink the denominator to manufacture consensus.
+A vote resting on a struck decisive claim is **invalid for that card** until corrected in Round 2. Striking an unverified claim excludes it as a factual premise; it does not establish that the claim is false. A missing or invalid vote is not an abstention or evidence for another option. The denominator stays the selected panel size `N`; a majority is `floor(N / 2) + 1` (2/3, 3/4 or 3/5). Do not shrink the denominator to manufacture consensus.
 
 **Decided by majority** requires that many valid votes for one option and a chair response to every substantive dissent, citing verified evidence for factual disagreements and explaining tradeoffs for value judgments. Preserve the strongest dissent. If the chair disagrees, record a chair dissent; do not silently replace a valid majority.
 
@@ -85,4 +85,4 @@ After Round 2, accept a valid majority under step 4. Otherwise the **chair decid
 
 Compute one `{YYMMDD-HHMM}` stamp for the run. Write `docs/.output/findings/research/{stamp}-council-{slug}.md` using `references/prompts.md`. Link it from this run's existing plan or resolved handoff without replacing other work. No commit, push or implementation step belongs to this workflow.
 
-Lead the final reply with owner-only items needing a new owner choice, then decisions (mark chair decisions and dissent), factual answers, and not-run cards with reasons. State the panel, requested/observed models, rounds, missing votes and claims verified/struck. For an empty sweep, explicitly report no open decisions and zero calls. A partial or unavailable panel must never be reported as a completed consensus.
+Lead the final reply with owner-only items needing a new owner choice, then decisions (mark chair decisions and dissent), factual answers, and not-run cards with reasons. State the panel, requested/observed models, rounds, missing votes and claims verified/struck. For an empty sweep, explicitly report no open decisions and zero calls. Do not report a partial or unavailable panel as a completed consensus.

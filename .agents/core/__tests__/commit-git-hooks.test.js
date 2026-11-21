@@ -77,6 +77,7 @@ describe('commit.js with the managed hooks active', () => {
     const r = R.runCommitJs(repo, msg, [], env);
     expect(r.status, r.out).toBe(0);
     expect(r.out).toMatch(/handled by the managed git hooks/);
+    expect(r.out).not.toMatch(/NOT active/);
     expect(R.commitCount(repo)).toBe(before + 1);
     expect(runs()).toEqual(['dir', 'stdin']);
   });
@@ -138,13 +139,35 @@ describe('commit.js with the managed hooks active', () => {
 });
 
 describe('commit.js without active hooks keeps scanning itself', () => {
-  sh('no hooks installed: scans twice (staged + message) and says nothing about hooks', () => {
+  sh('no hooks installed: scans twice (staged + message) and warns loudly on stderr that the backstop is missing (security review M6)', () => {
     const msg = stagedApp();
     const { env, runs } = countingEnv();
     const r = R.runCommitJs(repo, msg, [], env);
     expect(r.status, r.out).toBe(0);
-    expect(r.out).not.toMatch(/managed git hooks/);
+    expect(r.out).not.toMatch(/handled by the managed git hooks/);
+    expect(r.out).toContain('[commit] WARNING: the managed git hooks are NOT active in this checkout');
+    expect(r.out).toContain('pre-push: missing');
+    expect(r.out).toContain('nothing refuses a force, mirror or delete push');
+    expect(r.out).toMatch(/node \.(?:claude|codex)\/core\/git-hooks\.js/);
     expect(runs()).toEqual(['dir', 'stdin']);
+  });
+
+  sh('the warning goes to stderr (stdout stays clean) and also shows under --dry-run', () => {
+    const msg = stagedApp();
+    const { spawnSync } = require('node:child_process');
+    const r = spawnSync(process.execPath, [R.COMMIT_JS, '--file', msg, '--dry-run'], { cwd: repo, env: R.cleanEnv(repo), encoding: 'utf8', windowsHide: true });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.stderr).toContain('WARNING: the managed git hooks are NOT active');
+    expect(r.stdout).not.toContain('NOT active');
+  });
+
+  sh('only the pre-push hook missing is still a warning that names it (the commit hooks alone are not the whole backstop)', () => {
+    hooks.installHooks(repo);
+    fs.unlinkSync(path.join(R.gitOut(repo, ['rev-parse', '--absolute-git-dir']), 'hooks', 'pre-push'));
+    const r = R.runCommitJs(repo, stagedApp());
+    expect(r.status, r.out).toBe(0);
+    expect(r.out).toContain('(pre-push: missing)');
+    expect(r.out).toMatch(/handled by the managed git hooks/);
   });
 
   sh('no hooks installed: still blocks a staged key', () => {
@@ -163,7 +186,8 @@ describe('commit.js without active hooks keeps scanning itself', () => {
     const { env, runs } = countingEnv();
     const r = R.runCommitJs(repo, msg, [], env);
     expect(r.status, r.out).toBe(0);
-    expect(r.out).not.toMatch(/managed git hooks/);
+    expect(r.out).not.toMatch(/handled by the managed git hooks/);
+    expect(r.out).toContain('pre-commit: outdated');
     // commit.js's own staged + message scans, the stale pre-commit does nothing, the current commit-msg scans the message.
     expect(runs()).toEqual(['dir', 'stdin', 'stdin']);
   });

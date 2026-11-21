@@ -227,3 +227,79 @@ describe('emitGuardrailHit', () => {
         expect(events.some(e => e.rule === `r-${seed - 1}`)).toBe(true); // newest kept
     });
 });
+
+describe('emitGuardrailHitAt (SF-1.3 review: security M4 / review m4)', () => {
+    const subject = () => require('../../../../.agents/core/_lib/hook-telemetry');
+    const eventsFile = (root) => path.join(root, 'docs', '.output', '.state', 'telemetry', 'guardrail-events.jsonl');
+    const readAt = (root) => (fs.existsSync(eventsFile(root)) ? fs.readFileSync(eventsFile(root), 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l)) : []);
+    const HEAD = 'a'.repeat(40);
+
+    it('writes against the given root with the shared event shape plus the bounded audit fields', () => {
+        const written = subject().emitGuardrailHitAt(tmp.root, { decision: 'bypass', rule: 'ship-check-skip', source: 'ship-check', reason: 'because', kind: 'wave', wave: 3, stories: ['A-1', 'A-2'], head: HEAD });
+
+        const [event] = readAt(tmp.root);
+        expect(event).toEqual(written);
+        expect(event).toMatchObject({ event: 'guardrail', decision: 'bypass', rule: 'ship-check-skip', tier: null, source: 'ship-check', pathClass: null, reason: 'because', kind: 'wave', wave: 3, stories: ['A-1', 'A-2'], head: HEAD });
+        expect(new Date(event.timestamp).toISOString()).toBe(event.timestamp);
+    });
+
+    it('ignores AGENT_SHARED_STATE_ROOT and AGENTS_PROJECT_DIR: the event lands in the given root, nowhere else', () => {
+        const elsewhere = createTmpDir({ prefix: 'hook-telemetry-void-' });
+        const saved = { shared: process.env.AGENT_SHARED_STATE_ROOT, project: process.env.AGENTS_PROJECT_DIR };
+        process.env.AGENT_SHARED_STATE_ROOT = elsewhere.root;
+        process.env.AGENTS_PROJECT_DIR = elsewhere.root;
+        try {
+            expect(subject().emitGuardrailHitAt(tmp.root, { decision: 'bypass', rule: 'r' })).not.toBeNull();
+        } finally {
+            for (const [key, value] of [['AGENT_SHARED_STATE_ROOT', saved.shared], ['AGENTS_PROJECT_DIR', saved.project]]) {
+                if (value === undefined) delete process.env[key]; else process.env[key] = value;
+            }
+            const leaked = fs.existsSync(eventsFile(elsewhere.root));
+            elsewhere.cleanup();
+            expect(leaked).toBe(false);
+        }
+        expect(readAt(tmp.root)).toHaveLength(1);
+    });
+
+    it('bounds the audit fields: reason one line of at most 500 characters, at most 50 stories, a non-hex head dropped', () => {
+        subject().emitGuardrailHitAt(tmp.root, { decision: 'bypass', reason: `line one\nline two ${'x'.repeat(600)}`, stories: Array.from({ length: 80 }, (_, i) => `S-${i}`), head: 'not-a-sha', wave: 0 });
+
+        const [event] = readAt(tmp.root);
+        expect(event.reason.length).toBe(500);
+        expect(event.reason).not.toMatch(/\n/);
+        expect(event.stories).toHaveLength(50);
+        expect(Object.keys(event)).not.toContain('head');
+        expect(Object.keys(event)).not.toContain('wave');
+    });
+
+    it.skipIf(process.platform === 'win32')('refuses a symlinked events file: nothing is written through it and the caller learns of it from null', () => {
+        const target = path.join(tmp.root, 'target.jsonl');
+        fs.writeFileSync(target, '');
+        fs.mkdirSync(path.dirname(eventsFile(tmp.root)), { recursive: true });
+        fs.symlinkSync(target, eventsFile(tmp.root));
+
+        expect(subject().emitGuardrailHitAt(tmp.root, { decision: 'bypass', rule: 'r' })).toBeNull();
+        expect(fs.readFileSync(target, 'utf8')).toBe('');
+    });
+
+    it.skipIf(process.platform === 'win32')('refuses a symlinked ancestor directory', () => {
+        const elsewhere = createTmpDir({ prefix: 'hook-telemetry-link-' });
+        fs.mkdirSync(path.join(tmp.root, 'docs', '.output', '.state'), { recursive: true });
+        fs.symlinkSync(elsewhere.root, path.join(tmp.root, 'docs', '.output', '.state', 'telemetry'));
+
+        const result = subject().emitGuardrailHitAt(tmp.root, { decision: 'bypass', rule: 'r' });
+        const wrote = fs.existsSync(path.join(elsewhere.root, 'guardrail-events.jsonl'));
+        elsewhere.cleanup();
+
+        expect(result).toBeNull();
+        expect(wrote).toBe(false);
+    });
+
+    it('returns null for a directory at the events path, a relative root and a missing decision (never throws)', () => {
+        fs.mkdirSync(eventsFile(tmp.root), { recursive: true });
+        expect(subject().emitGuardrailHitAt(tmp.root, { decision: 'bypass' })).toBeNull();
+        expect(subject().emitGuardrailHitAt('relative/root', { decision: 'bypass' })).toBeNull();
+        expect(subject().emitGuardrailHitAt(tmp.root, {})).toBeNull();
+        expect(subject().emitGuardrailHitAt(tmp.root, null)).toBeNull();
+    });
+});

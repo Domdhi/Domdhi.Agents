@@ -50,7 +50,31 @@ const origStartup = process.env.MEMORY_STARTUP;
 
 let tmp;
 
+// processEvent starts a detached `rebuild-index` child (spawnBackground, stdio ignored, unref'd) whose
+// work recreates docs/.output/.state/memory-index and the memory category dirs under the project root.
+// A child still running when afterEach removes the root recreates it afterwards, and the directory
+// stays in os.tmpdir(). Record every real child spawn and wait for each to exit before the root is removed.
+const nodeChildProcess = require('child_process');
+const realSpawn = nodeChildProcess.spawn;
+const spawnedChildren = [];
+
+function waitForExit(child, timeoutMs = 20000) {
+    return new Promise((resolve) => {
+        if (!child || child.exitCode !== null || child.signalCode !== null) return resolve();
+        const timer = setTimeout(resolve, timeoutMs);
+        const done = () => { clearTimeout(timer); resolve(); };
+        child.once('exit', done);
+        child.once('error', done);
+    });
+}
+
 beforeEach(() => {
+    spawnedChildren.length = 0;
+    vi.spyOn(nodeChildProcess, 'spawn').mockImplementation((...args) => {
+        const child = realSpawn.apply(nodeChildProcess, args);
+        spawnedChildren.push(child);
+        return child;
+    });
     tmp = createTmpDir({ prefix: 'session-start-prime-' });
     process.env.MEMORY_PROFILE = 'standard';
     delete process.env.MEMORY_PRIME_COUNT;
@@ -59,7 +83,8 @@ beforeEach(() => {
     process.env.MEMORY_STARTUP = 'titles';
 });
 
-afterEach(() => {
+afterEach(async () => {
+    await Promise.all(spawnedChildren.splice(0).map((child) => waitForExit(child)));
     tmp.cleanup();
     process.env.MEMORY_PROFILE = origMemoryProfile ?? 'standard';
     if (origPrimeCount === undefined) delete process.env.MEMORY_PRIME_COUNT;
@@ -1064,5 +1089,99 @@ describe('notes sync at session start (opt-in: MEMORY_SYNC=on)', () => {
         expect(out).toContain('<memory_sync>');
         expect(out).toContain('n.md');
         expect(out).toContain('sync --prefer local|tracked');
+    });
+});
+
+// ---------------------------------------------------------------------------
+// security review M6: a missing git-hook backstop is never silent at session start
+// ---------------------------------------------------------------------------
+describe('git hooks backstop note', () => {
+    const { gitAvailable } = require('../../core/__tests__/_helpers/git-fixture');
+    const hooksLib = require('../../core/git-hooks');
+    const R = require('../../core/__tests__/_helpers/hook-repo');
+    const gitIt = it.skipIf(!gitAvailable());
+    const origRuntime = process.env.AGENTS_RUNTIME;
+    let savedProject;
+
+    beforeEach(() => { savedProject = process.env.CLAUDE_PROJECT_DIR; });
+    afterEach(() => {
+        if (savedProject === undefined) delete process.env.CLAUDE_PROJECT_DIR;
+        else process.env.CLAUDE_PROJECT_DIR = savedProject;
+        if (origRuntime === undefined) delete process.env.AGENTS_RUNTIME;
+        else process.env.AGENTS_RUNTIME = origRuntime;
+    });
+
+    const repoWithoutHooks = () => R.createHookRepo(path.join(tmp.root, 'repo'));
+
+    gitIt('a repository without the managed hooks gets a <git_hooks_missing> block that names the fix', () => {
+        process.env.CLAUDE_PROJECT_DIR = repoWithoutHooks();
+
+        const { output } = processEvent({});
+
+        expect(output).toContain('<git_hooks_missing>');
+        expect(output).toContain('[session-start] WARNING: the managed git hooks are NOT active in this checkout');
+        expect(output).toContain('pre-push: missing');
+        expect(output).toContain('nothing refuses a force, mirror or delete push');
+        expect(output).toMatch(/node \.claude\/core\/git-hooks\.js/);
+        expect(output.trimEnd().endsWith('</git_hooks_missing>')).toBe(true);
+    });
+
+    gitIt('it is a security notice, not memory: MEMORY_PROFILE=minimal still prints it', () => {
+        process.env.CLAUDE_PROJECT_DIR = repoWithoutHooks();
+        process.env.MEMORY_PROFILE = 'minimal';
+
+        const { output } = processEvent({});
+
+        expect(output).toContain('<git_hooks_missing>');
+        expect(output).not.toContain('<memory_candidates>');
+    });
+
+    gitIt('it follows the memory block instead of replacing it', () => {
+        process.env.CLAUDE_PROJECT_DIR = R.createHookRepo(tmp.root);
+        createMemory(tmp, 'patterns', 'test-pattern', { description: 'Wave plans should enumerate file ownership to enable parallel dispatch', confidence: 0.9 });
+
+        const { output } = processEvent({});
+
+        expect(output).toContain('<project_memory>');
+        expect(output.indexOf('<project_memory>')).toBeLessThan(output.indexOf('<git_hooks_missing>'));
+        expect(output.trimEnd().endsWith('</git_hooks_missing>')).toBe(true);
+    });
+
+    gitIt('a repository whose managed hooks are installed and current gets no block', () => {
+        const repo = repoWithoutHooks();
+        expect(hooksLib.installHooks(repo)).toMatchObject({ active: true });
+        process.env.CLAUDE_PROJECT_DIR = repo;
+
+        const { output } = processEvent({});
+
+        expect(output === null ? '' : output).not.toContain('git_hooks_missing');
+    });
+
+    it('a directory that is not a git work tree gets no block (nothing to guard)', () => {
+        process.env.CLAUDE_PROJECT_DIR = tmp.root;
+
+        expect(processEvent({})).toEqual({ output: null });
+    });
+
+    gitIt('the hot path does not run the scanner (probeScanner: false) and names the runtime\'s own core directory', () => {
+        process.env.CLAUDE_PROJECT_DIR = repoWithoutHooks();
+        process.env.AGENTS_RUNTIME = 'codex';
+        const spy = vi.spyOn(hooksLib, 'backstopWarning');
+
+        const { output } = processEvent({});
+
+        expect(spy).toHaveBeenCalledTimes(1);
+        expect(spy.mock.calls[0][1]).toMatchObject({ who: 'session-start', coreDir: '.codex/core', probeScanner: false });
+        expect(output).toContain('node .codex/core/git-hooks.js');
+    });
+
+    it('a probe that throws is reported in the same block, never swallowed into silence', () => {
+        process.env.CLAUDE_PROJECT_DIR = tmp.root;
+        vi.spyOn(hooksLib, 'backstopWarning').mockImplementation(() => { throw new Error('probe exploded'); });
+
+        const { output } = processEvent({});
+
+        expect(output).toContain('<git_hooks_missing>');
+        expect(output).toContain('could not check whether the managed git hooks are active (probe exploded)');
     });
 });

@@ -153,4 +153,4 @@ After creating the agent, verify the wiring:
 
 - **`command-creator`** — the analog for creating slash commands
 - **`skill-creator`** + **`skill-authoring`** — for creating the skills an agent loads
-- **`/review:personalize`** / **`/review:specialize`** — add personality + project context post-creation
+- **`/review:personalize`** (if installed) / **`/review:specialize`** — add personality + project context post-creation

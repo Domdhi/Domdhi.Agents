@@ -23,6 +23,7 @@
 const fs = require('fs');
 const path = require('path');
 const { sha1, splitFrontmatter, fmValue } = require('./memory-notes');
+const { safeWriteAtomic } = require('./fs-safe');
 
 const isNoteFile = f => f.endsWith('.md') && f !== 'MEMORY.md' && !f.startsWith('.');
 
@@ -68,11 +69,10 @@ function plan({ local, tracked, base = {}, direction = 'both', prefer = null, is
     return actions;
 }
 
+// A path under docs/.output (the tracked notes mirror, the sync base in the state folder) gets the
+// symlinked-ancestor guard; a path outside the project (the native memory dir) gets the leaf guard only.
 function writeAtomic(p, text) {
-    fs.mkdirSync(path.dirname(p), { recursive: true });
-    const tmp = `${p}.${process.pid}.tmp`;
-    fs.writeFileSync(tmp, text);
-    fs.renameSync(tmp, p);
+    safeWriteAtomic(p, text);
 }
 
 /** Add `- [name](file) — description` lines to MEMORY.md for notes it does not mention yet (native memory reads that index). */

@@ -28,8 +28,16 @@
  *
  * Usage:
  *   node .claude/core/skill-eval.js aggregate <iterationDir> --skill-name <name> [--date YYYY-MM-DD]
+ *   node .claude/core/skill-eval.js verdict <iterationDir> [--holdout <dir>] [--min-replicates 2]
  *
- * Exit codes: 0 = clean · 1 = could not run (dir missing) · 2 = bad usage ·
+ * `verdict` requires the benchmark.json that `aggregate` wrote, recomputes the benchmark from
+ * the raw grading files and decides accept / reject in code (see computeVerdict): exit 0
+ * accept · 4 reject · 3 data-quality (including a stored benchmark.json that disagrees with
+ * the raw gradings) · 1 could not run · 2 bad usage (unknown flag, extra argument); stdout is
+ * one JSON object. Flags take `--key value` or `--key=value`. It writes nothing. The JSON
+ * carries `lowPower` (true = propose, never auto-apply).
+ *
+ * Exit codes (aggregate): 0 = clean · 1 = could not run (dir missing) · 2 = bad usage ·
  *   3 = aggregated, but with data-quality warnings (a grading.json was present
  *       but unparseable, or an eval lost its baseline, or zero records loaded) —
  *       the benchmark is written, but its delta may be built on incomplete data.
@@ -440,11 +448,356 @@ function aggregateIteration(iterationDir, opts = {}) {
     return benchmark;
 }
 
+// ── Verdict: the code-enforced accept rule ──────────────────────────────────
+
+// A body may grow at most this fraction (afterWords / beforeWords - 1) unless the
+// pass-rate delta is larger than the growth itself. Surgical IMPROVE edits are
+// small; a rewrite must earn its size with a bigger measured win.
+const PROSE_GROWTH_BOUND = 0.25;
+// The benchmark rounds every mean to 4 dp, so a true-zero delta can be written
+// as +/-0.0001. |x| <= this is ZERO for every verdict rule; any |x| >= 0.001 is real.
+const DELTA_ZERO_EPSILON = 0.0001;
+const DEFAULT_MIN_REPLICATES = 2;
+// Low-power floors (Key Findings 15 and 17): the earlier +14.6 and +62.5 point wins rested on
+// 1-2 evals x 2 runs per arm, and at ~30 tasks the 95% interval on an arm difference is still
+// +/-16 to 23 points. A verdict under ANY floor is an `accept` the evolve workflow may propose
+// but never auto-apply. The flag informs; it never changes the exit code.
+const LOW_POWER_MIN_EVALS = 2;
+const LOW_POWER_MIN_RUNS_PER_ARM = 3;
+const LOW_POWER_MIN_DISCORDANT = 6;
+// A stored benchmark whose headline or per-eval delta differs from the one recomputed from the
+// raw grading files by more than this is stale or hand-edited (the stored values are 4-dp rounded).
+const RECOMPUTE_TOLERANCE = 0.0001;
+const EXIT_ACCEPT = 0;
+const EXIT_DATA_QUALITY = 3;
+const EXIT_REJECT = 4;
+
+const isNum = (x) => typeof x === 'number' && Number.isFinite(x);
+const deltaSign = (x) => (Math.abs(x) <= DELTA_ZERO_EPSILON + 1e-9 ? 0 : x > 0 ? 1 : -1);
+
+/** Default location of the workshop-only prose metrics tool (absent in adopters). */
+function defaultProseMetricsPath() {
+    return path.resolve(__dirname, '..', '..', 'tools', 'skill-prose-metrics.cjs');
+}
+
+/**
+ * Measure body growth with tools/skill-prose-metrics.cjs. Returns
+ * { beforeWords, afterWords, growth, bound } or null when the tool is absent,
+ * a body was not supplied, or the baseline body has no words (growth undefined).
+ */
+function measureProseGrowth({ proseMetricsPath, baselineBody, candidateBody }) {
+    if (typeof baselineBody !== 'string' || typeof candidateBody !== 'string') return null;
+    const toolPath = proseMetricsPath || defaultProseMetricsPath();
+    if (!fs.existsSync(toolPath)) return null;
+    let tool;
+    try {
+        tool = require(toolPath);
+    } catch {
+        return null;
+    }
+    if (!tool || typeof tool.measure !== 'function') return null;
+    const beforeWords = tool.measure(baselineBody).words;
+    const afterWords = tool.measure(candidateBody).words;
+    if (!isNum(beforeWords) || !isNum(afterWords) || beforeWords <= 0) return null;
+    return { beforeWords, afterWords, growth: round(afterWords / beforeWords - 1), bound: PROSE_GROWTH_BOUND };
+}
+
+/** True when a parsed benchmark carries what the rules read (evals[] and a numeric headline delta). */
+function isUsableBenchmark(b) {
+    return !!b && typeof b === 'object' && Array.isArray(b.evals) &&
+        !!b.summary && !!b.summary.delta && isNum(b.summary.delta.pass_rate);
+}
+
+function sumArm(benchmark, baselineConfig, arm, metric) {
+    let total = 0;
+    for (const ev of benchmark.evals) {
+        const agg = ev && ev.results && ev.results[arm === 'with_skill' ? TREATMENT : baselineConfig];
+        const s = agg && agg[metric];
+        if (s && isNum(s.mean) && isNum(s.n)) total += s.mean * s.n; // mean x n = the sum over runs that carry timing
+    }
+    return Math.round(total);
+}
+
+function dataQualityResult(warnings, minReplicates, extra = {}) {
+    return {
+        verdict: 'data-quality',
+        exitCode: EXIT_DATA_QUALITY,
+        reasons: ['data-quality'],
+        warnings,
+        minReplicates,
+        baselineConfig: BASELINE_DIRS[0],
+        delta: null,
+        holdoutDelta: null,
+        fragile: false,
+        // Not judged, so there is no power to report (null, not false: `lowPower === true` is the only gate).
+        lowPower: null,
+        lowPowerReasons: [],
+        nEvals: null,
+        minRunsPerArm: null,
+        discordantAssertions: null,
+        totals: { tokens: { with_skill: 0, baseline: 0 }, duration_ms: { with_skill: 0, baseline: 0 } },
+        failureTraces: [],
+        proseGrowth: null,
+        ...extra,
+    };
+}
+
+/**
+ * How much evidence stands behind a judged benchmark: eval count, the thinnest arm's run
+ * count across evals, and the number of assertions on which the arms differ at all.
+ * `lowPower` is true under ANY floor; `lowPowerReasons` names each one.
+ */
+function computePower(benchmark, baselineConfig) {
+    const evals = benchmark.evals.filter((ev) => ev && typeof ev === 'object');
+    let minRunsPerArm = Infinity;
+    let discordantAssertions = 0;
+    for (const ev of evals) {
+        const withRuns = ev.results && ev.results[TREATMENT] && isNum(ev.results[TREATMENT].runs) ? ev.results[TREATMENT].runs : 0;
+        const baseRuns = ev.results && ev.results[baselineConfig] && isNum(ev.results[baselineConfig].runs) ? ev.results[baselineConfig].runs : 0;
+        minRunsPerArm = Math.min(minRunsPerArm, withRuns, baseRuns);
+        for (const a of ev.assertions || []) {
+            if (a && isNum(a.with_skill) && isNum(a.baseline) && Math.abs(a.with_skill - a.baseline) > 1e-9) discordantAssertions++;
+        }
+    }
+    if (!Number.isFinite(minRunsPerArm)) minRunsPerArm = 0;
+    const nEvals = evals.length;
+    const lowPowerReasons = [];
+    if (nEvals < LOW_POWER_MIN_EVALS) lowPowerReasons.push(`evals<${LOW_POWER_MIN_EVALS}`);
+    if (minRunsPerArm < LOW_POWER_MIN_RUNS_PER_ARM) lowPowerReasons.push(`runs-per-arm<${LOW_POWER_MIN_RUNS_PER_ARM}`);
+    if (discordantAssertions < LOW_POWER_MIN_DISCORDANT) lowPowerReasons.push(`discordant-assertions<${LOW_POWER_MIN_DISCORDANT}`);
+    return { lowPower: lowPowerReasons.length > 0, lowPowerReasons, nEvals, minRunsPerArm, discordantAssertions };
+}
+
+/**
+ * Decide accept / reject / data-quality for one aggregated benchmark.
+ *
+ * Accept needs ALL of: no warnings · every eval has >= minReplicates runs in both
+ * arms · no per-eval delta below zero · a headline delta above zero · a holdout
+ * delta at or above zero when a holdout benchmark is given · no prose-growth.
+ * A failed rule adds its reason; none short-circuits. `fragile` (exactly one
+ * discriminating assertion across all evals, and it is high-variance) and the
+ * token/duration totals are reported but never change the decision.
+ *
+ * Fail-closed: a null / malformed benchmark, or any warning, is data-quality (exit 3).
+ * Never throws on a bad benchmark and never accepts one.
+ *
+ * opts: { minReplicates = 2, holdout = null (a benchmark object),
+ *         proseMetricsPath, baselineBody, candidateBody }
+ */
+function computeVerdict(benchmark, opts = {}) {
+    const o = opts || {};
+    const minReplicates = o.minReplicates === undefined ? DEFAULT_MIN_REPLICATES : o.minReplicates;
+    if (!Number.isSafeInteger(minReplicates) || minReplicates < 1) {
+        return dataQualityResult([`invalid minReplicates: ${String(minReplicates)} (must be a positive integer)`], DEFAULT_MIN_REPLICATES);
+    }
+    const holdout = o.holdout === undefined ? null : o.holdout;
+    const benchWarnings = benchmark && Array.isArray(benchmark.warnings) ? benchmark.warnings.slice() : [];
+
+    if (!isUsableBenchmark(benchmark)) {
+        return dataQualityResult(
+            [...benchWarnings, 'benchmark is missing evals[] or summary.delta.pass_rate — it cannot be judged'],
+            minReplicates,
+        );
+    }
+    const baselineConfig = (Array.isArray(benchmark.configs) && typeof benchmark.configs[1] === 'string' && benchmark.configs[1]) || BASELINE_DIRS[0];
+    const delta = benchmark.summary.delta.pass_rate;
+    if (benchmark.evals.length === 0) {
+        // No eval means no evidence: a positive headline on an empty evals[] is a hand-edited file, never a win.
+        return dataQualityResult([...benchWarnings, 'benchmark has no evals — there is nothing to judge'], minReplicates, { baselineConfig, delta });
+    }
+
+    if (holdout !== null && (!isUsableBenchmark(holdout) || holdout.evals.length === 0)) {
+        const hw = holdout && Array.isArray(holdout.warnings) ? holdout.warnings : [];
+        return dataQualityResult(
+            [...benchWarnings, ...hw, 'holdout benchmark is missing evals[] (or has none) or summary.delta.pass_rate — it cannot be judged'],
+            minReplicates,
+            { baselineConfig, delta },
+        );
+    }
+    const holdoutWarnings = holdout && Array.isArray(holdout.warnings) ? holdout.warnings.slice() : [];
+    const warnings = [...benchWarnings, ...holdoutWarnings];
+    const holdoutDelta = holdout ? holdout.summary.delta.pass_rate : null;
+
+    // Per-eval view: replicate counts, delta sign, and a structural check of each eval.
+    let replicatesOk = true;
+    let noNegativeEval = true;
+    let malformedEval = false;
+    for (const ev of benchmark.evals) {
+        if (!ev || typeof ev !== 'object') { malformedEval = true; continue; }
+        const withRuns = ev.results && ev.results[TREATMENT] ? ev.results[TREATMENT].runs : 0;
+        const baseRuns = ev.results && ev.results[baselineConfig] ? ev.results[baselineConfig].runs : 0;
+        if (!(withRuns >= minReplicates) || !(baseRuns >= minReplicates)) replicatesOk = false;
+        const d = ev.delta && ev.delta.pass_rate;
+        if (isNum(d)) {
+            if (deltaSign(d) < 0) noNegativeEval = false;
+        } else if (withRuns > 0 && baseRuns > 0) {
+            malformedEval = true; // both arms ran yet no delta was computed: not a benchmark this harness wrote
+        }
+    }
+    if (malformedEval) warnings.push('an eval entry is malformed (not an object, or has runs in both arms but no delta) — it cannot be judged');
+
+    const totals = {
+        tokens: { with_skill: sumArm(benchmark, baselineConfig, 'with_skill', 'tokens'), baseline: sumArm(benchmark, baselineConfig, 'baseline', 'tokens') },
+        duration_ms: { with_skill: sumArm(benchmark, baselineConfig, 'with_skill', 'duration_ms'), baseline: sumArm(benchmark, baselineConfig, 'baseline', 'duration_ms') },
+    };
+    const discriminating = [];
+    for (const ev of benchmark.evals) {
+        for (const a of (ev && ev.assertions) || []) if (a && a.discriminating === true) discriminating.push(a);
+    }
+    const fragile = discriminating.length === 1 && discriminating[0].high_variance === true;
+
+    if (warnings.length > 0 || malformedEval) {
+        return dataQualityResult(warnings, minReplicates, { baselineConfig, delta, holdoutDelta, totals, fragile });
+    }
+
+    const proseGrowth = measureProseGrowth(o);
+    const reasons = [];
+    if (!replicatesOk) reasons.push('insufficient-replicates');
+    if (!noNegativeEval) reasons.push('negative-eval-delta');
+    if (deltaSign(delta) <= 0) reasons.push('no-improvement');
+    if (holdout && deltaSign(holdoutDelta) < 0) reasons.push('holdout-regression');
+    if (proseGrowth && proseGrowth.growth > PROSE_GROWTH_BOUND && delta <= proseGrowth.growth) reasons.push('prose-growth');
+
+    const accept = reasons.length === 0;
+    return {
+        verdict: accept ? 'accept' : 'reject',
+        exitCode: accept ? EXIT_ACCEPT : EXIT_REJECT,
+        reasons,
+        warnings,
+        minReplicates,
+        baselineConfig,
+        delta,
+        holdoutDelta,
+        fragile,
+        ...computePower(benchmark, baselineConfig),
+        totals,
+        // Lazy require: skill-evolution requires this module (parseArgs) from its own main.
+        failureTraces: accept ? [] : require('./skill-evolution').extractFailureTraces(benchmark),
+        proseGrowth,
+    };
+}
+
+/** Read `<dir>/benchmark.json`; throws an Error naming the problem when it cannot be read. */
+function readBenchmarkFile(dir, label) {
+    if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) {
+        throw new Error(`${label} dir not found: ${dir}`);
+    }
+    const file = path.join(dir, 'benchmark.json');
+    if (!fs.existsSync(file)) throw new Error(`${label} benchmark.json not found: ${file} (run \`aggregate\` first)`);
+    try {
+        return JSON.parse(fs.readFileSync(file, 'utf8'));
+    } catch (err) {
+        throw new Error(`${label} benchmark.json is unparseable: ${file} (${err.message})`);
+    }
+}
+
+function readBodyIfPresent(file) {
+    try {
+        return fs.statSync(file).isFile() ? fs.readFileSync(file, 'utf8') : null;
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Compare a stored benchmark.json with the benchmark recomputed from the raw grading files.
+ * Returns the human-readable disagreements (empty when they agree): the headline delta, the
+ * eval count, each eval's delta and per-arm run counts, and the warning list. The stored file
+ * is a cache of `aggregate`; the raw gradings are the evidence.
+ */
+function benchmarkDisagreements(stored, fresh, label) {
+    const out = [];
+    const near = (a, b) => isNum(a) && isNum(b) && Math.abs(a - b) <= RECOMPUTE_TOLERANCE + 1e-9;
+    const sd = stored.summary.delta.pass_rate;
+    const fd = fresh.summary.delta.pass_rate;
+    if (!near(sd, fd)) out.push(`${label} headline delta is ${sd} but the raw gradings give ${fd}`);
+    if (stored.evals.length !== fresh.evals.length) {
+        out.push(`${label} lists ${stored.evals.length} eval(s) but the raw gradings hold ${fresh.evals.length}`);
+    } else {
+        const baseline = (b) => (Array.isArray(b.configs) && typeof b.configs[1] === 'string' && b.configs[1]) || BASELINE_DIRS[0];
+        const sb = baseline(stored);
+        const fb = baseline(fresh);
+        if (sb !== fb) out.push(`${label} baseline is ${sb} but the raw gradings use ${fb}`);
+        const runsOf = (ev, cfg) => (ev && ev.results && ev.results[cfg] ? ev.results[cfg].runs : 0);
+        fresh.evals.forEach((fev, i) => {
+            const sev = stored.evals[i];
+            const name = (fev && fev.eval_name) || `#${i + 1}`;
+            const sdel = sev && sev.delta ? sev.delta.pass_rate : null;
+            const fdel = fev && fev.delta ? fev.delta.pass_rate : null;
+            if (!near(sdel, fdel) && !(sdel === null && fdel === null)) out.push(`${label} eval ${name} delta is ${sdel} but the raw gradings give ${fdel}`);
+            if (runsOf(sev, TREATMENT) !== runsOf(fev, TREATMENT) || runsOf(sev, sb) !== runsOf(fev, fb)) {
+                out.push(`${label} eval ${name} run counts differ from the raw gradings`);
+            }
+        });
+    }
+    const sw = Array.isArray(stored.warnings) ? stored.warnings : [];
+    const fw = Array.isArray(fresh.warnings) ? fresh.warnings : [];
+    if (JSON.stringify(sw) !== JSON.stringify(fw)) out.push(`${label} warning list differs from a fresh aggregation`);
+    return out;
+}
+
+/**
+ * Load `<dir>/benchmark.json` and re-derive the benchmark from the raw gradings
+ * (`aggregateIteration`, pure). Returns { benchmark, mismatch } where `benchmark` is what
+ * the verdict decides on: the recomputed object when the stored file is usable and agrees,
+ * otherwise the stored object (an unusable file is data-quality in computeVerdict anyway).
+ * `mismatch` lists the disagreements; non-empty means the stored file is stale or edited.
+ */
+function loadJudgedBenchmark(dir, label) {
+    const stored = readBenchmarkFile(dir, label);
+    if (!isUsableBenchmark(stored)) return { benchmark: stored, mismatch: [] };
+    const fresh = aggregateIteration(dir, { skillName: stored.skill_name, date: stored.generated, iteration: stored.iteration });
+    return { benchmark: fresh, mismatch: benchmarkDisagreements(stored, fresh, label) };
+}
+
+/**
+ * Verdict for an iteration directory (never writes). The stored `benchmark.json` must exist
+ * (exit 1 otherwise) but is NOT trusted: the decision is made on the benchmark recomputed
+ * from the raw grading files, and any disagreement between the two is data-quality (exit 3)
+ * so a grading edited after `aggregate` can never ride a stale headline into an accept.
+ * When the eval workspace layout is present - `<workspace>/skill-snapshot/SKILL.md` and
+ * `<workspace>/candidate/SKILL.md` beside `<workspace>/iteration-N` - the two bodies
+ * feed the prose-growth measure. Throws (-> CLI exit 1) when a benchmark.json cannot be read.
+ *
+ * opts: { minReplicates, holdoutDir, proseMetricsPath }
+ */
+function verdictIteration(iterationDir, opts = {}) {
+    const o = opts || {};
+    const main = loadJudgedBenchmark(iterationDir, 'iteration');
+    const hold = o.holdoutDir ? loadJudgedBenchmark(o.holdoutDir, 'holdout') : null;
+    const workspace = path.dirname(path.resolve(iterationDir));
+    const baselineBody = readBodyIfPresent(path.join(workspace, 'skill-snapshot', 'SKILL.md'));
+    // `candidate/` is the documented name; earlier workspaces on disk used `skill-candidate/`.
+    const candidateBody =
+        readBodyIfPresent(path.join(workspace, 'candidate', 'SKILL.md')) ??
+        readBodyIfPresent(path.join(workspace, 'skill-candidate', 'SKILL.md'));
+    const verdictOpts = { holdout: hold ? hold.benchmark : null, baselineBody, candidateBody };
+    if (o.minReplicates !== undefined) verdictOpts.minReplicates = o.minReplicates;
+    if (o.proseMetricsPath) verdictOpts.proseMetricsPath = o.proseMetricsPath;
+    const mismatch = [...main.mismatch, ...(hold ? hold.mismatch : [])];
+    if (mismatch.length > 0) {
+        const minReplicates = o.minReplicates === undefined ? DEFAULT_MIN_REPLICATES : o.minReplicates;
+        const b = main.benchmark;
+        return dataQualityResult(
+            mismatch.map((d) => `stale or edited benchmark.json: ${d} (re-run \`aggregate\`, then \`verdict\`)`),
+            minReplicates,
+            { delta: isUsableBenchmark(b) ? b.summary.delta.pass_rate : null },
+        );
+    }
+    return computeVerdict(main.benchmark, verdictOpts);
+}
+
+/** `--key value` and `--key=value`; a flag with no value is `true`; everything else is positional. */
 function parseArgs(argv) {
     const out = { _: [] };
     for (let i = 0; i < argv.length; i++) {
         const a = argv[i];
         if (a.startsWith('--')) {
+            const eq = a.indexOf('=');
+            if (eq !== -1) {
+                out[a.slice(2, eq)] = a.slice(eq + 1);
+                continue;
+            }
             const key = a.slice(2);
             const next = argv[i + 1];
             if (next && !next.startsWith('--')) {
@@ -456,11 +809,67 @@ function parseArgs(argv) {
     return out;
 }
 
+const VERDICT_FLAGS = ['holdout', 'min-replicates'];
+
+const USAGE = [
+    'Usage: node .claude/core/skill-eval.js aggregate <iterationDir> --skill-name <name> [--date YYYY-MM-DD]',
+    '       node .claude/core/skill-eval.js verdict <iterationDir> [--holdout <dir>] [--min-replicates 2]',
+].join('\n');
+
+/**
+ * `verdict` CLI: exit 0 accept · 4 reject · 3 data-quality · 1 could not run
+ * (iteration or holdout dir / benchmark.json missing or unparseable) · 2 bad usage.
+ * stdout is exactly one JSON object for exit 0, 3 and 4; human text goes to stderr.
+ */
+function verdictMain(args) {
+    const usageError = (msg) => {
+        console.error(`[SKILL-EVAL] ${msg}`);
+        console.error(USAGE);
+        process.exit(2);
+    };
+    // An accept judge must not report a stronger guarantee than it checked: a misspelled
+    // `--holdout-dir` or an extra positional would silently switch a rule off, so refuse both.
+    const unknown = Object.keys(args).filter((k) => k !== '_' && !VERDICT_FLAGS.includes(k));
+    if (unknown.length > 0) usageError(`unknown verdict flag(s): ${unknown.map((k) => `--${k}`).join(', ')}`);
+    if (args._.length > 2) usageError(`unexpected extra argument(s): ${args._.slice(2).join(' ')}`);
+    const iterationDir = args._[1];
+    if (!iterationDir) usageError('verdict needs an <iterationDir>');
+    let minReplicates = DEFAULT_MIN_REPLICATES;
+    if (args['min-replicates'] !== undefined) {
+        const v = args['min-replicates'];
+        if (typeof v !== 'string' || !/^[1-9]\d*$/.test(v) || !Number.isSafeInteger(Number(v))) {
+            usageError(`--min-replicates must be a positive integer (got ${v === true ? 'no value' : JSON.stringify(v)})`);
+        }
+        minReplicates = Number(v);
+    }
+    let holdoutDir;
+    if (args.holdout !== undefined) {
+        if (typeof args.holdout !== 'string' || args.holdout === '') usageError('--holdout needs a directory value');
+        holdoutDir = args.holdout;
+    }
+    let result;
+    try {
+        result = verdictIteration(iterationDir, { minReplicates, holdoutDir });
+    } catch (err) {
+        console.error(`[SKILL-EVAL] ${err.message}`);
+        process.exit(1);
+    }
+    for (const w of result.warnings) console.error(`[SKILL-EVAL] WARN: ${w}`);
+    if (result.lowPower === true) {
+        console.error(`[SKILL-EVAL] LOW POWER (${result.lowPowerReasons.join(', ')}): ${result.nEvals} eval(s), ${result.minRunsPerArm} run(s) per arm, ${result.discordantAssertions} discordant assertion(s) - propose, never auto-apply.`);
+    }
+    const why = result.reasons.length ? ` (${result.reasons.join(', ')})` : '';
+    console.error(`[SKILL-EVAL] verdict ${result.verdict}${why}: delta ${signedPct(result.delta)}, exit ${result.exitCode}`);
+    console.log(JSON.stringify(result, null, 2));
+    process.exit(result.exitCode);
+}
+
 function main(argv) {
     const args = parseArgs(argv);
     const cmd = args._[0];
+    if (cmd === 'verdict') return verdictMain(args);
     if (cmd !== 'aggregate') {
-        console.error('Usage: node .claude/core/skill-eval.js aggregate <iterationDir> --skill-name <name> [--date YYYY-MM-DD]');
+        console.error(USAGE);
         process.exit(2);
     }
     const iterationDir = args._[1];
@@ -520,6 +929,15 @@ module.exports = {
     loadConfigRuns,
     loadIteration,
     aggregateIteration,
+    PROSE_GROWTH_BOUND,
+    LOW_POWER_MIN_EVALS,
+    LOW_POWER_MIN_RUNS_PER_ARM,
+    LOW_POWER_MIN_DISCORDANT,
+    DELTA_ZERO_EPSILON,
+    deltaSign,
+    computePower,
+    computeVerdict,
+    verdictIteration,
     parseArgs,
     main,
 };

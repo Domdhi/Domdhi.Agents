@@ -21,6 +21,7 @@ const fs = require('fs');
 const path = require('path');
 const DailyLog = require('../core/daily-log');
 const { resolveProjectRoot, resolveWorktreeRoot } = require('../core/_lib/project-root');
+const { safeWrite, safeMkdirp, reportRefusal } = require('../core/_lib/fs-safe');
 
 // Anchor writes to the repo root — not the caller's CWD. Without this, a prior
 // `cd src && ...` in the same shell session leaves the hook's CWD at `src/`,
@@ -196,20 +197,26 @@ function processEvent(parsedJson) {
     const gitContext = collectGitContext(log);
     const snapshot = buildSnapshot(sourceRoot, log, trigger, gitContext);
 
+    // The state folder is whatever the working tree makes it (L1H, review C1 part 2): a symlinked
+    // ancestor or snapshot path is refused, not written through. A refused snapshot is skipped with one
+    // stderr line and the daily-log capture below still runs (it has its own guard).
     const sessionsDir = path.join(projectRoot, 'docs', '.output', '.state', 'sessions', dateStr);
-    fs.mkdirSync(sessionsDir, { recursive: true });
-
     const snapshotPath = path.join(sessionsDir, `${timeStr}-pre-compaction.md`);
-    fs.writeFileSync(snapshotPath, snapshot, 'utf8');
-
-    process.stderr.write(`\n  Pre-compaction snapshot saved: ${path.relative(projectRoot, snapshotPath)}\n\n`);
+    try {
+        safeMkdirp(sessionsDir, projectRoot);
+        safeWrite(snapshotPath, snapshot, 'utf8', projectRoot);
+        process.stderr.write(`\n  Pre-compaction snapshot saved: ${path.relative(projectRoot, snapshotPath)}\n\n`);
+    } catch (error) {
+        if (!reportRefusal(error)) throw error;
+    }
 
     // Write daily log entry via shared utility
     try {
         const { logPath } = log.capture('Pre-Compaction', gitContext);
         process.stderr.write(`  Daily log entry appended: ${path.relative(projectRoot, logPath)}\n\n`);
-    } catch {
+    } catch (error) {
         // Graceful degradation — daily log failure does not affect snapshot or exit code
+        reportRefusal(error);
     }
 
     // Memory extraction is no longer triggered from the compaction path.

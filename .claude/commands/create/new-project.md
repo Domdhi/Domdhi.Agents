@@ -7,13 +7,13 @@ argument-hint: "[project name] [--yolo]"
 
 # New Project
 
-Master orchestrator that walks a fresh clone from zero to implementation-ready. Scaffolds the `docs/` tree, interviews the user, and chains the planning pipeline (`/create:project-brief` → `/create:project-requirements` → optional `/create:project-design` → `/create:project-architecture` → `/create:project-epics`), specializes the agents for the new stack, and writes a project-context quick-reference.
+Orchestrator that walks a fresh clone from zero to implementation-ready. It scaffolds the `docs/` tree, interviews the user, and chains the planning pipeline (`/create:project-brief` → `/create:project-requirements` → optional `/create:project-design` → `/create:project-architecture` → `/create:project-epics`), specializes the agents for the new stack, and writes a project-context quick-reference.
 
-Intended as the FIRST command an adopter runs after installing Domdhi.Agents . Safe to re-run on a partially-initialized project — the scaffold step is idempotent (skips existing files) and every sub-command has its own hard gate that prevents overwriting filled docs.
+It is the first command an adopter runs after installing Domdhi.Agents. Re-running on a partially-initialized project is safe: the scaffold step skips existing files and every sub-command has its own hard gate against overwriting filled docs.
 
 ## Telemetry (run first)
 
-This command is user-typed, so it does not fire `PostToolUse:Skill` — without this it leaves no `command_invocation` row and fleet analytics under-count human-driven runs. Self-log the invocation before anything else (best-effort — if it fails, continue regardless):
+This command is user-typed, so it does not fire `PostToolUse:Skill`; without this self-log, fleet analytics under-count human-driven runs. Run it before anything else (best-effort; continue if it fails):
 
 ```bash
 node .claude/core/telemetry-log.js create:new-project
@@ -26,7 +26,7 @@ INPUT: $ARGUMENTS
 ### Project name resolution
 - If `$ARGUMENTS` includes a project name → use it
 - Otherwise → fall back to the basename of the current working directory, confirm with the user in Step 3 Round 1
-- The project name is used for the report, the `product/context.md` title, and nothing else — sub-commands derive their own slugs
+- The project name is used only for the report and the `product/context.md` title; sub-commands derive their own slugs
 
 ### Flag detection
 If `$ARGUMENTS` contains `--yolo`:
@@ -43,17 +43,17 @@ For a new application, generate the project with the chosen stack’s existing s
 
 ### 1. Scaffold Docs Structure
 
-Run `node .claude/core/scaffold.js` to copy templates from `.claude/templates/` into `docs/`. This creates the directory structure and blank template files marked with `<!-- @@template -->` as their first line. Existing files are skipped — safe to re-run on partial state.
+Run `node .claude/core/scaffold.js` to copy templates from `.claude/templates/` into `docs/`. This creates the directory structure and blank template files marked with `<!-- @@template -->` as their first line. Existing files are skipped.
 
 ### 2. Fresh-Project Check
 
-Detect whether any real (filled, non-template) planning doc already exists. A template-marked doc is "scaffolded but unfilled" and doesn't count; a doc without the marker is real content.
+Detect whether any real (filled, non-template) planning doc exists. A template-marked doc is scaffolded but unfilled and doesn't count; a doc without the marker is real content.
 
 ```bash
 grep -L "@@template" docs/product/brief.md docs/product/requirements.md docs/architecture/overview.md docs/work/backlog.md 2>/dev/null
 ```
 
-**If the command returns any filled file** — the project is NOT fresh. Unless YOLO_MODE is active, exit with:
+**If the command returns any filled file**, the project is not fresh. Unless YOLO_MODE is active, exit with:
 
 ```
 Existing planning docs detected:
@@ -68,14 +68,14 @@ This command is for FRESH projects. To continue an existing one, use the individ
 Or re-run with --yolo to steamroll (regenerates existing docs).
 ```
 
-**If YOLO_MODE is active and filled docs exist** — warn and proceed, re-invoking the pipeline on existing state:
+**If YOLO_MODE is active and filled docs exist**, warn and proceed, re-invoking the pipeline on existing state:
 
 ```
 WARNING: Filled planning docs detected. Proceeding with --yolo — existing docs will be regenerated.
   {list of files that will be overwritten}
 ```
 
-**If all planning docs are template-marked or missing** — proceed to Step 3.
+**If all planning docs are template-marked or missing**, proceed to Step 3.
 
 ### 3. Welcome & Quick Interview
 
@@ -95,9 +95,9 @@ Ask three short rounds. Each question is marked **free-form** (plain conversatio
 - *(free-form)* "Any hard constraints? (deadline, budget, compliance, existing infrastructure)"
 - *(closed-choice — `AskUserQuestion`)* "What's the deployment target?" with options: Cloud / On-prem / SaaS / Hybrid.
 
-#### 3a. Persist interview answers (BEFORE any sub-command runs)
+#### 3a. Persist interview answers (before any sub-command runs)
 
-Write the answers to `docs/.output/.state/work/{YYYY-MM-DD}/new-project-interview.md`. Session death between here and Step 8 otherwise loses the entire interview and forces a re-ask. Format:
+Write the answers to `docs/.output/.state/work/{YYYY-MM-DD}/new-project-interview.md`, so a session death before Step 8 doesn't force a re-interview. Format:
 
 ```markdown
 # New Project Interview — {project name} ({YYYY-MM-DD})
@@ -123,7 +123,7 @@ Write the answers to `docs/.output/.state/work/{YYYY-MM-DD}/new-project-intervie
 
 ### 4. Phase Routing
 
-> **YOLO pass-through**: If YOLO_MODE is active, append `--yolo` to every sub-command invocation below. This causes each command's hard gates to downgrade to warnings.
+> **YOLO pass-through**: If YOLO_MODE is active, append `--yolo` to every sub-command invocation below, which downgrades each command's hard gates to warnings.
 
 Classify the project from the interview answers:
 
@@ -144,7 +144,7 @@ Classify the project from the interview answers:
 
 Update the `## Derived routing` section of `new-project-interview.md` with the chosen tier and path before proceeding.
 
-**Runtime and verification.** The project's build and test gate (`gate.js`, configured by `/review:specialize`) runs the application's own commands and never the Domdhi.Agents toolkit suite, including after agent-file edits. In Codex, run each `.claude/core/` command in this workflow as `.codex/core/` with the same arguments, per `.agents/adapters/codex/execution.md`, and invoke each sub-command through its native skill. Discovery alone (an installed skill, a listed command or a loaded file) never proves a sub-command ran: count a phase complete only when its required documents pass the real-document check (no `<!-- @@template -->` first line) and its selected deliverables pass that sub-command's validation. For design, this includes the spec's `## Design Artifacts` record and actual inspection of selected artifacts, including native-stack paths outside `docs/design/`. Report the Step 10 commit hash.
+**Runtime and verification.** The project's build and test gate (`gate.js`, configured by `/review:specialize`) runs the application's own commands and never the Domdhi.Agents toolkit suite, including after agent-file edits. In Codex, run each `.claude/core/` command in this workflow as `.codex/core/` with the same arguments, per `.agents/adapters/codex/execution.md`, and invoke each sub-command through its native skill. Discovery alone (an installed skill, a listed command or a loaded file) does not prove a sub-command ran: count a phase complete only when its required documents pass the real-document check (no `<!-- @@template -->` first line) and its selected deliverables pass that sub-command's validation. For design, this includes the spec's `## Design Artifacts` record and actual inspection of selected artifacts, including native-stack paths outside `docs/design/`. Report the Step 10 commit hash.
 
 ### 5. Phase 1 — Analysis (complex projects only)
 
@@ -177,8 +177,8 @@ Update the `## Derived routing` section of `new-project-interview.md` with the c
    - Uses PRD + Architecture as input
    - Show story count and phase breakdown
 3. Run `/create:project-todo`
-   - Uses `docs/work/backlog.md` as input — generates `docs/TODO_{ProjectName}.md`, the master implementation index (a generated projection of backlog + git state, per the planning-doc lifecycle ADR `2026-06-13-adr-planning-doc-lifecycle.md` — never hand-curated as an independent source)
-   - Respects its own hard gate (a real `backlog.md`) and commits its own output (its Post-Command Commit step) — the Step 10 wrap-up commit does NOT re-stage `TODO_{ProjectName}.md`
+   - Uses `docs/work/backlog.md` as input — generates `docs/TODO_{ProjectName}.md`, the master implementation index (a generated projection of backlog + git state, per the planning-doc lifecycle ADR `2026-06-13-adr-planning-doc-lifecycle.md`, not hand-curated)
+   - Respects its own hard gate (a real `backlog.md`) and commits its own output (its Post-Command Commit step) — the Step 10 wrap-up commit does not re-stage `TODO_{ProjectName}.md`
    - Show the phase count and epic-level status table
 4. Run `/review:check-readiness`
    - Validate all docs are complete and consistent
@@ -200,26 +200,26 @@ After readiness passes, specialize the generic agents and memory for this projec
 
 ### 8b. Generate Project Root CLAUDE.md
 
-This runs **after** `/review:specialize` deliberately — the stack and the project's real build/test commands are now known, so the generated CLAUDE.md "Build & Test" section can be filled with actual commands (the toolkit's own CLAUDE.md says specialize should describe the project's real build/test commands; this is the step that makes that true for greenfield projects). Mirror `/onboard` Step 7's proven Case 0 / Case A / Case B logic.
+This runs after `/review:specialize` so the stack and the project's real build/test commands are known and the "Build & Test" section can carry actual commands. Mirror the brownfield onboarding Case 0 / Case A / Case B logic below.
 
 **Source material:** ground the CLAUDE.md in whatever planning docs are present for this tier — `docs/product/brief.md` (medium/complex tiers), `docs/product/requirements.md`, `docs/architecture/overview.md` — plus the specialized stack and the real build/test commands resolved by `/review:specialize` (also recorded in `gate.js` detection). Simple-tier projects may lack a brief; ground in whatever exists.
 
 Inspect whether a `CLAUDE.md` already exists at the project root.
 
-**Case 0 — CLAUDE.md exists but is the install stub:** the template installer may leave a minimal placeholder whose entire content points back here (it contains *"Run `/onboard`"* / *"to complete setup"*; a legacy stub also says *"This project uses the Domdhi Agents template"*). This is NOT a real adopter file to preserve. If the existing CLAUDE.md matches the install stub (short, and contains that "Run `/onboard`" / "to complete setup" marker), treat it as **Case A** — generate a fresh project CLAUDE.md and overwrite the stub (no diff-confirm needed; there is no user content to protect).
+**Case 0 — CLAUDE.md exists but is the install stub:** the template installer may leave a minimal placeholder whose entire content points back here (it contains *"Run `/onboard`"* / *"to complete setup"* — literal stub text, matched if installed or not; a legacy stub also says *"This project uses the Domdhi Agents template"*). It is not a real adopter file to preserve. If the existing CLAUDE.md matches the install stub (short, and contains that "Run `/onboard`" / "to complete setup" marker), treat it as **Case A** — generate a fresh project CLAUDE.md and overwrite the stub (no diff-confirm needed; there is no user content to protect).
 
 **Case A — No CLAUDE.md exists (or it is the install stub per Case 0):**
-Generate a new, **lean, project-specific** `CLAUDE.md` (NOT a copy of the Domdhi.Agents workshop instructions) grounded in the planning docs and the specialized stack:
+Generate a new, lean, project-specific `CLAUDE.md` grounded in the planning docs and the specialized stack:
 - Short project description (1-2 sentences, from `product/brief.md` or the interview elevator pitch)
 - Tech stack (from `architecture/overview.md` / `/review:specialize`)
 - Build and test commands (the real commands resolved during specialize — what `gate.js` auto-detects for this stack)
 - Key file paths and entry points (from the architecture doc's structure section, if present)
 - Gate configuration note (point at `gate.js` or `gate.config.json`)
 
-Do NOT copy the Domdhi.Agents workshop CLAUDE.md — generate a lean project-specific one that captures what was learned about *this* project.
+Do not copy the Domdhi.Agents workshop CLAUDE.md; capture what was learned about this project.
 
 **Case B — A real CLAUDE.md exists (not the install stub):**
-Read the existing CLAUDE.md, then propose an **additive merge** — never clobber.
+Read the existing CLAUDE.md, then propose an additive merge that never clobbers it.
 
 Diff what would be added:
 - Build/test commands if absent
@@ -241,7 +241,7 @@ Apply this merge? (y/n)
 
 Wait for confirmation before writing. If the user says no, skip CLAUDE.md modification and note it in the report.
 
-This step is **self-contained** — it does NOT call the built-in `/init` command. The generated/merged `CLAUDE.md` is staged and committed by the wrap-up commit in Step 10 (not its own commit), consistent with how Steps 9's `product/context.md` is handled.
+This step is self-contained and does not call the built-in `/init` command. The generated or merged `CLAUDE.md` is committed by the Step 10 wrap-up commit, like Step 9's `product/context.md`.
 
 ### 9. Generate Project Context
 
@@ -269,13 +269,13 @@ Write `docs/product/context.md`. Populate design links from the validated spec's
 ## Implementation Commands
 - `/create:module` — plan and document a new feature
 - `/create:component` — add a new agent, command, or skill
-- `/review:personalize` — give the specialized agents names and soul-level identity
+- `/review:personalize` — give the specialized agents names and soul-level identity (if installed)
 - `/review:code-review` — review code changes
-- `/review:qa` — generate tests
-- `/retro` — retrospective after epic completion
-- `/review:changelog` — generate release notes
+- `/review:qa` — generate tests (if installed)
+- `/retro` — retrospective after epic completion (if installed)
+- `/review:changelog` — generate release notes (if installed)
 - `/review:check-sync` — detect doc drift
-- `/review:update-docs` — fix doc drift
+- `/review:update-docs` — fix doc drift (if installed)
 - `/review:optimize-agents` — re-align agents with codebase
 - `/prime` — reload context in new session
 - `/do` — execute a single story
@@ -290,16 +290,14 @@ Write `docs/product/context.md`. Populate design links from the validated spec's
 
 ### 10. Wrap-up Commit
 
-**What's already committed by now:** each sub-command in Steps 5–8 commits its own work per the Post-Command Commit Convention. By the time this step runs, most planning docs are already in git history.
-
-**What this step commits:** only the files NOT yet staged by any sub-command. In practice that's:
+Each sub-command in Steps 5–8 commits its own work per the Post-Command Commit Convention, so most planning docs are already in git history. This step commits only files no sub-command staged. In practice:
 - `docs/product/context.md` (written in Step 9)
 - `CLAUDE.md` (written or additively merged in Step 8b — only if it was created/modified, i.e. not when Case B was declined)
 - Any scaffolded template files that were left empty and committed as-scaffolded (edge case — usually not applicable)
 
-Stage specifically those files; never use `git add .` (might pull in unrelated changes in the adopter's working tree). The interview file under `docs/.output/.state/` is ignored scratch and is not staged (`git add` refuses it); the routing tier and answers that later steps rely on are recorded in `docs/product/context.md` (Step 9) and the planning documents.
+Stage those files specifically; never use `git add .`, which can pull in unrelated changes from the adopter's working tree. The interview file under `docs/.output/.state/` is ignored scratch and is not staged (`git add` refuses it); the routing tier and answers that later steps rely on are recorded in `docs/product/context.md` (Step 9) and the planning documents.
 
-Write the commit message to `docs/.output/.state/.commit-msg` (Write tool — no shell escaping):
+Write the commit message to `docs/.output/.state/.commit-msg`:
 
 ```
 feat: /create:new-project — {project name} initialized
@@ -315,13 +313,13 @@ node .claude/core/commit.js
 
 ### 10b. Capture Feedback Report
 
-Chain `/review:feedback` as the final action so every newly-initialized project leaves a baseline template-performance report (`docs/.output/findings/reviews/feedback-{date}.md` + `.json`). It rolls up the pipeline's telemetry (sub-command invocations, gate runs, hooks, memories) plus a short agent self-review, and self-commits.
+If installed, chain `/review:feedback` as the final action (skip this step when it is not installed) so every new project leaves a baseline template-performance report (`docs/.output/findings/reviews/feedback-{date}.md` + `.json`). It rolls up the pipeline's telemetry plus a short agent self-review, and self-commits.
 
 ```
-/review:feedback
+/review:feedback   (if installed)
 ```
 
-Answer the self-review honestly from this run (friction, what broke, one change you'd make). Best-effort: if it fails, note it and continue to the report.
+Answer the self-review from this run (friction, what broke, one change you'd make). Best-effort: if it fails, note it and continue to the report.
 
 ### 11. Final Report
 
@@ -357,7 +355,7 @@ Answer the self-review honestly from this run (friction, what broke, one change 
 
 Recommended next commands:
 
-1. **`/review:personalize`** — give your specialized agents names, personas, and soul-level identity. Makes the team memorable and easier to reference by name. See `docs/reference/agents/guides/personalize.md` for the walkthrough.
+1. **`/review:personalize`** (if installed) — give your specialized agents names, personas, and soul-level identity. Makes the team memorable and easier to reference by name. See `docs/reference/agents/guides/personalize.md` for the walkthrough.
 2. **`/do {first-story-id}`** — implement the first story from the backlog.
 3. **`/run-todo docs/work/todo/TODO_{project}.md`** — if the per-project TODO was generated, execute the whole checklist end-to-end.
 4. **`/prime`** — in a new session, reload context from the handoff.
@@ -365,7 +363,7 @@ Recommended next commands:
 
 ## Anti-Patterns
 
-- **DO NOT run this on a project with filled planning docs** unless `--yolo` is explicit — the fresh-project check exists for a reason
-- **DO NOT skip the interview persistence step** — session death without the scratch file forces the user to re-interview, which is the single most frustrating way to lose work
-- **DO NOT auto-invoke `/review:personalize`** — personalize is opinionated work and should be an adopter choice, not a default
-- **DO NOT use `git add .` in the wrap-up commit** — always stage specific files; the adopter may have unrelated changes in their working tree
+- Do not run this on a project with filled planning docs unless `--yolo` is explicit; the fresh-project check exists for a reason
+- Do not skip the interview persistence step; losing the scratch file forces the user to re-interview
+- Do not auto-invoke `/review:personalize` (if installed); it is opinionated work and an adopter choice
+- Do not use `git add .` in the wrap-up commit; stage specific files, since the adopter may have unrelated changes

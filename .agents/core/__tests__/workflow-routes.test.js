@@ -256,9 +256,9 @@ describe('native render/update integration', () => {
 });
 
 describe('actual pilot and workflow inventory (AC3)', () => {
-  it('checks_the_real_pilot_and_all_five_routes', () => {
+  it('checks_the_real_pilot_and_all_nine_routes', () => {
     const text = fs.readFileSync(path.join(ROOT, SOURCE), 'utf8');
-    expect(routes().parseWorkflowRoutes(text)).toHaveLength(6);
+    expect(routes().parseWorkflowRoutes(text)).toHaveLength(9);
     expect(() => routes().checkWorkflowRoutes(text)).not.toThrow();
     expect(routes().extractDispatchRoles(text)).toEqual(['code-reviewer', 'doc-writer', 'general-purpose', 'security-auditor']);
   });

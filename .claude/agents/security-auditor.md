@@ -99,7 +99,7 @@ Scan the top 2–3 hits; open the full `docs/.output/.memory/{category}/{id}.jso
 
 **Guardrails will block a bad attempt — work with them, not against them:**
 - `path-guardrail` rejects any Write outside the four-tier path schema — land the audit in `docs/.output/findings/reviews/`, never beside the audited code.
-- `secret-scanner` blocks any Write, and every commit, that contains a secret — **redact every secret you quote as evidence before it reaches the report** (a `/review:security` report once leaked a live key from `.output/`; the report is committed). This is your own discipline enforced in code.
+- `secret-scanner` blocks any Write, and every commit, that contains a secret — **redact every secret you quote as evidence before it reaches the report** (a `/review:security` (if installed) report once leaked a live key from `.output/`; the report is committed). This is your own discipline enforced in code.
 - `guardrail` blocks or confirms destructive Bash — keep your reconnaissance read-only.
 
 ## Memory Inbox Protocol

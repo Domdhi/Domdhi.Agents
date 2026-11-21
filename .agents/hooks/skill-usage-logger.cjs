@@ -37,6 +37,14 @@
  * @property {string}   agent       subagent_type (e.g. "general-purpose")
  * @property {string[]} skills      Skills from agent frontmatter skills: list
  * @property {string|null} description  Agent dispatch description param (if any)
+ * @property {string}   [run_id]    SF-3.3: the session's run id; present only when the run pointer is usable
+ * @property {number|null} [wave]   SF-3.3: the pointer's wave (null just after a run starts); present with run_id
+ *
+ * RUN ID ON ROWS (SF-3.3): `agent_dispatch` rows carry `run_id` and `wave` when this session's run
+ * pointer (`current-run-{session}.json`, written by run-record.js) is usable; otherwise the two keys
+ * are absent and the row is unchanged. The pointer is read under `pointerRoot()` (the main worktree,
+ * where run-record.js writes it) by `_lib/run-pointer.js`, which never throws and never blocks. `skill_read` rows are never stamped.
+ * The session is `CLAUDE_CODE_SESSION_ID` first, else the hook payload's `session_id`.
  *
  * @typedef {Object} SkillReadEvent
  * @property {string}   timestamp   ISO 8601
@@ -58,6 +66,7 @@ const { readHookInput }    = require('../core/_lib/hook-input');
 const { getJsonlPath }     = require('../core/_lib/telemetry-paths');
 const { parseFrontmatter } = require('../core/_lib/frontmatter');
 const { resolveProjectRoot } = require('../core/_lib/project-root');
+const { readRunPointer, pointerRoot } = require('../core/_lib/run-pointer');
 
 const MAX_LINES  = 2000;
 const TAIL_KEEP  = 1000;
@@ -112,6 +121,11 @@ function resolveAgentSkills(agentType, projectRoot) {
     }
 }
 
+// Same session rule as command-usage-logger: env first, else the hook payload's own session_id.
+function resolveSessionId(parsedJson) {
+    return process.env.CLAUDE_CODE_SESSION_ID || parsedJson?.session_id || null;
+}
+
 /**
  * Handle a PostToolUse:Agent event.
  * Infers which skills will auto-load and emits an agent_dispatch record.
@@ -125,13 +139,34 @@ function handleAgentDispatch(input, projectRoot) {
     const resolvedType = agentType || 'general-purpose';
     const skills = resolveAgentSkills(resolvedType, projectRoot);
 
-    return {
+    const event = {
         timestamp: new Date().toISOString(),
         type: 'agent_dispatch',
         agent: resolvedType,
         skills,
         description: ti.description || null,
     };
+
+    return stampRun(event, projectRoot, resolveSessionId(input));
+}
+
+/**
+ * SF-3.3: stamp run_id and wave from the session pointer. readRunPointer never throws and returns null for
+ * anything unusable, leaving the row unchanged; the `pointerRoot()` argument is computed here too, so a
+ * failure in either keeps the agent_dispatch row (unstamped) instead of losing it.
+ */
+function stampRun(event, projectRoot, session) {
+    let run = null;
+    try {
+        run = readRunPointer({ root: pointerRoot(projectRoot), session });
+    } catch {
+        run = null;
+    }
+    if (run) {
+        event.run_id = run.run_id;
+        event.wave = run.wave;
+    }
+    return event;
 }
 
 /**
@@ -206,4 +241,4 @@ if (require.main === module) {
     main().catch(() => process.exit(0));
 }
 
-module.exports = { processEvent, parseSkillPath, resolveAgentSkills };
+module.exports = { processEvent, parseSkillPath, resolveAgentSkills, stampRun };

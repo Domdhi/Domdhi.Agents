@@ -30,6 +30,7 @@ const {
     findMarkdownFiles: ingestFindMarkdownFiles,
 } = require('./_lib/memory-ingest');
 const { appendJsonl } = require('./_lib/jsonl-writer');
+const { assertNoSymlinkedAncestor, assertSafeLeaf, stateContainRoot, safeMkdirp, safeWriteAtomic, reportRefusal } = require('./_lib/fs-safe');
 // Rebuild-status location and the shared index busy timeout.
 const { rebuildStatusPath, INDEX_BUSY_TIMEOUT_MS } = require('./_lib/memory-index-divergence');
 
@@ -213,9 +214,15 @@ class MemoryManager {
             // The db and inbox now live under the split .state/ half, no longer
             // colocated inside memoriesDir — create their parents too so the
             // first write/search/inbox op never races a missing dir.
-            fsSync.mkdirSync(path.dirname(this.dbPath), { recursive: true });
-            fsSync.mkdirSync(this.inboxDir, { recursive: true });
-        } catch { /* best-effort — a read-only FS shouldn't crash construction */ }
+            // L1H (review C1 part 2): the state folder is whatever the working tree makes it, and this
+            // constructor runs in unsandboxed hooks. A symlinked ancestor is refused, so no directory
+            // is ever created inside a link's target.
+            safeMkdirp(path.dirname(this.dbPath));
+            safeMkdirp(this.inboxDir);
+        } catch (error) {
+            reportRefusal(error);   // one stderr line for a refused symlink; any other failure stays silent
+            /* best-effort — a read-only FS shouldn't crash construction */
+        }
     }
 
     /**
@@ -227,6 +234,10 @@ class MemoryManager {
 
         try {
             this.ensureDirs();
+            // SQLite follows a symlinked database file (and its -wal/-shm/-journal sidecars) and a
+            // symlinked ancestor: refuse both before opening (throws into the JSON-only fallback below).
+            assertNoSymlinkedAncestor(this.dbPath, stateContainRoot(this.dbPath));
+            for (const suffix of ['', '-wal', '-shm', '-journal']) assertSafeLeaf(this.dbPath + suffix);
             this.db = new DatabaseSync(this.dbPath);
             // Wait for another process's write (an overlapping rebuild, a
             // hook's recall bump) instead of failing it with "database is locked".
@@ -1321,7 +1332,7 @@ class MemoryManager {
 
     async _writeRebuildStatus(indexed, failed, aborted = false) {
         try {
-            await fs.writeFile(rebuildStatusPath(this.dbPath), JSON.stringify({
+            safeWriteAtomic(rebuildStatusPath(this.dbPath), JSON.stringify({
                 completed_at: new Date().toISOString(), indexed, failed,
                 ...(aborted ? { aborted: true } : {}),
             }, null, 2) + '\n');
@@ -1601,6 +1612,18 @@ class MemoryManager {
     // docs/.output/plans/2026-05-11-do-r-a-inbox-pattern.md
     // ────────────────────────────────────────────────────────────────────────
 
+    /**
+     * Accept an inbox draft's path (as `inbox-list` prints it in `file`) as well as its id: a path to a
+     * `.json` file directly inside the inbox directory becomes its filename stem. Anything else is
+     * returned unchanged, so the id guard still refuses a path outside the inbox.
+     */
+    _inboxStem(id) {
+        if (typeof id !== 'string' || !id.endsWith('.json') || !/[\\/]/.test(id)) return id;
+        const full = path.resolve(id);
+        if (path.dirname(full) !== path.resolve(this._inboxDir())) return id;
+        return path.basename(full, '.json');
+    }
+
     _inboxDir() {
         // Split store (ADR 0006 Amendment 2): the inbox is transient state, no
         // longer colocated under the tracked JSON source — it lives at
@@ -1661,6 +1684,7 @@ class MemoryManager {
      * @returns {Promise<{promoted: true, category, id} | {promoted: false, error}>}
      */
     async inboxPromote(id, opts = {}) {
+        id = this._inboxStem(id);
         // F42 (W2-1): `id` is a raw CLI-supplied inbox filename stem joined
         // straight into path.join below — guard it against `../` traversal
         // exactly like the memory-id entry points, else `inbox-promote
@@ -1782,6 +1806,7 @@ class MemoryManager {
      * @returns {Promise<{discarded: boolean, error?: string}>}
      */
     async inboxDiscard(id) {
+        id = this._inboxStem(id);
         // F42 (W2-1): guard the raw CLI-supplied `id` before it reaches
         // path.join — an unguarded `../`-laden id deletes an arbitrary .json
         // file outside the inbox root.

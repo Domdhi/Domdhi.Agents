@@ -12,13 +12,10 @@ Read the full `benchmark.json` and report patterns that aggregate statistics hid
 
 ### What to Surface
 
-**Non-discriminating assertions** (`"discriminating": false` in the benchmark). Name the specific assertion text and the evals it appears in. These assertions pass at the same rate regardless of config — they measure nothing about the skill's effect.
-
-**High-variance / flaky evals** (`"high_variance": true`). Identify which evals are unstable and quantify the variance in pass rate across runs. Flaky evals produce unreliable delta signals.
-
-**Time and token tradeoffs**. When the with-skill config costs significantly more tokens or time than baseline, flag it — especially when the pass-rate delta doesn't justify the cost. Use the `delta.tokens_pct` and `delta.duration_pct` fields.
-
-**Unexpected patterns**. Evals where baseline outperforms with-skill (negative delta), evals with 0% pass rate across all configs (broken eval?), assertions that are always 100% (ceiling effect).
+- **Non-discriminating assertions** (`"discriminating": false`): name the assertion text and its evals. They pass at the same rate in every config and measure nothing about the skill.
+- **High-variance evals** (`"high_variance": true`): identify them and quantify the pass-rate variance across runs; flaky evals make the delta unreliable.
+- **Cost tradeoffs**: flag with-skill runs that cost notably more tokens or time than baseline when the pass-rate delta does not justify it (`delta.tokens_pct`, `delta.duration_pct`).
+- **Anomalies**: baseline beating with-skill, 0% pass rate in every config (a broken eval?), and assertions that always pass (ceiling effect).
 
 ### Output
 
@@ -35,7 +32,7 @@ Write `analysis.json` to the iteration directory alongside `benchmark.json`.
 ]
 ```
 
-Observations must cite specific eval IDs, assertion text, or numeric values from the benchmark. No speculation, no quality judgments.
+Observations cite specific eval IDs, assertion text or numbers from the benchmark, without speculation or quality judgments.
 
 ---
 

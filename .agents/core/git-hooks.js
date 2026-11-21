@@ -13,6 +13,7 @@
  *   pre-merge-commit   --git-precommit        the merge result           `git merge` that creates a commit
  *   pre-applypatch     --git-precommit        the patch result           `git am`
  *   pre-push           --pre-push <remote>    every object the push would publish that the remote does not vouch for
+ *                      (first, in sh and git alone: refuses a deletion or a non-fast-forward update, see FORCE GUARD)
  *
  * WHAT THIS COVERS, AND WHAT IT DOES NOT. The commit hooks cover commit, merge and am. Git has paths that run
  * no commit hook at all (`commit-tree` + `update-ref`, cherry-pick, rebase, `stash` merges, `reset --soft`), a
@@ -31,6 +32,32 @@
  * OWNERSHIP. A hook is ours when its first comment line is `# domdhi-agents managed hook: <name> v<N>`
  * (right under the shebang). Install and update rewrite a marker hook whose content or mode differs; a hook
  * without the marker is never touched; `--remove` deletes marker hooks only.
+ *
+ * FORCE GUARD. The pre-push shim also refuses, before any scan and without needing node, every update the remote
+ * would not take as a plain fast-forward: a deletion (local sha all zeros: `--delete`, `:ref`, `--mirror`,
+ * `--prune`), and an update whose remote sha is not an ancestor of the local sha (a force push; a remote sha this
+ * repository does not hold counts as not an ancestor). It reads git's own ref lines, so it does not depend on how the
+ * push was spelled or where its configuration came from, which no text rule on a command line can promise. A
+ * brand-new remote ref (remote sha all zeros) passes.
+ *
+ * MIRROR PUSHES. Git does NOT report the deletions of a `--mirror` push to the hook (verified on git 2.53: a mirror
+ * push that deletes a remote-only branch feeds the hook no line for it), so the ref lines alone cannot catch it. The
+ * guard therefore refuses a push that looks like a mirror push by three independent signs: `remote.<name>.mirror`
+ * is true (a `remote add --mirror=push` remote, `git config`, `include.path` or `-c` routes all land here), the
+ * `git push` command line (`ps`, best effort) carries `--mirror`, or it pushes a `refs/remotes/*` ref (only a mirror push
+ * does; a mirror push from a repository that has remote-tracking refs always includes them). A mirror push from a
+ * repository with no remote-tracking refs where `ps` cannot report the command line is the one shape this guard
+ * cannot see. The owner override is AGENTS_ALLOW_FORCE_PUSH=1 on the
+ * `git push` itself; CLAUDE_COMMIT_NO_SCAN=1 skips the secret scan only and never this guard. A hook the owner
+ * wrote under a foreign core.hooksPath is not ours: the guard is not there unless the owner adds it. Nothing here
+ * covers plumbing that never runs the hook (`git send-pack`), which the guardrail rules block by text.
+ *
+ * AUTO BRANCH GUARD. Right after the force guard, the same pre-push shim refuses any push whose REMOTE ref is
+ * `refs/heads/auto/*`, whatever local ref is pushed to it (`git push origin HEAD:auto/x`, `git push origin auto/x`). An
+ * `auto/*` branch is where the self-improvement cycle's model-written change stops: it is reviewed and merged by the
+ * owner locally and is never published by an agent. Its own owner override is AGENTS_ALLOW_AUTO_PUSH=1 on the `git push`
+ * itself, deliberately separate from AGENTS_ALLOW_FORCE_PUSH (the owner who force-pushes does not thereby publish an
+ * `auto/*` branch); the Bash guardrail blocks an agent from setting either variable.
  *
  * FAIL CLOSED. A shim that cannot find node, the scanner, or a scanner that speaks the hook protocol it
  * expects (a checkout whose toolkit predates the managed hooks) prints how to fix it (or how to remove the
@@ -60,11 +87,68 @@ const { git, gitSafe } = require('./_lib/git');
 const { safeWrite, safeDelete } = require('./_lib/fs-safe');
 const { GIT_HOOK_PROTOCOL, PROTOCOL_LINE_PREFIX } = require('./_lib/git-hook-protocol');
 
-const HOOK_VERSION = 2;
+const HOOK_VERSION = 3;
 const SCANNER_REL = '.agents/hooks/secret-scanner.cjs';
 const CLI = 'node .agents/core/git-hooks.js';          // canonical; present wherever the scanner is
 const REMOVE_COMMAND = `${CLI} --remove`;
 const INSTALL_COMMAND = CLI;
+
+// The pre-push FORCE GUARD (see the header): POSIX sh and git only, runs before node, the scanner or the bypass.
+// `refs` keeps git's ref lines (`<local ref> <local sha> <remote ref> <remote sha>`) for the scanner, which reads them from stdin.
+const FORCE_OVERRIDE_ENV = 'AGENTS_ALLOW_FORCE_PUSH';
+const AUTO_OVERRIDE_ENV = 'AGENTS_ALLOW_AUTO_PUSH';
+const FORCE_GUARD = `refs=$(cat)
+if [ "\${${FORCE_OVERRIDE_ENV}:-}" != "1" ]; then
+  refused=
+  mirror=
+  if [ "$(git config --bool --get "remote.$1.mirror" 2>/dev/null)" = "true" ]; then mirror="remote.$1.mirror is true"; fi
+  case " $(ps -o args= -p "$PPID" 2>/dev/null) " in *" --m"*) [ -n "$mirror" ] || mirror="the push command line asks for --mirror" ;; esac
+  while read -r lref lsha rref rsha; do
+    [ -n "$lsha" ] || continue
+    case "$rref" in refs/remotes/*) [ -n "$mirror" ] || mirror="it pushes $rref, which only a mirror push does" ;; esac
+    case "$lsha" in
+      *[!0]*) ;;
+      *) echo "domdhi-agents $hook hook: refusing to DELETE $rref on the remote." >&2; refused=1; continue ;;
+    esac
+    case "$rsha" in
+      *[!0]*) ;;
+      *) continue ;;
+    esac
+    if ! git cat-file -e "$rsha^{commit}" 2>/dev/null; then
+      echo "domdhi-agents $hook hook: refusing to update $rref: the remote is at $rsha, which this repository does not have, so the update cannot be shown to be a fast-forward." >&2
+      refused=1
+    elif ! git merge-base --is-ancestor "$rsha" "$lsha" 2>/dev/null; then
+      echo "domdhi-agents $hook hook: refusing to update $rref: it is not a fast-forward (the remote would lose commits)." >&2
+      refused=1
+    fi
+  done <<FORCE_GUARD_REFS
+$refs
+FORCE_GUARD_REFS
+  if [ -n "$mirror" ]; then
+    echo "domdhi-agents $hook hook: refusing a mirror push ($mirror). A mirror push deletes every remote ref this repository lacks and force-updates the rest, and git does not report those deletions to this hook." >&2
+    refused=1
+  fi
+  if [ -n "$refused" ]; then
+    echo "  A deletion, mirror, prune or force push can destroy remote history that nothing can restore. Only the repository owner overrides this, on the push itself: ${FORCE_OVERRIDE_ENV}=1 git push ..." >&2
+    exit 1
+  fi
+fi
+if [ "\${${AUTO_OVERRIDE_ENV}:-}" != "1" ]; then
+  autoref=
+  while read -r lref lsha rref rsha; do
+    [ -n "$lsha" ] || continue
+    case "$rref" in
+      refs/heads/auto/*) echo "domdhi-agents $hook hook: refusing to push to $rref: an auto/* branch is model-written code that only the owner reviews and merges locally." >&2; autoref=1 ;;
+    esac
+  done <<AUTO_GUARD_REFS
+$refs
+AUTO_GUARD_REFS
+  if [ -n "$autoref" ]; then
+    echo "  Publishing an auto/* branch puts unreviewed code on the remote. Only the repository owner overrides this, on the push itself: ${AUTO_OVERRIDE_ENV}=1 git push ..." >&2
+    exit 1
+  fi
+fi
+`;
 
 // What each hook scans, and how the shim calls the scanner.
 const HOOKS = {
@@ -72,8 +156,12 @@ const HOOKS = {
     'commit-msg': { what: 'the commit message', call: 'exec node "$scanner" --commit-msg "$msgfile" </dev/null' },
     'pre-merge-commit': { what: 'the merge result held in the index', call: 'exec node "$scanner" --git-precommit </dev/null' },
     'pre-applypatch': { what: 'the patch result held in the index (git am)', call: 'exec node "$scanner" --git-precommit </dev/null' },
-    // Not redirected from /dev/null: git feeds the refs being pushed on stdin.
-    'pre-push': { what: 'every object the push would publish that the remote does not vouch for (blobs, commit and tag messages)', call: 'exec node "$scanner" --pre-push "$1" "$2"' },
+    // Git feeds the refs being pushed on stdin; the force guard reads them first and hands them on from `$refs`.
+    'pre-push': {
+        what: 'every object the push would publish that the remote does not vouch for (blobs, commit and tag messages)',
+        guard: FORCE_GUARD,
+        call: 'printf \'%s\\n\' "$refs" | node "$scanner" --pre-push "$1" "$2"\nexit $?',
+    },
 };
 const HOOK_NAMES = Object.keys(HOOKS);
 const COMMIT_HOOKS = ['pre-commit', 'commit-msg'];   // the pair commit.js may leave the commit scan to
@@ -103,9 +191,11 @@ fi
 ${markerLine(name)}
 # Written by the toolkit (${INSTALL_COMMAND}). It lives in the git directory and is never
 # tracked. It scans ${spec.what} for secrets, and it fails closed.
-# Audited bypass: CLAUDE_COMMIT_NO_SCAN=1 (recorded as a guardrail event). Remove it: ${REMOVE_COMMAND}
+# Audited bypass: CLAUDE_COMMIT_NO_SCAN=1 (recorded as a guardrail event). Remove it: ${REMOVE_COMMAND}${name === 'pre-push' ? `
+# Force guard: a deletion or non-fast-forward push is refused unless the owner sets ${FORCE_OVERRIDE_ENV}=1.
+# Auto guard: a push to refs/heads/auto/* is refused unless the owner sets ${AUTO_OVERRIDE_ENV}=1.` : ''}
 hook=${name}
-${msgfileCheck}root=$(git rev-parse --show-toplevel 2>/dev/null)
+${spec.guard || ''}${msgfileCheck}root=$(git rev-parse --show-toplevel 2>/dev/null)
 scanner="$root/${SCANNER_REL}"
 protocol_ok() {
   seen=$(node "$scanner" --hook-protocol 2>/dev/null </dev/null) || return 1
@@ -297,18 +387,20 @@ function scannerStatus(toplevel) {
 }
 
 /**
- * Where the hooks stand for the repository containing `dir`.
+ * Where the hooks stand for the repository containing `dir`. `probeScanner: false` skips running the scanner to check its
+ * protocol (a present scanner counts as ok): the cheap check the session-start prime uses.
  * `active`: every managed hook is ours, current and executable where git runs hooks, and the scanner speaks
  * the hook protocol. `commitCovered`: the same for pre-commit + commit-msg alone, which is what commit.js
  * needs to leave the commit scan to git. Any doubt is false.
  */
-function inspectHooks(dir = process.cwd(), { requireRoot = false } = {}) {
+function inspectHooks(dir = process.cwd(), { requireRoot = false, probeScanner = true } = {}) {
     const loc = locate(dir, { requireRoot });
     if (!loc.ok) return { repo: false, reason: loc.reason, active: false, commitCovered: false, hooks: [] };
     const hooks = loc.disabled
         ? HOOK_NAMES.map(name => ({ name, file: path.join(loc.hooksDir, name), state: 'disabled' }))
         : HOOK_NAMES.map(name => inspectHook(loc.hooksDir, name));
-    const scanner = scannerStatus(loc.toplevel);
+    // probeScanner:false (session start, which has a 2 s budget) takes a present scanner on trust instead of running it.
+    const scanner = probeScanner ? scannerStatus(loc.toplevel) : (fs.existsSync(path.join(loc.toplevel, ...SCANNER_REL.split('/'))) ? 'ok' : 'missing');
     const current = names => hooks.filter(h => names.includes(h.name)).every(h => h.state === 'current');
     return {
         repo: true,
@@ -323,6 +415,45 @@ function inspectHooks(dir = process.cwd(), { requireRoot = false } = {}) {
 /** Will git run our current commit hooks (pre-commit + commit-msg) for a commit made from `dir`? Any doubt is false. */
 function isActive(dir = process.cwd()) {
     try { return inspectHooks(dir).commitCovered; } catch { return false; }
+}
+
+// ── the loud notice for a missing backstop ────────────────────────────────────
+
+/**
+ * The refusal-level warning every entry point prints when the managed hooks are not all current and active in the
+ * repository containing `dir`: commit.js, `ship-check.js verify` and the session-start prime. Without the hooks a raw
+ * `git commit` is not secret-scanned, a push runs no scan, and nothing refuses a force, mirror or delete push, so a
+ * missing backstop must never be silent. Returns the lines to print, or null when the hooks are active or `dir` is not
+ * a git work tree. A failure to find out is itself reported (never swallowed into "fine").
+ *
+ * @param {string} dir
+ * @param {{ who?: string, coreDir?: string, probeScanner?: boolean }} [options]  who: the log prefix; coreDir: the
+ *   directory the fix command names (.claude/core or .codex/core); probeScanner: see inspectHooks.
+ * @returns {string[]|null}
+ */
+function backstopWarning(dir = process.cwd(), { who = 'git-hooks', coreDir = '.agents/core', probeScanner = true } = {}) {
+    const fix = `node ${coreDir}/git-hooks.js`;
+    let state;
+    try {
+        state = inspectHooks(dir, { probeScanner });
+    } catch (err) {
+        return [
+            `[${who}] WARNING: could not tell whether the managed git hooks are active (${String(err && err.message ? err.message : err).split('\n')[0]}). Treat the secret and force-push backstop as MISSING.`,
+            `  The repository owner checks and installs it: ${fix} --check, then ${fix}`,
+        ];
+    }
+    if (!state.repo || state.active) return null;
+    const why = [];
+    if (state.disabled) why.push('core.hooksPath disables git hooks');
+    else if (!state.inside) why.push('core.hooksPath points outside the git directory');
+    const notCurrent = state.hooks.filter(h => h.state !== 'current').map(h => `${h.name}: ${h.state}`);
+    if (notCurrent.length && !state.disabled) why.push(notCurrent.join(', '));
+    if (state.scanner !== 'ok') why.push(`the secret scanner is ${state.scanner === 'missing' ? 'missing' : 'too old for the hooks'}`);
+    return [
+        `[${who}] WARNING: the managed git hooks are NOT active in this checkout${why.length ? ` (${why.join('; ')})` : ''}.`,
+        '  Without them a raw `git commit` is not secret-scanned, `git push` runs no secret scan, and nothing refuses a force, mirror or delete push.',
+        `  This is the backstop the authority matrix relies on. The repository owner installs it (agents do not): ${fix}   (status: ${fix} --check)`,
+    ];
 }
 
 // ── reporting a hook we must not write ────────────────────────────────────────
@@ -552,6 +683,6 @@ if (require.main === module) {
 }
 
 module.exports = {
-    HOOK_NAMES, COMMIT_HOOKS, HOOK_VERSION, SCANNER_REL, renderHook, ownerLine, locate, inspectHook, inspectHooks, isActive,
-    isRetiredToolkitHook, scannerStatus, installHooks, removeHooks, ensureHooks, main, isNullDevice,
+    HOOK_NAMES, COMMIT_HOOKS, HOOK_VERSION, SCANNER_REL, FORCE_OVERRIDE_ENV, AUTO_OVERRIDE_ENV, renderHook, ownerLine, locate, inspectHook, inspectHooks, isActive,
+    isRetiredToolkitHook, scannerStatus, installHooks, removeHooks, ensureHooks, main, isNullDevice, backstopWarning,
 };

@@ -1,10 +1,10 @@
 # Project Requirements (PRD)
 
-Expert in product requirements documentation. Produces comprehensive PRDs that define WHAT to build (not HOW — that's architecture's job).
+Defines WHAT to build, never HOW (architecture owns that). A good PRD gives every requirement a testable acceptance criterion and a priority, ties requirements to personas, and gives non-functional requirements measurable targets.
 
 ## Document Template
 
-The document you produce — the canonical, scaffold-blessed template — lives in `../assets/requirements.md` (raw, with the `<!-- @@template -->` first-line marker). Read it to know the artifact's structure; `scaffold.js` seeds `docs/product/requirements.md` from the same file.
+The canonical, scaffold-blessed template is `../assets/requirements.md` (raw, with the `<!-- @@template -->` first-line marker). `scaffold.js` seeds `docs/product/requirements.md` from it.
 
 ## Required Sections Checklist
 
@@ -19,23 +19,12 @@ A PRD is COMPLETE when it has:
 - [ ] Assumptions & Dependencies
 - [ ] Success Criteria
 
-## Quality Criteria
+## What good looks like
 
-### Good PRD
-- Each FR has clear acceptance criteria (Given/When/Then)
-- MoSCoW prioritization is used — not everything is "Must Have"
-- NFRs have measurable targets ("page loads in <2s" not "fast")
-- User flows cover happy path AND error paths
-- Data model uses domain language, not database terms
-- Security section is explicit about auth model
-
-### Bad PRD
-- Acceptance criteria are vague ("system works correctly")
-- Everything is Must Have priority
-- NFRs have no targets ("should be secure")
-- Only happy-path flows, no error handling
-- Mixes WHAT (requirements) with HOW (implementation)
-- No personas — requirements float without user context
+- Each FR has Given/When/Then acceptance criteria and a MoSCoW priority that is not all Must.
+- NFRs have measurable targets ("page loads in <2s", not "fast" or "should be secure").
+- Flows cover happy path and error paths. The data model uses domain language, not database terms. The security section states the auth model.
+- Personas give requirements user context, and WHAT is not mixed with HOW.
 
 ## Interview Questions
 

@@ -3,7 +3,7 @@
 /**
  * memory-extract.js — turn a finished Claude Code session into candidate memories.
  *
- * Evidence (Domdhi.Vault capture test, 6 real sessions, 10 hand-written memories as ground truth):
+ * Evidence (a real-repo capture test, 6 real sessions, 10 hand-written memories as ground truth):
  * a Haiku 5.5 extractor over the whole session recovered 8 to 10 of 10 for $0.003 to $0.014 per
  * session, with 0 to 2% invented quotes. Every kept candidate must quote the session verbatim; that
  * validator is also what makes a weak local model safe (it yields fewer memories, not false ones;

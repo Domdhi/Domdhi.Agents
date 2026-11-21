@@ -32,9 +32,12 @@ const path = require('path');
 const { appendJsonl } = require('./jsonl-writer');
 const { getJsonlPath } = require('./telemetry-paths');
 const { resolveProjectRoot } = require('./project-root');
+const { readRunPointer, pointerRoot, sourceDir } = require('./run-pointer');
+
+const FALLBACK_ROOT = path.resolve(__dirname, '..', '..', '..');
 
 function getProjectRoot() {
-    return resolveProjectRoot(path.resolve(__dirname, '..', '..', '..'));
+    return resolveProjectRoot(FALLBACK_ROOT);
 }
 
 /**
@@ -70,9 +73,16 @@ function ledgerFilename(stamp) {
  *   status        → String (or null)
  * Stamps `timestamp` (ISO) itself.
  *
+ * SF-3.2: when the session's run pointer is usable (run-pointer.js) the row also carries
+ * `run_id` and `wave` (a number, else null). Otherwise the two keys are absent, never null.
+ * The session is opts.session, else env CLAUDE_CODE_SESSION_ID; neither means no pointer is read. The pointer
+ * is read under `pointerRoot(...)`, the same root run-record.js writes it under (a linked-worktree session
+ * included), not under the row's own root.
+ *
  * @param {object} entry  { story_id, agent, model, files_touched:[], status }
  * @param {object} [opts]
- * @param {string} [opts.root]  Override project root (testing).
+ * @param {string} [opts.root]     Override project root (testing).
+ * @param {string} [opts.session]  Session id for the run pointer (default: CLAUDE_CODE_SESSION_ID).
  * @returns {object} the written entry (with timestamp)
  */
 function appendAttribution(entry, opts = {}) {
@@ -86,6 +96,12 @@ function appendAttribution(entry, opts = {}) {
         status: e.status != null ? String(e.status) : null,
     };
     const root = opts.root || getProjectRoot();
+    const session = opts.session !== undefined ? opts.session : process.env.CLAUDE_CODE_SESSION_ID;
+    const run = readRunPointer({ root: pointerRoot(opts.root || sourceDir(FALLBACK_ROOT)), session }); // never throws; null leaves the row as it was
+    if (run) {
+        record.run_id = run.run_id;
+        record.wave = run.wave;
+    }
     const jsonlPath = getJsonlPath(root, ledgerFilename(dateStamp()));
     appendJsonl(jsonlPath, record);
     return record;

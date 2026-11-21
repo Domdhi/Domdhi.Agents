@@ -1109,6 +1109,19 @@ describe('guardrail hardening — documented bypasses now blocked', () => {
         // truncate/shred/redirect are checked ONLY against protected tiers — a
         // non-protected target is a clean pass, no blanket nudge noise.
         expect(decision('truncate -s 0 build/output.txt')).toBe('pass');
+        // Final-core review: empty quoted arguments are ordinary shell (they crashed the guard before),
+        // and a `cd` does not turn an ordinary write into a protected one.
+        expect(decision('grep -c "" README.md')).toBe('pass');
+        expect(decision('echo "" > README.md')).toBe('pass');
+        expect(decision("sed -i '' s/a/b/ README.md")).toBe('pass');
+        expect(decision('cd docs && echo hi > notes.md')).toBe('pass');
+        expect(decision('cd src; truncate -s 0 build/output.txt')).toBe('pass');
+        // The new git, credential and config rules leave their ordinary neighbours alone.
+        expect(decision('git config alias.st status')).toBe('pass');
+        expect(decision('git remote add origin https://example.invalid/r.git')).toBe('pass');
+        expect(decision('HOME=/tmp/x npm test && git push origin main')).toBe('pass');
+        expect(decision('cat ~/.config/claudette/x')).toBe('pass');
+        expect(decision('git fetch --prune origin')).toBe('pass');
     });
 
     // ── Finding 1: wrapper / path-prefix / bare-env delete of a protected path
