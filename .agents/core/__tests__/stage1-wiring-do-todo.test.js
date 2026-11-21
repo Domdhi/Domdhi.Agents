@@ -74,11 +74,35 @@ describe('/todo AC template, Template Rules and Phase 3b state the verify bindin
 });
 
 describe('/create-project-epics-todo keeps verify: out of backlog.md (AC2)', () => {
-  it('states that verify: is added when /todo materializes a story, not in backlog.md', () => {
-    const line = read(EPICS).split('\n').find(l => l.includes('verify:') && /materializ/i.test(l) && l.includes('backlog.md')) ?? '';
-    expect(line, 'a line naming verify:, materialize and backlog.md').not.toBe('');
-    expect(line).toContain('/todo');
-    expect(line).toMatch(/not in `?backlog\.md`?|never in `?backlog\.md`?/i);
+  it('rule 9: criteria are verbatim backlog text, the binding lives in the checklist, never in backlog.md', () => {
+    const line = read(EPICS).split('\n').find(l => /^9\. Acceptance criteria MUST match/.test(l)) ?? '';
+    expect(line, 'rule 9').not.toBe('');
+    expect(line).toContain('Template Rule 22');
+    expect(line).toContain('compares only the text before ` verify:` or the tag');
+    expect(line).toMatch(/never in `?backlog\.md`?/i);
+  });
+});
+
+describe('/create-project-epics-todo writes verify: bindings on checkbox criteria', () => {
+  it('the story template writes criteria as checkbox bullets with verify: or [manual]', () => {
+    const t = read(EPICS);
+    expect(t).toContain('- [ ] {AC 1, copied verbatim from backlog.md} verify: {one command that proves it} => exit 0');
+    expect(t).toContain('- [ ] {AC 2, verbatim: a criterion no command can prove} [manual]');
+    expect(t).not.toMatch(/^- \{AC 1\}$/m);
+  });
+
+  it('the planner brief asks for a binding per testable criterion naming the test file', () => {
+    const brief = slice(EPICS, '**Task prompt must include**', '**The agent must produce');
+    expect(brief).toMatch(/^10\. A `verify:` binding on every testable acceptance criterion, per `\/todo` Template Rule 22/m);
+    expect(brief).toContain('names the test file the story will create');
+    expect(brief).toContain('double-`--` filter form');
+  });
+
+  it('Step 6 validates with ac-verify list and the unbound-criterion check', () => {
+    const step6 = slice(EPICS, '### 6. Validate', '### 7. Commit');
+    expect(step6).toContain('`node .claude/core/ac-verify.js list --todo "{checklist}"` exits 0');
+    expect(step6).toContain("!/verify:|\\[manual\\]|\\[CI-pending\\]/");
+    expect(step6).toContain('(Tasks checkboxes are exempt)');
   });
 });
 
@@ -490,11 +514,11 @@ describe('m6: the startup-reference Ship check subsection matches ship-check.js'
   });
 });
 
-describe('m9: the epics workflow says its checklists carry no verify: bindings', () => {
-  it('the Next step line points at /todo or hand-written verify: lines', () => {
+describe('m9: the epics workflow says its checklists carry verify: bindings', () => {
+  it('the Next step line says /do and /run-todo freeze and run the bindings', () => {
     const next = slice(EPICS, '**Next step**', '\n');
-    expect(next).toContain('seals every story as all-manual');
-    expect(next).toContain('`/todo`');
-    expect(next).toContain('`verify:`');
+    expect(next).not.toContain('all-manual');
+    expect(next).toContain('carries a `verify:` binding (rule 9)');
+    expect(next).toContain('`/do` and `/run-todo` record each binding red, freeze it and run it');
   });
 });

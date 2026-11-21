@@ -432,3 +432,29 @@ describe('guard-test hygiene for the new prose', () => {
     expect(text()).not.toMatch(/\b(sonnet|opus|haiku)\b/i);
   });
 });
+
+describe('Phase 0 warns when open stories have no verify: bindings', () => {
+  const phase0 = () => {
+    const t = text();
+    const from = t.indexOf('### 2. Parse the TODO');
+    const to = t.indexOf('### 5. Pre-flight checks', from);
+    expect(from).toBeGreaterThanOrEqual(0);
+    expect(to).toBeGreaterThan(from);
+    return t.slice(from, to);
+  };
+
+  it('Step 2 runs ac-verify list and counts the open stories with an empty bindings list', () => {
+    const body = phase0();
+    expect(body).toContain('node .claude/core/ac-verify.js list --todo "{TODO_PATH}"');
+    expect(body).toContain('count the open stories of this run\'s slice whose `bindings` list is empty');
+    expect(body).toContain('its plain-bullet acceptance criteria are not parsed at all');
+    expect(body).toContain('It is a warning, not a gate');
+  });
+
+  it('Step 4 offers add-bindings-first or all-manual, and --no-ask records it and continues', () => {
+    const body = phase0();
+    expect(body).toMatch(/the round asks whether to add the bindings first [^\n]* or to run those stories all-manual/);
+    expect(body).toContain('record `runs all-manual: {N} stories without verify: bindings ({IDs})`');
+    expect(body).toContain('It blocks no story.');
+  });
+});

@@ -104,6 +104,7 @@ Use the Task tool with `subagent_type: "project-planner"`.
 6. The `project-planner` agent auto-loads the `project-planning` skill via frontmatter.
 7. Instruction to follow the checklist template from `/todo` command format
 9. The repository's actual test-authorship rule, read before dispatch (in this toolkit, `/run-todo` Step 2b: the Main Agent writes AC tests before dev dispatch, with its documented one-round exceptions), so each story's Ownership line matches it
+10. A `verify:` binding on every testable acceptance criterion, per `/todo` Template Rule 22: the criterion is a checkbox bullet, its text copied verbatim from `backlog.md`, then ` verify: {command} => exit 0`. The command names the test file the story will create, at the path the architecture and the story's Files imply, and follows the project's own test command shape (read the `package.json` scripts: a script that re-invokes a package manager takes the double-`--` filter form Rule 22 describes). A criterion no command can prove is tagged `[manual]`, one only CI can run `[CI-pending]`
 
 **The agent must produce a checklist following the `/todo` template structure:**
 
@@ -243,8 +244,8 @@ and conflict review. Respect actual dependency order across waves.
 **As a** {persona}, **I want** {capability}, **So that** {benefit}.
 
 **Acceptance Criteria:**
-- {AC 1}
-- {AC 2}
+- [ ] {AC 1, copied verbatim from backlog.md} verify: {one command that proves it} => exit 0
+- [ ] {AC 2, verbatim: a criterion no command can prove} [manual]
 
 **Tasks:**
 - [ ] {Task description — WHAT to do, not HOW}
@@ -289,7 +290,9 @@ and conflict review. Respect actual dependency order across waves.
 After the agent completes, verify:
 - All stories from the epic in `backlog.md` are present
 - Stories are in dependency-optimized order
-- Acceptance criteria match `backlog.md` (not invented)
+- Acceptance criteria match `backlog.md` (not invented): compare the criterion text before ` verify:` or before its `[manual]`/`[CI-pending]` tag
+- Every acceptance criterion is a checkbox bullet with a `verify:` binding or a `[manual]`/`[CI-pending]` tag (Tasks checkboxes are exempt): `awk '/^\*\*Acceptance Criteria:\*\*/{a=1;next} /^\*\*|^#|^---/{a=0} a && /^ *- \[ \] / && !/verify:|\[manual\]|\[CI-pending\]/' "{checklist}"` prints nothing
+- Binding policy: `node .claude/core/ac-verify.js list --todo "{checklist}"` exits 0. It parses only and runs nothing: every binding parses and its command would be accepted at `red` and `run`
 - No code blocks or implementation examples (WHAT, not HOW)
 - Required sections all present (Execution Log, Key Decisions, Validation, Work Doc References)
 - Every story has an Ownership line (production and test owners only, no reviewer) consistent with the repository's actual test-authorship rule
@@ -314,7 +317,7 @@ Follow the **Post-Command Commit Convention** in `.agents/startup-reference.md`.
 **Bottleneck stories**: {count}
 
 **Committed**: {hash} — `docs: /create:project-epics-todo — Epic {N}: {name}`
-**Next step**: Run `/do` to implement the first available story, or `/create:project-epics-todo {N+1}` for the next epic. These checklists carry no `verify:` bindings (they are added when `/todo` materializes a story, rule 9), so a `/do` or `/run-todo` run on them seals every story as all-manual: to bind testable criteria to commands first, materialize the epic's stories with `/todo` or add the `verify:` lines yourself under its Template Rules.
+**Next step**: Run `/do` to implement the first available story, or `/create:project-epics-todo {N+1}` for the next epic. Each testable criterion carries a `verify:` binding (rule 9), so `/do` and `/run-todo` record each binding red, freeze it and run it before the commit; a `[manual]` criterion is checked by a person.
 ```
 
 ## Output Rules
@@ -322,12 +325,12 @@ Follow the **Post-Command Commit Convention** in `.agents/startup-reference.md`.
 1. Use status markers as defined in Key
 2. Reference files as paths or `file.cs:line` format
 3. Link docs with markdown links `[Name](path)`
-4. **NEVER include code blocks, code snippets, or implementation examples**
+4. **NEVER include code blocks, code snippets, or implementation examples** (a criterion's one-line `verify:` command is a binding, not an example)
 5. Focus on WHAT to do, not HOW to do it
 6. Include ALL sections even if empty (for consistency with `/do` and `/review:organize`)
 7. **Stories MUST be in dependency-optimized order**
 8. **Every story MUST include Dependencies, Unblocks, Track, Domain, Estimate, and Complexity metadata** (Complexity = the 1–10 routing score `/do` reads — score it per the canonical rubric in `/todo`, never restate that rubric here)
-9. Acceptance criteria MUST match `backlog.md` exactly — do not paraphrase or invent new ones. Do not add a `verify:` binding here either: `verify:` is added when `/todo` materializes a story (its Template Rule on `verify:` bindings), never in `backlog.md`, so the copied AC stays identical to the backlog
+9. Acceptance criteria MUST match `backlog.md` exactly — do not paraphrase or invent new ones. Each criterion is a checkbox bullet: the backlog text verbatim, then its `verify:` binding or a `[manual]`/`[CI-pending]` tag, per `/todo` Template Rule 22 (never restated here). The match compares only the text before ` verify:` or the tag. `verify:` lives in the checklist only, never in `backlog.md`, so the backlog AC stays the source text
 10. **Every story MUST include an Ownership line** naming production and test ownership per the repository's actual test-authorship rule, and no reviewer: review is planned per wave (see `/todo` Template Rules and Review cadence)
 11. **Every story MUST include a Release tag and a Risk tier** — `core`/`later` and `deep`/`standard`, decided with the rubric in `/todo` (Release Slices and Risk Tiers; `deep` means high-stakes with a one-line reason), never restated here. Across all epics, the core slice must ship on its own: no core story depends on a later story in any epic. Check each checklist with `node .claude/core/release-slice.js {checklist} --strict --deps-from {every other epic checklist of the feature}`; an all-later epic is valid when a sibling holds the core.
 12. **No second status tracker.** If the epics need a cross-file execution guide, it holds only the static dependency graph, the release slices and the gate list. It has no status, commit or receipt columns: story status lives in the checklists and wave results live in the `/run-todo` plan's Wave Execution Log. Do not ask for per-story receipt files; a receipt is written only when an AC's evidence cannot fit a log line (a SQL proof transcript, a browser run).
