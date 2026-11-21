@@ -36,7 +36,7 @@ node .codex/core/render-shared-agents.js --check
 
 Use `.codex/core/` helpers in Codex and `.claude/core/` in Claude. Shared guidance's Claude helper examples translate to the active native prefix with arguments/gates retained. Direct shared-helper execution must explicitly set `AGENTS_RUNTIME=codex` when Codex behavior is intended.
 
-Claude commands remain compatible. Codex uses discovered `$` skills: `/review:qa` maps to `$review-qa`, `/create:module` to `$create-module`. [Commands](commands.md) lists all 49 mappings. If a pre-install session cannot discover a newly installed skill, start a fresh session; reading a file is not proof that the native workflow ran.
+Claude commands remain compatible. Codex uses discovered `$` skills: `/review:qa` maps to `$review-qa`, `/create:module` to `$create-module`. [Commands](commands.md) lists all 50 mappings. If a pre-install session cannot discover a newly installed skill, start a fresh session; reading a file is not proof that the native workflow ran.
 
 ## Runtime behavior and evidence limits
 

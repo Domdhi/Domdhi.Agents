@@ -15,7 +15,7 @@ A review exists to catch problems that cost more later than now: wrong behaviour
 
 The cadence unit is the run: "epic" in this file means the TODO being run, however many epics it holds. The reviewer gets the diff and the acceptance criteria; Main Agent checks the deferred list against the result, so the reviewer stays independent of earlier verdicts.
 
-What deserves a real review is the kind of surface, not the story's size or label: code, guards and scripts, persisted shapes and input validation, offline and data-loss paths, displayed numbers, global or print styling, and the first use of a contract. Prose and seed data need a read, not a review.
+What deserves a real review is the kind of surface, not the story's size or label: code, guards and scripts, persisted shapes and input validation, offline and data-loss paths, displayed numbers, global or print styling, and the first use of a contract. Prose and seed data need a read, not a review, except prose that states policy, authority, commands or numbers someone will act on (a runbook, a course or guide that teaches a workflow, release notes): that is a real review surface, checked against its sources.
 
 A single task (`/do`) is the same idea scaled down: one review at the end, a closer look for money, data or access, the same firm lines and the same short log. With no later review to defer to, it fixes every finding in that one pass.
 

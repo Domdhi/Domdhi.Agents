@@ -130,11 +130,17 @@ const TAIL_KEEP_LINES = 5000;
  */
 function inferGateRun(command) {
     if (!command || !command.includes('gate.js')) return null;
-    // Match: gate.js --test, gate.js test → gate:test
-    // Match: gate.js build, gate.js (bare) → gate:build
-    if (/gate\.js\s+(--test|test)\b/.test(command)) return 'gate:test';
-    if (/gate\.js/.test(command)) return 'gate:build';
-    return null;
+    // Only a `node … gate.js` invocation is a gate run: a command that merely names the file (grep, cat, sed, an
+    // editor) is not (course-update run, 2026-11-21: five reads of gate.js logged as gate:build).
+    const invoked = /(?:^|[\s;&|(])node(?:\.exe)?\s+(?:--\S+\s+)*(?:"[^"]*gate\.js"|'[^']*gate\.js'|[^\s"';&|]*gate\.js)((?:\s+[^\s;&|]+)*)/.exec(command);
+    if (!invoked) return null;
+    const args = invoked[1].trim().split(/\s+/).filter(Boolean);
+    // Subcommands that run no build or test leg are not gate runs.
+    if (args[0] && /^(?:stop|verify-receipt|--help|-h)$/.test(args[0])) return null;
+    // Match: gate.js --test, gate.js test, gate.js full test → gate:test
+    // Match: gate.js build, gate.js full, gate.js (bare) → gate:build
+    if (args.some((arg) => arg === 'test' || arg === '--test')) return 'gate:test';
+    return 'gate:build';
 }
 
 /**

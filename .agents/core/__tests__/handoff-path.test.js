@@ -181,3 +181,22 @@ describe('handoff-path', () => {
     );
   });
 });
+
+describe('handoff-path CLI write --stamp (course-update run, 2026-11-21)', () => {
+  const { spawnSync } = require('node:child_process');
+  const script = path.resolve('.agents/core/handoff-path.js');
+  const run = (args) => {
+    spawnSync('git', ['init', '-q', '-b', 'main'], { cwd: tmp });
+    return spawnSync(process.execPath, [script, ...args], { cwd: tmp, encoding: 'utf8' });
+  };
+
+  it('uses the given run stamp for the file name and month folder', () => {
+    const r = run(['write', 'do', '--stamp', '261121-1348']);
+    expect(r.status).toBe(0);
+    expect(r.stdout.trim()).toMatch(/2026-11\/261121-1348-do-[a-z0-9-]+\.md$/);
+  });
+
+  it.each([[['write', 'do', '--stamp', '2611211348']], [['write', 'do', '--stamp']], [['write', 'do', '--other', 'x']]])('refuses a malformed stamp argument %j', (args) => {
+    expect(run(args).status).toBe(2);
+  });
+});

@@ -1,6 +1,6 @@
 # Commands and Workflows
 
-A workflow selects a procedure: what inputs to read, which prerequisites to check, when to delegate, how to verify and what to persist/commit. Workflows are authored under `.agents/skills/`, with native names mapped by `.agents/adapters/workflows.json`. Claude slash-command files are generated; Codex invokes the discovered `$skill-name`. There are 49 workflows. The [complete reference](../commands.md) gives both native names and links every authored procedure.
+A workflow selects a procedure: what inputs to read, which prerequisites to check, when to delegate, how to verify and what to persist/commit. Workflows are authored under `.agents/skills/`, with native names mapped by `.agents/adapters/workflows.json`. Claude slash-command files are generated; Codex invokes the discovered `$skill-name`. There are 50 workflows. The [complete reference](../commands.md) gives both native names and links every authored procedure.
 
 ## Working routes
 

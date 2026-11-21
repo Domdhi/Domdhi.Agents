@@ -21,11 +21,11 @@ Four docs. Read in order. By the end you know what the system is and what role e
 
 Read these once you've initialized a project and want to use it well. For an existing installation, start with [v6 migration](./migration-v6.md).
 
-1. [`reference/commands.md`](./commands.md) — Complete 49-workflow reference with Claude/Codex names and authored procedures.
+1. [`reference/commands.md`](./commands.md) — Complete 50-workflow reference with Claude/Codex names and authored procedures.
 2. [`guides/specialize.md`](./guides/specialize.md) — `/review:specialize --fix` walkthrough. Appends project context to the baseline agents and generates stack-specific agents from your architecture doc.
 3. [`guides/personalize.md`](./guides/personalize.md) — `/review:personalize` walkthrough. Gives agents names, personas, and soul-level identities. Cosmetic until you work at scale — then it becomes how you think about the team.
 4. [`concepts/memory.md`](./concepts/memory.md) — How memories compound across sessions. Active-work-day decay (idle projects don't rot), confidence tiers, the session-handoff write path.
-5. [`concepts/hooks.md`](./concepts/hooks.md) — The 16 Claude handlers and supported Codex adaptation. Secret scanning, guardrails, session memory capture — what happens without you asking.
+5. [`concepts/hooks.md`](./concepts/hooks.md) — The 17 Claude handlers and supported Codex adaptation. Secret scanning, guardrails, session memory capture — what happens without you asking.
 
 ## For Contributors — Extending the System
 
@@ -46,7 +46,7 @@ If you came here from a search engine or a link and just need to find a specific
 | Getting Started | [`getting-started.md`](./getting-started.md) | Pinned install, `/create:new-project`, specialize, commit |
 | Commands (concept) | [`concepts/commands.md`](./concepts/commands.md) | Orchestration tier explainer |
 | Agents (concept) | [`concepts/agents.md`](./concepts/agents.md) | The 11 baseline agents + model hierarchy |
-| Skills (concept) | [`concepts/skills.md`](./concepts/skills.md) | Auto-load, user-invocable, the 23-knowledge-skill catalog and 49 workflow selectors |
+| Skills (concept) | [`concepts/skills.md`](./concepts/skills.md) | Auto-load, user-invocable, the 24-knowledge-skill catalog and 50 workflow selectors |
 | Memory (concept) | [`concepts/memory.md`](./concepts/memory.md) | Compounding, confidence, decay, the session-handoff write path |
 | Hooks (concept) | [`concepts/hooks.md`](./concepts/hooks.md) | Claude handler inventory, Codex adaptation and trust limits |
 | Commands (reference) | [`reference/commands.md`](./commands.md) | Every slash command, alphabetical |

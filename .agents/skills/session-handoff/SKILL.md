@@ -50,7 +50,7 @@ node .claude/core/handoff-path.js latest
 | Command | When | Purpose |
 |---------|------|---------|
 | `/end` | End-of-session cleanup | Explicit save-state for next session |
-| `/do` | After Step 9d commit | Every task leaves a fresh handoff, so losing the session does not lose post-commit context |
+| `/do` | Step 9d, before the commit (the handoff rides in it) | Every task leaves a fresh handoff, so losing the session does not lose post-commit context |
 | `/run-todo` | After each wave's commit (Phase 2 Step 8) and after Phase 3 final report | Per-wave resumability + final state |
 | `/run-tests` | After final report (Phase 3) | Test findings + bugs land in the handoff for next session triage |
 | `/todo` | After Phase 6 report | A newly created TODO is "ready to execute"; the handoff points the next session at it |

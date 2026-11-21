@@ -266,7 +266,7 @@ Agent(
 
 ### Step 2: Build the TaskList (the spine)
 
-Create a TaskCreate item for every discrete unit of work and wire dependencies with `addBlockedBy`. The dependency chain is the execution plan: after context loss the TaskList shows where Main Agent is. Build the wave groups from the derived waves, open stories only (`node .claude/core/plan-check.js "{TODO_PATH}" --waves --open --deps-from "{each sibling TODO of the feature}"`, which already leaves out the `[x]`, `[!]` and deferred stories and, until `--later-approved` is passed, the later-slice ones (with it they come last, after the Ship gate), or the TODO's own Wave Plan restricted the same way when it has one and `plan-check` agrees it is dependency-correct). The wave stays the gate, review and commit unit: no story of a later wave is dispatched before that wave starts (starting across a wave barrier is a later-slice feature).
+Create a TaskCreate item for every discrete unit of work and wire dependencies with `addBlockedBy`. A runtime with no TaskCreate tool keeps the same items as a checklist in the plan file. The dependency chain is the execution plan: after context loss the TaskList shows where Main Agent is. Build the wave groups from the derived waves, open stories only (`node .claude/core/plan-check.js "{TODO_PATH}" --waves --open --deps-from "{each sibling TODO of the feature}"`, which already leaves out the `[x]`, `[!]` and deferred stories and, until `--later-approved` is passed, the later-slice ones (with it they come last, after the Ship gate), or the TODO's own Wave Plan restricted the same way when it has one and `plan-check` agrees it is dependency-correct). The wave stays the gate, review and commit unit: no story of a later wave is dispatched before that wave starts (starting across a wave barrier is a later-slice feature).
 
 ```
 TaskCreate: "Pre-flight checks" → mark completed (already done)
@@ -874,7 +874,7 @@ It fails closed on zero collected tests like the unit leg and writes `_latest-e2
 - **`--e2e` flag passed** → run it on every wave, unconditionally.
 - **No flag (default)** → run it on any wave whose diff touched a contract/interface surface (the list above). When in doubt, run it; a project without E2E just SKIPs to PASS.
 
-**Browser checks are headless.** Verify UI behavior with headless Playwright (the project's E2E runner or `playwright-cli`) or `curl` against routes; a headless screenshot is the on-screen evidence. Do not open a headed browser or a preview tab that takes the owner's focus; a check that needs one (or the owner's real session) becomes a `[manual]` AC item unless the project's instructions allow headed checks.
+**Browser checks are headless.** Verify UI behavior with headless Playwright (the project's E2E runner or `playwright-cli`) or `curl` against routes; a headless screenshot is the on-screen evidence. When neither is installed and the Playwright installer refuses the OS (a distribution newer than it supports), use `playwright-core` from a scratch folder with `executablePath` pointed at a browser already in `~/.cache/ms-playwright/`, or fall back to `curl` for status and markup. Do not open a headed browser or a preview tab that takes the owner's focus; a check that needs one (or the owner's real session) becomes a `[manual]` AC item unless the project's instructions allow headed checks.
 
 If the E2E suite is slow, flaky or environment-bound (e.g. headed Chromium under WSL) and cannot run in this session, flag it in the wave handoff as **E2E-unverified** with the contract that changed; never skip it silently.
 
@@ -973,7 +973,7 @@ No token means the wave is not done: return to AC verification and produce the e
 Review the wave once, after its stories pass Steps 5 and 6, as `.claude/skills/code-review/references/review-cadence.md` describes: what a review is for, how to judge what a finding needs, the firm lines and the decision-log format. Read it before the first wave's review; this step adds only the mechanics.
 
 - **Group by seam.** Review the wave's diff together, so stories that share a file, field or contract are seen together. Start from the plan's Review groups and add any group the diff reveals. One fresh `code-reviewer` covers the wave, or one per seam group when the wave holds several unrelated ones, all in the same pass. Write the review scope (stories, AC, changed files, constraints, evidence locations) to the run's work folder and start the reviewer from it, not from conversation history.
-- **The surface decides the depth, not the story's size, label or tier.** Code, guards and scripts, persisted shapes, offline and data-loss paths, displayed numbers and global styling get a real review. A wave of only prose or seed data gets Main Agent's own read. A test-authoring wave is code: dev-authored tests are where soft assertions slip through.
+- **The surface decides the depth, not the story's size, label or tier.** Code, guards and scripts, persisted shapes, offline and data-loss paths, displayed numbers and global styling get a real review. A wave of only prose or seed data gets Main Agent's own read, unless the prose states policy, authority, commands or numbers someone will act on (a runbook, a course or guide, release notes); that gets a real review against its sources. A test-authoring wave is code: dev-authored tests are where soft assertions slip through.
 - **A change the review cadence's firm line 2 covers (money, authentication or access, as it defines access) also gets `security-auditor`**, in the same pass, on its own pinned model (see the dispatch below).
 - **Test-cost signal.** Before the review (or the read), run `node .claude/core/test-cost.js --worktree` and record its one-line result in the plan's wave row; in a shared checkout run `--range {waveBaseSha}..HEAD` after the wave's commit instead, so another writer's uncommitted files are not counted. `TEST_COST_FLAG` (more than about 2 test lines added per source line added, with at least 20 source lines) is a prompt to look, not a gate: give the reviewer the output and ask whether the flagged tests pin contracts or tuning. An exact pin on a non-contract value becomes an invariant or bound; a test guarding money, data or access stays however large it is. Test-only stories and backfills (no source added) are not flagged.
 
@@ -1177,7 +1177,7 @@ It appends one `wave_close` row to a non-rotated `run-trace-{run id}.jsonl`, so 
 Resolve this run's handoff path once (on the first wave) and reuse the same `$HANDOFF` string for every later wave and the final handoff, so the run overwrites one file:
 
 ```bash
-HANDOFF=$(node .claude/core/handoff-path.js write run-todo)   # first wave only; reuse the value thereafter
+HANDOFF=$(node .claude/core/handoff-path.js write run-todo --stamp {YYMMDD-HHMM})   # the plan's stamp; first wave only, reuse the value thereafter
 ```
 
 Refresh `$HANDOFF` with the `session-handoff` skill (`.claude/skills/session-handoff/SKILL.md`); it carries the template and the `/run-todo`-specific tailoring (its Step 4).

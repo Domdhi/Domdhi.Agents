@@ -100,7 +100,7 @@ IF INPUT is empty → infer:
 
 ## Step 2: Build the TaskList (Main Agent — this is your spine)
 
-Create TaskList items for the pipeline stages; they track progress and survive context compression.
+Create TaskList items for the pipeline stages; they track progress and survive context compression. A runtime with no TaskCreate/TaskUpdate tool tracks the same stages as a checklist in the plan file (Step 4) and ticks them there.
 
 ```
 TaskCreate: "Gather context and read files"
@@ -344,9 +344,10 @@ If dirty, identify whose changes they are: commit your own with exact paths; oth
 | Signal | Small/Medium → Main Agent direct | Large → Delegate |
 |--------|---------------------------|-----------------|
 | Files to modify | ≤ 5 | > 5 |
-| Estimated new LOC | < 500 | ≥ 500 |
+| Estimated new LOC (code only) | < 500 | ≥ 500 |
 | AC bullets | ≤ 8 | > 8 |
 | Nature | Mechanical — spec → code | Ambiguous — multiple valid approaches |
+| Content (prose, course or data text whose accuracy rests on facts Main Agent gathered) | Main Agent, whatever the length | Delegate only a part whose sources the agent can read in full |
 
 **Default: Main Agent implements directly.** Delegation adds prompt assembly, lossy translation, status triage and fix-up, and pays off only when the task is large enough that Main Agent benefits from focusing on judgment over typing. `--delegate` in INPUT forces Path B regardless of the Complexity score or the signal table.
 
@@ -638,7 +639,7 @@ For each AC bullet in the story:
 | Data/schema | Read migration or schema file |
 | Integration | Check imports, wiring, registration |
 | CI-runtime only (matrix job, env-bound, no local runner) | Verify by **inspection** + note `[CI-pending]`; record a fallback if CI rejects it (F33). Local execution isn't possible, so don't block on it |
-| UI behavior | Headless Playwright (the project's E2E runner or `playwright-cli`) or `curl`; a headless screenshot is the evidence. Do not open a headed browser or a preview tab that takes the owner's focus |
+| UI behavior | Headless Playwright (the project's E2E runner or `playwright-cli`) or `curl`; a headless screenshot is the evidence. When neither is installed and the Playwright installer refuses the OS (a distribution newer than it supports), use `playwright-core` from a scratch folder with `executablePath` pointed at a browser already in `~/.cache/ms-playwright/`, or fall back to `curl` for status and markup. Do not open a headed browser or a preview tab that takes the owner's focus |
 | Manual-only (UI, visual) | Note as `[manual]` — a check that truly needs a headed browser or the owner's real session is the owner's |
 
 **Start with the bindings.** When the task is a TODO story, run its `verify:` bindings and read the records (a criterion without one stays `manual` or `[CI-pending]` and is verified below):
@@ -682,7 +683,7 @@ Only after spec passes. Check:
 
 One review of the finished change, run before the ship token because fixes invalidate earlier evidence. The purpose, judgment and firm lines are in `.claude/skills/code-review/references/review-cadence.md`; follow them rather than a table here.
 
-Scale it to what changed. The kind of surface sets the depth, not the story's size or tier: code, guards, scripts, persisted shapes, input validation, offline and data-loss paths and displayed numbers get a fresh `code-reviewer` started from a persisted scope (story, AC, changed files, constraints) when the change is code with real logic or touches those surfaces; trivial code (a rename, a config value, one-line wiring) and prose and seed data get your own careful read, logged as light. Where a mistake costs money, data or access, look closer, and add `security-auditor` on its pinned model, in this task, when firm line 2 of the reference applies. A `deep` tier is a prompt to look harder, and a task with nothing in these classes needs no separate reviewer beyond Steps 8a-8b.
+Scale it to what changed. The kind of surface sets the depth, not the story's size or tier: code, guards, scripts, persisted shapes, input validation, offline and data-loss paths and displayed numbers get a fresh `code-reviewer` started from a persisted scope (story, AC, changed files, constraints) when the change is code with real logic or touches those surfaces; trivial code (a rename, a config value, one-line wiring) and prose and seed data get your own careful read, logged as light. Prose that states policy, authority, commands or numbers someone will act on (a runbook, a course or guide teaching a workflow, release notes) is not light: it gets a fresh reviewer that checks it against its sources (course-update run, 2026-11-21: the full review found a MAJOR on exactly the authority boundary the course teaches). Where a mistake costs money, data or access, look closer, and add `security-auditor` on its pinned model, in this task, when firm line 2 of the reference applies. A `deep` tier is a prompt to look harder, and a task with nothing in these classes needs no separate reviewer beyond Steps 8a-8b.
 
 `/do` has no later review to defer to, so fix every finding in this pass, polish included (the coverage-only `TEST-GAP` exception in the `code-review` skill still applies). Prove each fix with a test or command and rerun the affected checks; fixes are not sent back for re-review. A fix that grows past about half an hour or spans several layers is a design change: write it up as a follow-up story and keep this task's scope, or ask the owner once if it needs a real decision (with `--no-ask`, do not ask: finish `needs-human`, with the decision and its options in the intake line, Headless contract). Record the review in `docs/.output/findings/reviews/` when a reviewer ran.
 
@@ -696,7 +697,7 @@ The story was frozen in Step 5 (the seal refuses one with no freeze baseline). W
 
 An ad-hoc `/do` (no TODO) seals with a bare `node .claude/core/ship-check.js seal`.
 
-**No code to verify.** A docs-only change with no code edit, or a project with no gate configured (Step 7 skipped it), leaves no gate receipt to seal, and receipt mode never downgrades: the seal would be refused. Do not seal. This is a `SHIP_CHECK_SKIP` case: emit `SHIP_CHECK_SKIP: {reason}` in 8c and commit with `--sc-skip "docs-only change: no code to verify"` (or `--sc-skip "no gate configured: nothing to run"`) in Step 9e. The skip is audited, and the completion check is still required.
+**No code to verify.** A docs-only change with no code edit, a content-only change outside what the gate builds and tests (seed data, course text, a script the gate never imports), or a project with no gate configured (Step 7 skipped it), leaves no gate receipt to seal, and receipt mode never downgrades: the seal would be refused. Do not seal. This is a `SHIP_CHECK_SKIP` case: emit `SHIP_CHECK_SKIP: {reason}` in 8c and commit with `--sc-skip "docs-only change: no code to verify"` (or `--sc-skip "no gate configured: nothing to run"`, or `--sc-skip "content-only change outside the gated app: {the check that did verify it}"`) in Step 9e. A content-only change names the check that actually verified it (a validator script, a rendered read) in the reason and in the plan. The skip is audited, and the completion check is still required.
 
 ### 8c. Ship-token precondition (hard precondition for commit)
 
@@ -786,7 +787,7 @@ Skip only if no agent was dispatched (Main Agent direct path). The ledger lands 
 Before the commit, refresh the session handoff using the **`session-handoff`** skill (`.claude/skills/session-handoff/SKILL.md`), even for a trivial task; the next session's `/prime` depends on it. Resolve this run's path once and reuse it for the `git add` in Step 9e:
 
 ```bash
-HANDOFF=$(node .claude/core/handoff-path.js write do)
+HANDOFF=$(node .claude/core/handoff-path.js write do --stamp {YYMMDD-HHMM})   # the plan's stamp
 ```
 
 The skill has the template, rules, and the `/do`-specific tailoring (Step 4 in the skill). The handoff goes in the same commit as the implementation, so write it as if the commit has already happened.

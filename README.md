@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
 [![Built for Claude Code](https://img.shields.io/badge/Built_for-Claude_Code-orange.svg)](https://claude.com/claude-code)
 
-A portable toolkit authored in `.agents/`, with generated Claude Code and Codex entry points. Install it into any project for structured workflows from brainstorm to deployment — 49 workflows, 11 specialized roles, 23 knowledge skills, and a memory system that compounds across sessions.
+A portable toolkit authored in `.agents/`, with generated Claude Code and Codex entry points. Install it into any project for structured workflows from brainstorm to deployment — 50 workflows, 11 specialized roles, 24 knowledge skills, and a memory system that compounds across sessions.
 
 **Tech-agnostic by default.** Works with any stack. Run `/review:specialize` to generate project-specific agents from your architecture doc.
 
@@ -21,7 +21,7 @@ A portable toolkit authored in `.agents/`, with generated Claude Code and Codex 
 ```
 .agents/                     Canonical authored toolkit
 ├── roles/                   11 shared role definitions
-├── skills/                  49 workflows and 23 knowledge skills/assets
+├── skills/                  50 workflows and 24 knowledge skills/assets
 ├── core/ and hooks/         Shared executable helpers and lifecycle behavior
 ├── adapters/                Claude/Codex protocol, model and native metadata
 ├── templates/ and config/   Shared document templates and policy

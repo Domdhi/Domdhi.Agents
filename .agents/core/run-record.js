@@ -477,6 +477,9 @@ function wave(opts) {
             const warnings = [];
             const file = runFilePath(root, pointer.run_id);
             const read = readJsonFile(file);
+            // A /run-todo wave names its stories, or the run's story count comes out short (first adopter run, 2026-11-20);
+            // an ad-hoc /do has no story and drops --story.
+            if (o.storyRequiredForRunTodo && !story && read.state === 'ok' && isPlain(read.value) && read.value.command === 'run-todo') refuse('a run-todo wave requires --story "{wave story IDs}"');
             if (read.state === 'ok' && isPlain(read.value) && Array.isArray(read.value.waves)) {
                 const run = { ...read.value, waves: [...read.value.waves, { wave: o.wave, story, ts: now.toISOString() }] };
                 writeAtomic(root, file, jsonText(run));
@@ -740,8 +743,7 @@ function finish(opts) {
 
 const FLAGS = new Map([
     ['start', { flags: ['command', 'input', 'run-id', 'budget', 'session'], required: ['command', 'input'] }],
-    // --story is required from the CLI: a wave recorded without it undercounts the run's stories (first adopter run, 2026-11-20).
-    ['wave', { flags: ['wave', 'story', 'plan', 'session'], required: ['wave', 'story'] }],
+    ['wave', { flags: ['wave', 'story', 'plan', 'session'], required: ['wave'] }],
     ['finish', {
         flags: ['status', 'run-id', 'commit', 'plan', 'receipt', 'ship-token', 'fix-rounds', 'review-major', 'misalignments', 'output-tokens', 'session'],
         required: ['status'],
@@ -796,7 +798,7 @@ function main(argv = process.argv.slice(2), env = process.env) {
             if (parsed.verb === 'start') {
                 doc = start({ ...base, command: f.command, input: f.input, runId: f['run-id'], budget: f.budget });
             } else if (parsed.verb === 'wave') {
-                doc = wave({ ...base, wave: numberFlag(f.wave), story: f.story, plan: f.plan });
+                doc = wave({ ...base, wave: numberFlag(f.wave), story: f.story, plan: f.plan, storyRequiredForRunTodo: true });
             } else if (parsed.verb === 'finish') {
                 doc = finish({
                     ...base, status: f.status, runId: f['run-id'], commit: f.commit, plan: f.plan, receipt: f.receipt, shipToken: f['ship-token'],

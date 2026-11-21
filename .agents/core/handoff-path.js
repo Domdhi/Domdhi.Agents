@@ -22,8 +22,8 @@
  * commands + /prime + pre-compaction-archive.cjs). This is that single source.
  *
  * USAGE (CLI)
- *   node .claude/core/handoff-path.js write <caller>
- *       Ensure the handoffs/ dir exists and print the path THIS run should
+ *   node .claude/core/handoff-path.js write <caller> [--stamp YYMMDD-HHMM]
+ *       (--stamp: the run's own stamp, from its plan filename.) Ensure the handoffs/ dir exists and print the path THIS run should
  *       write. Capture it ONCE per command run and reuse the same string for
  *       both the Write and the `git add` (per the Run-Stamp Convention — one
  *       stamp per run, so /run-todo's waves overwrite one file, not N).
@@ -220,16 +220,26 @@ module.exports = {
 
 // ---- CLI ----
 if (require.main === module) {
-    const [cmd, arg] = process.argv.slice(2);
+    const [cmd, arg, ...rest] = process.argv.slice(2);
     try {
         if (cmd === 'write') {
             if (!CALLERS.includes(arg)) {
-                process.stderr.write(`usage: handoff-path.js write <${CALLERS.join('|')}>\n`);
+                process.stderr.write(`usage: handoff-path.js write <${CALLERS.join('|')}> [--stamp YYMMDD-HHMM]\n`);
                 process.exit(2);
+            }
+            // --stamp reuses the run's own stamp (the Run-Stamp Convention: one stamp per run, the plan's), so a run
+            // longer than a minute still writes {planStamp}-{caller}-{branch}.md (course-update run, 2026-11-21).
+            let given = null;
+            if (rest.length) {
+                if (rest.length !== 2 || rest[0] !== '--stamp' || !/^\d{6}-\d{4}$/.test(rest[1])) {
+                    process.stderr.write('usage: handoff-path.js write <caller> [--stamp YYMMDD-HHMM]\n');
+                    process.exit(2);
+                }
+                given = rest[1];
             }
             // One stamp for both the mkdir and the path, so the month folder can't
             // disagree with the filename stamp at a minute/month boundary.
-            const s = stamp();
+            const s = given || stamp();
             ensureDir(process.cwd(), s);
             process.stdout.write(buildWritePath(arg, { runStamp: s }) + '\n');
         } else if (cmd === 'latest') {

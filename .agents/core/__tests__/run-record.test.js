@@ -877,6 +877,18 @@ describe('run-record finish: derived fields', () => {
     expect(res.record.stories).toEqual({ value: 3, source: 'derived' });
   });
 
+  it('wave_aRunTodoWaveWithoutStory_isRefused_butAnAdHocDoWaveIsNot', () => {
+    const root = mkRoot();
+    begin(root, { command: 'run-todo' });
+    const refused = subject().wave({ root, session: 'sess-a', wave: 1, now: at(1), storyRequiredForRunTodo: true });
+    expect(refused.exitCode).toBe(2);
+    expect(JSON.stringify(refused.errors)).toMatch(/requires --story/);
+
+    const doRoot = mkRoot();
+    begin(doRoot, { command: 'do', input: 'ad-hoc task' });
+    expect(subject().wave({ root: doRoot, session: 'sess-a', wave: 1, now: at(1), storyRequiredForRunTodo: true }).exitCode).toBe(0);
+  });
+
   it('finish_aWaveRecordedWithNoStoryList_makesTheStoryCountUnknown', () => {
     const root = mkRoot();
     fourWaveRun(root);
@@ -1174,7 +1186,7 @@ describe('run-record CLI', () => {
     expect(fs.existsSync(pointerFile(root, 'env-session'))).toBe(false);
   });
 
-  it.each([['start', ['--command', 'do', '--input', 'x']], ['wave', ['--wave', '1', '--story', 'T-1.1']], ['current', []], ['finish', ['--status', 'passed']]])(
+  it.each([['start', ['--command', 'do', '--input', 'x']], ['wave', ['--wave', '1']], ['current', []], ['finish', ['--status', 'passed']]])(
     'cli_%s_noSessionFlagAndNoEnv_exits2',
     (verb, rest) => {
       const root = mkRoot();

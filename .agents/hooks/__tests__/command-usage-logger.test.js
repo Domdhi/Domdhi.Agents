@@ -32,6 +32,22 @@ const { createTmpDir } = require('../../core/__tests__/_helpers/tmp-dir');
 
 describe('command-usage-logger', () => {
     describe('inferGateRun', () => {
+        it.each([
+            ['grep -n "gate.js" .agents/skills/do/references/workflow.md'],
+            ['sed -n 1,40p .claude/core/gate.js'],
+            ['cat .claude/core/gate.js | head'],
+            ['node .claude/core/gate.js stop'],
+            ['node .claude/core/gate.js verify-receipt --json'],
+        ])('inferGateRun_aCommandThatOnlyNamesOrQueriesTheGate_isNotAGateRun: %s', (command) => {
+            expect(inferGateRun(command)).toBeNull();
+        });
+
+        it('inferGateRun_aChainedOrFullInvocation_isStillCounted', () => {
+            expect(inferGateRun('cd /x && node .claude/core/gate.js test 2>&1 | tail -5')).toBe('gate:test');
+            expect(inferGateRun('node .claude/core/gate.js full test')).toBe('gate:test');
+            expect(inferGateRun('node "/a b/.claude/core/gate.js" build')).toBe('gate:build');
+        });
+
         it('inferGateRun_gateTestFlag_returnsGateTest', () => {
             // Arrange / Act / Assert
             expect(inferGateRun('node .claude/core/gate.js --test')).toBe('gate:test');

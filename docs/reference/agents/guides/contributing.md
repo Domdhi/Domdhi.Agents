@@ -1,6 +1,6 @@
 # Contributing to the System
 
-This guide is for adopters who want to extend the shared `.agents/` toolkit with a new agent, command, or skill. The template ships with 11 roles, 49 workflows, and 23 knowledge skills as of this writing — enough for most projects to get moving. But every project eventually needs something the template doesn't have: a domain-specific skill, a specialist agent for an unusual stack, a workflow command unique to your team. This guide walks through how to add one without breaking the three-tier architecture.
+This guide is for adopters who want to extend the shared `.agents/` toolkit with a new agent, command, or skill. The template ships with 11 roles, 50 workflows, and 24 knowledge skills as of this writing — enough for most projects to get moving. But every project eventually needs something the template doesn't have: a domain-specific skill, a specialist agent for an unusual stack, a workflow command unique to your team. This guide walks through how to add one without breaking the three-tier architecture.
 
 For a tour of what already exists, see [`../concepts/commands.md`](../concepts/commands.md), [`../concepts/agents.md`](../concepts/agents.md), and [`../concepts/skills.md`](../concepts/skills.md). For the inventory and wiring map, see [`../system-map.md`](../system-map.md). For the abstract command reference, see [`../commands.md`](../commands.md).
 
@@ -230,9 +230,9 @@ Domdhi.Agents maintainers cut releases on natural milestones — when a meaningf
 
 ## See Also
 
-- [`../concepts/commands.md`](../concepts/commands.md) — the 49 workflows and their native invocation routes
+- [`../concepts/commands.md`](../concepts/commands.md) — the 50 workflows and their native invocation routes
 - [`../concepts/agents.md`](../concepts/agents.md) — the 11 baseline agents, model hierarchy, dispatch mechanics
-- [`../concepts/skills.md`](../concepts/skills.md) — the 23 skills and the three consumption paths
+- [`../concepts/skills.md`](../concepts/skills.md) — the 24 skills and the three consumption paths
 - [`../system-map.md`](../system-map.md) — full inventory and wiring map
 - [`../commands.md`](../commands.md) — abstract reference for every command, including `/create:component` and `/review:check-templates`
 - [`./specialize.md`](./specialize.md) — layering tech-stack context on top of baseline agents

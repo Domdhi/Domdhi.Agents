@@ -30,6 +30,8 @@ Guide completion of development work by presenting clear options and handling ch
 npm test / cargo test / pytest / go test ./...
 ```
 
+**Reuse a proof that already covers the tree.** When the project uses the toolkit gate, `node .claude/core/gate.js verify-receipt` first: exit 0 means a passing receipt covers this exact tree (the branch tip), so it is the test evidence and nothing is re-run. Run the suite only when it fails. A branch that changes no file the gate builds or tests (docs, content outside the gated app) still needs that receipt or a run: this skill does not judge which files are code.
+
 **If tests fail:**
 ```
 Tests failing (<N> failures). Must fix before completing:
@@ -121,11 +123,20 @@ git branch -d <feature-branch>
 # The grep anchors on the {stamp}-{caller}- boundary (handoff-path.js FILE_RE):
 # a bare "*-<slug>.md" suffix match also hits OTHER branches whose slug merely
 # ends in -<slug> (deleting branch `foo`'s handoffs must not touch `bar-foo`'s).
-find docs/.output/handoffs -type f -name "*-<feature-branch-slug>.md" 2>/dev/null \
+# Keep the NEWEST one: it carries the next action, so it is renamed onto the base
+# branch's slug (where /prime on the base finds it) instead of being deleted
+# (course-update run, 2026-11-21: the prune dropped the only next-action pointer).
+# Stamps sort lexically, so the last line is the newest.
+HANDOFFS=$(find docs/.output/handoffs -type f -name "*-<feature-branch-slug>.md" 2>/dev/null \
   | grep -E '/[0-9]{6}-[0-9]{4}-(run-todo|run-tests|end|do|todo)-<feature-branch-slug>\.md$' \
+  | awk -F/ '{print $NF "\t" $0}' | sort | cut -f2)
+NEWEST=$(printf '%s\n' "$HANDOFFS" | sed -n '$p')
+printf '%s\n' "$HANDOFFS" | sed '$d' \
   | while read -r f; do case "$f" in docs/.output/handoffs/*) git rm -q "$f" 2>/dev/null || true ;; esac; done
+case "$NEWEST" in docs/.output/handoffs/*)
+  git mv "$NEWEST" "${NEWEST%-<feature-branch-slug>.md}-<base-branch-slug>.md" 2>/dev/null || true ;; esac
 [ -n "$(git diff --cached --name-only -- docs/.output/handoffs/)" ] && \
-  (printf 'chore: drop merged-branch handoffs (<feature-branch>)\n' > docs/.output/.state/.commit-msg && node .claude/core/commit.js) || true
+  (printf 'chore: fold merged-branch handoffs into <base-branch> (<feature-branch>)\n' > docs/.output/.state/.commit-msg && node .claude/core/commit.js) || true
 ```
 
 #### Option 2: Push and Create PR

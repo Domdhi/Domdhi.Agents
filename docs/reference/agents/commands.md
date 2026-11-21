@@ -1,6 +1,6 @@
 # Workflow Reference
 
-All 49 workflows below are registered in [.agents/adapters/workflows.json](../../../.agents/adapters/workflows.json). Claude exposes generated slash commands; Codex uses installed canonical skills with hyphenated names. Read the installed selector and authored body before execution. This index preserves the main purposes, gate/commit contracts and routes into the full procedures; those procedures own detailed dispatch prompts and report templates.
+All 50 workflows below are registered in [.agents/adapters/workflows.json](../../../.agents/adapters/workflows.json). Claude exposes generated slash commands; Codex uses installed canonical skills with hyphenated names. Read the installed selector and authored body before execution. This index preserves the main purposes, gate/commit contracts and routes into the full procedures; those procedures own detailed dispatch prompts and report templates.
 
 ## Pick a workflow
 
