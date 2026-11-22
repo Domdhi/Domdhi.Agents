@@ -124,3 +124,59 @@ describe('background work survives its parent (NA5.12, real processes)', () => {
         await waitFor(() => fs.existsSync(path.join(path.dirname(dbPath), 'rebuild-status.json')), 10000);
     }, 45000);
 });
+
+describe('scopeEscape: background work leaves a host session scope (T3 Code stops one per session)', () => {
+    const { scopeEscape, outsideScope } = require('../../../.agents/core/_lib/hook-spawners');
+    const cgroup = leaf => () => `0::/user.slice/user-1000.slice/user@1000.service/app.slice/${leaf}\n`;
+    const env = { PATH: '/usr/bin', XDG_RUNTIME_DIR: '/run/user/1000' };
+    const exists = file => file === '/run/user/1000/bus' || file === '/usr/bin/systemd-run';
+
+    it('returns the systemd-run --user --scope prefix inside a session scope with a user bus', () => {
+        expect(scopeEscape({ platform: 'linux', env, readFile: cgroup('t3code-claude-ab12.scope'), exists }))
+            .toEqual(['/usr/bin/systemd-run', '--user', '--scope', '--quiet', '--collect']);
+    });
+
+    it('stays null outside a scope, in init.scope, without a bus or systemd-run, off Linux, or when turned off', () => {
+        expect(scopeEscape({ platform: 'linux', env, readFile: cgroup('t3code.service'), exists })).toBeNull();
+        expect(scopeEscape({ platform: 'linux', env, readFile: cgroup('init.scope'), exists })).toBeNull();
+        expect(scopeEscape({ platform: 'linux', env, readFile: cgroup('a.scope'), exists: f => f === '/usr/bin/systemd-run' })).toBeNull();
+        expect(scopeEscape({ platform: 'linux', env, readFile: cgroup('a.scope'), exists: f => f === '/run/user/1000/bus' })).toBeNull();
+        expect(scopeEscape({ platform: 'darwin', env, readFile: cgroup('a.scope'), exists })).toBeNull();
+        expect(scopeEscape({ platform: 'linux', env: { ...env, AGENTS_SCOPE_ESCAPE: 'off' }, readFile: cgroup('a.scope'), exists })).toBeNull();
+        expect(scopeEscape({ platform: 'linux', env, readFile: () => { throw new Error('no proc'); }, exists })).toBeNull();
+    });
+
+    it('spawnBackground runs the command through the prefix and keeps the option matrix', () => {
+        const spawn = vi.fn(() => ({ unref: vi.fn() }));
+        spawnBackground('node', ['x.js'], { cwd: '/proj', spawn, platform: 'linux', escape: ['/usr/bin/systemd-run', '--user', '--scope'] });
+        expect(spawn.mock.calls[0]).toEqual(['/usr/bin/systemd-run', ['--user', '--scope', 'node', 'x.js'], { cwd: '/proj', stdio: 'ignore', windowsHide: true, detached: false }]);
+        expect(outsideScope('node', ['a'], null)).toEqual(['node', ['a']]);
+    });
+
+    const canScope = (() => {
+        if (process.platform !== 'linux') return false;
+        const r = spawnSync('systemd-run', ['--user', '--scope', '--quiet', '--collect', 'true'], { windowsHide: true, timeout: 10000 });
+        return r.status === 0;
+    })();
+
+    it.skipIf(!canScope)('a child started through the escape survives its parent scope being stopped (real systemd)', async () => {
+        tmp = createTmpDir({ prefix: 'hook-scope-' });
+        const marker = path.join(tmp.root, 'child-finished.txt');
+        const parent = path.join(tmp.root, 'parent.cjs');
+        const unit = `agents-test-scope-${process.pid}-${Date.now()}`;
+        fs.writeFileSync(parent, [
+            `const { spawnBackground, scopeEscape } = require(${JSON.stringify(HELPER)});`,
+            `const escape = scopeEscape({ env: { ...process.env, AGENTS_SCOPE_ESCAPE: '' } });`,
+            `if (!escape) { console.error('no escape inside the test scope'); process.exit(3); }`,
+            `spawnBackground(process.execPath, ['-e', ${JSON.stringify(`setTimeout(() => require('fs').writeFileSync(${JSON.stringify(marker)}, 'ok'), 3000)`)}], { cwd: ${JSON.stringify(tmp.root)}, escape });`,
+            `require('fs').writeFileSync(${JSON.stringify(marker + '.spawned')}, 'x');`,
+            'setTimeout(() => {}, 60000);',
+        ].join('\n'));
+        const { spawn } = require('node:child_process');
+        const host = spawn('systemd-run', ['--user', '--scope', '--quiet', `--unit=${unit}`, process.execPath, parent], { stdio: 'ignore', windowsHide: true });
+        expect(await waitFor(() => fs.existsSync(marker + '.spawned'), 10000)).toBe(true);
+        spawnSync('systemctl', ['--user', 'stop', `${unit}.scope`], { windowsHide: true, timeout: 10000 });
+        host.kill();
+        expect(await waitFor(() => fs.existsSync(marker), 15000)).toBe(true);
+    }, 40000);
+});

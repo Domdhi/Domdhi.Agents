@@ -32,6 +32,7 @@ const { isAtLeast } = require('../core/profile');
 const { readHookInput } = require('../core/_lib/hook-input');
 const { notesContext, captureEnabled, syncEnabled } = require('../core/_lib/memory-context');
 const { safeOpenAppend, safeMkdirp, reportRefusal } = require('../core/_lib/fs-safe');
+const { scopeEscape, outsideScope } = require('../core/_lib/hook-spawners');
 
 /** True when a capture provider is configured (cheap check; the CLI resolves the key itself). */
 function providerConfigured(env) {
@@ -41,7 +42,7 @@ function providerConfigured(env) {
 }
 
 /** @returns {boolean} true when a capture child was started */
-function processEvent(input, { env = process.env, fallbackDir = path.resolve(__dirname, '..', '..'), spawn = childProcess.spawn } = {}) {
+function processEvent(input, { env = process.env, fallbackDir = path.resolve(__dirname, '..', '..'), spawn = childProcess.spawn, escape } = {}) {
     if (!isAtLeast('standard') || env.MEMORY_CAPTURE_INNER) return false;   // MEMORY_CAPTURE_INNER: we ARE the capture's own claude -p child
     if (syncEnabled(env)) {
         try {
@@ -67,8 +68,11 @@ function processEvent(input, { env = process.env, fallbackDir = path.resolve(__d
     try {
         fs.writeSync(log, `== ${new Date().toISOString()} capture ${path.basename(transcript)}\n`);
         const cli = path.join(__dirname, '..', 'core', 'memory-capture.js');
-        // detached on every OS: the child must outlive Claude Code closing the session (setsid on POSIX).
-        const child = spawn(process.execPath, [cli, 'capture', '--session', transcript, '--max-keep', '8', '--quiet', '--then-index'], {
+        // detached on every OS: the child must outlive Claude Code closing the session (setsid on POSIX). Inside a
+        // host's systemd session scope it also starts in its own scope, since stopping a scope kills setsid children too.
+        const [command, args] = outsideScope(process.execPath, [cli, 'capture', '--session', transcript, '--max-keep', '8', '--quiet', '--then-index'],
+            escape === undefined ? scopeEscape({ env }) : escape);
+        const child = spawn(command, args, {
             cwd: ctx.projectRoot, stdio: ['ignore', log, log], windowsHide: true, detached: true, env,
         });
         child.unref();

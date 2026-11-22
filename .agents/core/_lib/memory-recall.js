@@ -313,13 +313,14 @@ async function recall({ corpus, query, k = 3, floor = DEFAULT_FLOOR, kwScore = K
         try {
             if (sync) await syncIndex(corpus, stateDir, cfg, { fetchImpl });
             const idx = loadIndex(stateDir);
+            // Judged before the query embedding, so a recall whose embedding fails still reports an index that lags.
+            stale = staleKeys(corpus, idx, cfg).length > 0;
             const [qv] = await embed([query], 'query', cfg, { timeoutMs, fetchImpl, hostsFile: hostsFileFor(stateDir) });
             const items = idx && idx.model === cfg.model ? idx.items : {};
             for (const key of keys) {
                 const it = items[key];
                 if (it && it.sha === corpus[key].sha && it.vec.length === qv.length) cos[key] = it.vec.reduce((s, x, i) => s + x * qv[i], 0);
             }
-            stale = staleKeys(corpus, idx, cfg).length > 0;
             usedEmbeddings = Object.keys(cos).length > 0;
             source = usedEmbeddings ? 'hybrid' : 'keyword-only (index empty)';
         } catch (e) {

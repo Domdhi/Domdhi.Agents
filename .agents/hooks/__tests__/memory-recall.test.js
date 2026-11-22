@@ -228,6 +228,13 @@ describe('embedder behavior', () => {
         expect(opts).toMatchObject({ detached: true, windowsHide: true, stdio: 'ignore' });
         expect(unref).toHaveBeenCalled();
     });
+    it('starts the index run for a never-built index even when this prompt fell back to keyword-only', async () => {
+        Object.assign(process.env, { MEMORY_EMBED_PROVIDER: 'openai', MEMORY_EMBED_URL: 'http://127.0.0.1:9/v1' });
+        const spawn = vi.spyOn(childProcess, 'spawn').mockReturnValue({ unref() {} });
+        await hook.processEvent({ prompt: MINT, session_id: 's1' });
+        expect(spawn).toHaveBeenCalledTimes(1);
+        expect(spawn.mock.calls[0][1].slice(1)).toEqual(['index']);
+    });
     it('does not start an index run when there is no embedder', async () => {
         const spawn = vi.spyOn(childProcess, 'spawn').mockReturnValue({ unref() {} });
         await hook.processEvent({ prompt: MINT, session_id: 's1' });

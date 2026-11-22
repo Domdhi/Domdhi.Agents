@@ -122,10 +122,35 @@ function writeAtomic(p, text) {
 }
 
 const ledgerOf = ctx => readJson(ctx.ledgerPath, {});
-function ledgerAdd(ctx, sid, staged, cost) {
+/**
+ * Record a capture pass. `events` is how many rendered events of the session are now covered: the transcript only
+ * grows, so the next pass sends events from there on. Staged and cost accumulate across passes. An entry without
+ * `events` was written before incremental capture and still means "captured, done".
+ */
+function ledgerAdd(ctx, sid, staged, cost, events) {
     const led = ledgerOf(ctx);
-    led[sid] = { at: new Date().toISOString(), staged, cost: Math.round(cost * 1e4) / 1e4 };
+    const prev = led[sid] && Number.isInteger(led[sid].events) ? led[sid] : null;
+    led[sid] = {
+        at: new Date().toISOString(),
+        staged: (prev ? prev.staged || 0 : 0) + staged,
+        cost: Math.round(((prev ? prev.cost || 0 : 0) + cost) * 1e4) / 1e4,
+        ...(Number.isInteger(events) ? { events, passes: (prev ? prev.passes || 1 : 0) + 1 } : {}),
+    };
     writeAtomic(ctx.ledgerPath, JSON.stringify(led, null, 1));
+}
+
+/** Mark a pass that found too little new user text: the position stays, the time moves (so pending clears until it grows). */
+function ledgerTouch(ctx, sid) {
+    const led = ledgerOf(ctx);
+    if (!led[sid]) return;
+    led[sid] = { ...led[sid], at: new Date().toISOString() };
+    writeAtomic(ctx.ledgerPath, JSON.stringify(led, null, 1));
+}
+
+/** Where the next capture of `sid` starts: 0 for a new session, its covered event count, or null when it is done (legacy entry). */
+function resumeFrom(entry) {
+    if (!entry) return 0;
+    return Number.isInteger(entry.events) ? entry.events : null;
 }
 
 function listMd(dir) {
@@ -141,9 +166,11 @@ function sessionFiles(ctx) {
     } catch { return []; }
 }
 
+// A session is pending when it has no ledger entry, or when an incremental entry's session grew after its last pass.
 const pendingSessions = (ctx, olderMin) => {
     const led = ledgerOf(ctx), now = Date.now();
-    return sessionFiles(ctx).filter(s => !led[s.id] && now - s.mtime > olderMin * 60000);
+    return sessionFiles(ctx).filter(s => now - s.mtime > olderMin * 60000
+        && (!led[s.id] || (Number.isInteger(led[s.id].events) && s.mtime > Date.parse(led[s.id].at) + 60000)));
 };
 
 // ---------------------------------------------------------------- capture
@@ -151,15 +178,22 @@ const pendingSessions = (ctx, olderMin) => {
 async function captureOne(file, ctx, o, env, io) {
     const cfg = captureConfig(env);
     const sid = path.basename(file).replace(/\.jsonl$/, '');
-    const r = ex.renderSession(file);
+    const full = ex.renderSession(file);
+    const from = o.force ? 0 : resumeFrom(ledgerOf(ctx)[sid]);
+    if (from === null) {
+        io.log(`session ${sid.slice(0, 8)} already captured (use --force to redo)`);
+        return { staged: 0, cost: 0 };
+    }
+    // Only what this session added since its last pass is sent; quotes are checked against that same part.
+    const r = from ? ex.sliceRender(full, from) : full;
     if (r.userRaw.length < o.minUserChars) {
-        if (!o.quiet) io.log(`session ${sid.slice(0, 8)}: too little user text, skipped`);
-        if (!o.dryRun) ledgerAdd(ctx, sid, 0, 0);
+        if (!o.quiet) io.log(`session ${sid.slice(0, 8)}: too little ${from ? 'new ' : ''}user text, skipped`);
+        if (!o.dryRun) { if (from) ledgerTouch(ctx, sid); else ledgerAdd(ctx, sid, 0, 0, full.events.length); }
         return { staged: 0, cost: 0 };
     }
     const input = o.method === 'U' ? ex.userOnly(r) : r.text;
     const parts = ex.chunks(input);
-    io.log(`session ${sid.slice(0, 8)}: ${input.length} chars to send in ${parts.length} call(s) to ${cfg.provider === 'openai' ? (cfg.baseUrls || [cfg.baseUrl]).join(' > ') : cfg.provider === 'claude-cli' ? `claude -p (${cfg.model}, your Claude login)` : cfg.model}`);
+    io.log(`session ${sid.slice(0, 8)}: ${from ? `events ${from}-${full.events.length}, ` : ''}${input.length} chars to send in ${parts.length} call(s) to ${cfg.provider === 'openai' ? (cfg.baseUrls || [cfg.baseUrl]).join(' > ') : cfg.provider === 'claude-cli' ? `claude -p (${cfg.model}, your Claude login)` : cfg.model}`);
     if (o.dryRun) return { staged: 0, cost: 0 };
     // Recursion guard: the keyless provider's own child session must never start a capture.
     if (env.MEMORY_CAPTURE_INNER) throw new Error('capture refused inside a capture child (MEMORY_CAPTURE_INNER is set)');
@@ -221,7 +255,7 @@ async function captureOne(file, ctx, o, env, io) {
         writeAtomic(path.join(ctx.candidatesDir, `${f.id}.md`), f.content);
         return f.id;
     });
-    ledgerAdd(ctx, sid, kept.length, cost);
+    ledgerAdd(ctx, sid, kept.length, cost, full.events.length);
     io.log(`  model returned ${cands.length}; dropped ${JSON.stringify(dropped)}; staged ${kept.length} (cost $${cost.toFixed(4)})`);
     if (!o.quiet) kept.forEach((c, i) => io.log(`  ${ids[i]}  [${c.type}] ${c.title}${c.quote_in_user ? '  (user quote)' : ''}`));
     return { staged: kept.length, cost };
@@ -257,8 +291,7 @@ const commands = {
         if (!file || !fs.existsSync(file)) throw new Error(`session not found: ${file || want}`);
         const sid = path.basename(file).replace(/\.jsonl$/, '');
         if (a.flags.model) env = { ...env, MEMORY_CAPTURE_MODEL: a.flags.model };
-        if (ledgerOf(ctx)[sid] && !a.flags.force && !o.dryRun) io.log(`session ${sid.slice(0, 8)} already captured (use --force to redo)`);
-        else await captureOne(file, ctx, o, env, io);
+        await captureOne(file, ctx, { ...o, force: Boolean(a.flags.force) || o.dryRun }, env, io);
         if (a.flags['then-index']) await syncIndexQuiet(ctx, env, io);
     },
 

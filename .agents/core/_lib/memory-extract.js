@@ -103,6 +103,17 @@ function renderSession(file) {
     };
 }
 
+/** The part of a rendered session from event `start` on, in renderSession's shape (an incremental capture sends only this). */
+function sliceRender(r, start = 0) {
+    const events = r.events.slice(Math.max(0, start));
+    return {
+        text: events.map(([role, c]) => `[${role}] ${c}`).join('\n'),
+        raw: events.map(e => e[2]).join('\n'),
+        userRaw: events.filter(e => e[0] === 'USER').map(e => e[2]).join('\n'),
+        events,
+    };
+}
+
 /** User messages only, each preceded by a short excerpt of what the assistant said before (cheapest method). */
 function userOnly(r) {
     const out = [];
@@ -318,4 +329,4 @@ function candidateFile(c, session, date = new Date().toISOString().slice(0, 10))
     return { id, slug, desc, content };
 }
 
-module.exports = { modelTable, SECRET_RE, SYSTEM, DEFAULT_CHUNK, LEAK, renderSession, userOnly, chunks, callAnthropic, callOpenAI, callClaudeCli, parseItems, norm, similar, filterCandidates, candidateFile };
+module.exports = { modelTable, SECRET_RE, SYSTEM, DEFAULT_CHUNK, LEAK, renderSession, sliceRender, userOnly, chunks, callAnthropic, callOpenAI, callClaudeCli, parseItems, norm, similar, filterCandidates, candidateFile };

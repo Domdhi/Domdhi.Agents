@@ -215,6 +215,12 @@ describe('hybrid recall', () => {
         expect(source).toMatch(/keyword-only/);
         expect(hits[0].name).toBe('mint-plan');
     });
+    it('an index that lags the corpus is reported stale even when the query embedding fails', async () => {
+        const s = await embedServer({ fail: true });
+        const { source, stale } = await R.recall({ corpus: corpusOf(mint, ssh), query: 'Mint Mobile phone plan renewal', stateDir: tmp.root, cfg: cfgFor(s) });
+        expect(source).toMatch(/^keyword-only \(/);
+        expect(stale).toBe(true);
+    });
     it('sync:true embeds first (CLI path)', async () => {
         const s = await embedServer();
         const { stale } = await R.recall({ corpus: corpusOf(mint), query: 'Mint Mobile plan', stateDir: tmp.root, cfg: cfgFor(s), sync: true });

@@ -91,11 +91,38 @@ describe('capture', () => {
         expect(text).not.toContain('Invented');
         expect(Object.keys(JSON.parse(fs.readFileSync(path.join(stateDir, 'ledger.json'), 'utf8')))).toEqual(['sess-a']);
         const again = await run();
-        expect(again.stdout).toMatch(/already captured/);
+        expect(again.stdout).toMatch(/too little new user text/);
         expect(s.calls).toHaveLength(1);
         // the API request carries the transcript but never the key in the body
         expect(JSON.stringify(s.calls[0].body)).not.toContain('sk-test');
         expect(s.calls[0].headers['x-api-key']).toBe('sk-test');
+    });
+    it('a later pass sends only the events added since the last one, and the ledger accumulates', async () => {
+        const s = await anthropic(() => ({ items: [] }));
+        const env = { ANTHROPIC_API_KEY: 'sk-test', ANTHROPIC_BASE_URL: s.url };
+        const rows = [user(PKILL + ' and please remember that for every later session we run'), asst('Understood, I will avoid that.'),
+            user('also the standby box is dmo while cerebro is the primary server for all deployments')];
+        writeSession('sess-i', rows);
+        await cli(['capture', '--session', 'sess-i'], env);
+        const first = JSON.parse(fs.readFileSync(path.join(stateDir, 'ledger.json'), 'utf8'))['sess-i'];
+        expect(first).toMatchObject({ events: 3, passes: 1 });
+        writeSession('sess-i', [...rows, asst('Noted.'), user('the nightly backup runs from the standby box at three in the morning every day, and it must finish before the primary server starts its own maintenance window at four, otherwise the snapshot locks collide and the backup is silently skipped')]);
+        const r = await cli(['capture', '--session', 'sess-i'], env);
+        expect(r.stdout).toMatch(/events 3-5, /);
+        expect(s.calls).toHaveLength(2);
+        const sent = JSON.stringify(s.calls[1].body.messages);
+        expect(sent).toContain('nightly backup runs from the standby box');
+        expect(sent).not.toContain('cerebro is the primary server');
+        expect(JSON.parse(fs.readFileSync(path.join(stateDir, 'ledger.json'), 'utf8'))['sess-i']).toMatchObject({ events: 5, passes: 2 });
+    });
+    it('a ledger entry from before incremental capture (no events count) stays captured', async () => {
+        const s = await anthropic(() => ({ items: goodItems }));
+        longSession('sess-l');
+        fs.mkdirSync(stateDir, { recursive: true });
+        fs.writeFileSync(path.join(stateDir, 'ledger.json'), JSON.stringify({ 'sess-l': { at: '2026-01-01T00:00:00.000Z', staged: 1, cost: 0.01 } }));
+        const r = await cli(['capture', '--session', 'sess-l'], { ANTHROPIC_API_KEY: 'sk-test', ANTHROPIC_BASE_URL: s.url });
+        expect(r.stdout).toMatch(/already captured/);
+        expect(s.calls).toHaveLength(0);
     });
     it('tells the model what is already known and does not re-propose staged or discarded candidates (--force)', async () => {
         const s = await anthropic(() => ({ items: goodItems }));

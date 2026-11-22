@@ -135,6 +135,16 @@ describe('when enabled', () => {
             expect(opts.stdio[0]).toBe('ignore');
         });
     }
+    it('inside a host session scope the capture child starts through systemd-run --scope, so a session end cannot kill it', () => {
+        Object.assign(process.env, { MEMORY_CAPTURE: 'on', ANTHROPIC_API_KEY: 'sk-test' });
+        expect(hook.processEvent({ transcript_path: transcript }, { spawn, escape: ['/usr/bin/systemd-run', '--user', '--scope', '--quiet', '--collect'] })).toBe(true);
+        const [cmd, args, opts] = spawn.mock.calls[0];
+        expect(cmd).toBe('/usr/bin/systemd-run');
+        expect(args.slice(0, 5)).toEqual(['--user', '--scope', '--quiet', '--collect', process.execPath]);
+        expect(args[5]).toMatch(/core[\\/]memory-capture\.js$/);
+        expect(args.slice(6)).toEqual(['capture', '--session', transcript, '--max-keep', '8', '--quiet', '--then-index']);
+        expect(opts).toMatchObject({ detached: true, windowsHide: true });
+    });
     it('MEMORY_CAPTURE accepts on/1/true/yes and rejects anything else', () => {
         process.env.ANTHROPIC_API_KEY = 'k';
         for (const v of ['on', '1', 'true', 'YES']) { process.env.MEMORY_CAPTURE = v; expect(fire()).toBe(true); }

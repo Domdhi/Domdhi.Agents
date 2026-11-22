@@ -12,6 +12,11 @@ for (const key of Object.keys(process.env)) {
   if (fixtureContext.has(process.platform === 'win32' ? key.toUpperCase() : key)) delete process.env[key];
 }
 
+// Hook spawns leave a systemd session scope when they run inside one (hook-spawners scopeEscape). The suite
+// asserts exact spawn argv, so it must not depend on the cgroup it happens to run in; tests of the escape
+// inject their own inputs.
+process.env.AGENTS_SCOPE_ESCAPE = 'off';
+
 export default defineConfig({
   test: {
     environment: 'node',

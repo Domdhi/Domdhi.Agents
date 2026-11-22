@@ -35,6 +35,7 @@ const { loadCorpus } = require('../core/_lib/memory-notes');
 const { recall, embedConfig, tuningFromEnv, DEFAULT_FLOOR } = require('../core/_lib/memory-recall');
 const { appendJsonl } = require('../core/_lib/jsonl-writer');
 const { safeWrite, safeMkdirp, reportRefusal } = require('../core/_lib/fs-safe');
+const { scopeEscape, outsideScope } = require('../core/_lib/hook-spawners');
 
 const MIN_PROMPT = 20;
 const MAX_HITS = 3;          // MEMORY_RECALL_MAX (1 to 5)
@@ -85,7 +86,9 @@ function spawnIndexOnce(ctx, env) {
         safeMkdirp(ctx.stateDir, ctx.projectRoot);
         safeWrite(marker, new Date().toISOString(), undefined, ctx.projectRoot);
         const cli = path.join(__dirname, '..', 'core', 'memory-capture.js');
-        const child = childProcess.spawn(process.execPath, [cli, 'index'], { cwd: ctx.projectRoot, stdio: 'ignore', windowsHide: true, detached: true, env });
+        // Its own systemd scope when the hook runs in a host's session scope, so a session end cannot kill the build.
+        const [command, args] = outsideScope(process.execPath, [cli, 'index'], scopeEscape({ env }));
+        const child = childProcess.spawn(command, args, { cwd: ctx.projectRoot, stdio: 'ignore', windowsHide: true, detached: true, env });
         child.unref();
         return true;
     } catch (error) { reportRefusal(error); return false; }
@@ -125,7 +128,9 @@ async function processEvent(input, { env = process.env, fallbackDir = path.resol
         corpus, query: prompt.slice(0, 2000), k: maxHits + seen.size, floor, kwScore, stateDir: ctx.stateDir,
         cfg: embedConfig(env), sync: false, timeoutMs: 400, fetchImpl,
     });
-    if (result.stale && /^hybrid/.test(result.source)) spawnIndexOnce(ctx, env);
+    // Build the index whenever it lags the corpus, also when this prompt fell back to keyword-only: an index that was
+    // never built can otherwise never start (the old hybrid-only condition needed vectors to exist first).
+    if (result.stale) spawnIndexOnce(ctx, env);
     const hits = result.hits.filter(h => !seen.has(h.key)).slice(0, maxHits);
     if (!hits.length) { recordRecall(ctx, input.session_id, result, []); return null; }
 

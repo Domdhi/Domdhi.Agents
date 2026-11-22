@@ -24,7 +24,42 @@
  */
 
 const childProcess = require('child_process');
+const fs = require('fs');
 const path = require('path');
+
+/**
+ * The argv prefix that starts a hook's background child in its own transient systemd user scope, or null.
+ *
+ * WHY: on Linux a host can run each Claude session in its own cgroup scope (T3 Code uses
+ * `t3code-claude-<id>.scope`). Stopping that scope at session end kills every process in it, and
+ * `detached`/setsid does not leave a cgroup, so a capture child died mid-call (measured 2026-11-22: 7 of 325
+ * captures finished across four projects; a scope-stop test killed the plain detached child after 2 of 8
+ * ticks, while the `systemd-run --user --scope` child ran all 8). `--scope` execs the command in place, so
+ * env, cwd and stdio are inherited unchanged.
+ *
+ * Applies only when: Linux; `AGENTS_SCOPE_ESCAPE` is not `off`; this process sits in a `.scope` other than
+ * `init.scope`; the user bus socket exists; and `systemd-run` is on PATH. Otherwise the plain spawn stands.
+ *
+ * @param {{platform?: string, env?: object, readFile?: Function, exists?: Function}} [o] test seams
+ * @returns {string[]|null}
+ */
+function scopeEscape({ platform = process.platform, env = process.env, readFile = fs.readFileSync, exists = fs.existsSync } = {}) {
+    if (platform !== 'linux' || String(env.AGENTS_SCOPE_ESCAPE || '').toLowerCase() === 'off') return null;
+    let cgroup;
+    try { cgroup = String(readFile('/proc/self/cgroup', 'utf8')); } catch { return null; }
+    const unified = cgroup.split('\n').find(line => line.startsWith('0::'));
+    const leaf = unified ? unified.slice(3).trim().split('/').pop() : '';
+    if (!leaf.endsWith('.scope') || leaf === 'init.scope') return null;
+    if (!env.XDG_RUNTIME_DIR || !exists(path.join(env.XDG_RUNTIME_DIR, 'bus'))) return null;
+    const bin = String(env.PATH || '').split(path.delimiter).filter(Boolean)
+        .map(dir => path.join(dir, 'systemd-run')).find(file => exists(file));
+    return bin ? [bin, '--user', '--scope', '--quiet', '--collect'] : null;
+}
+
+/** [command, args] run through the escape prefix when there is one. */
+function outsideScope(command, args, prefix) {
+    return prefix && prefix.length ? [prefix[0], [...prefix.slice(1), command, ...args]] : [command, args];
+}
 
 /**
  * Start one background child that survives the calling hook.
@@ -37,7 +72,8 @@ const path = require('path');
  * @param {string}   [options.platform]  Override for process.platform (testing)
  * @returns {object} the child process
  */
-function spawnBackground(command, args, { cwd, spawn = childProcess.spawn, platform = process.platform } = {}) {
+function spawnBackground(command, args, { cwd, spawn = childProcess.spawn, platform = process.platform, escape } = {}) {
+    [command, args] = outsideScope(command, args, escape === undefined ? scopeEscape({ platform }) : escape);
     const child = spawn(command, args, {
         cwd,
         stdio: 'ignore',
@@ -65,4 +101,4 @@ function spawnDailyLogCapture(projectRoot, trigger, options = {}) {
     ], { ...options, cwd: projectRoot });
 }
 
-module.exports = { spawnBackground, spawnDailyLogCapture };
+module.exports = { spawnBackground, spawnDailyLogCapture, scopeEscape, outsideScope };
