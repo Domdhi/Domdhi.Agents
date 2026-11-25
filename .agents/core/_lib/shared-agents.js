@@ -8,7 +8,7 @@ const { safeWrite, safeDelete, assertNoSymlinkedAncestor } = require('./fs-safe'
 const { parseAgentSections, extractFieldBlock, extractSkillsList, mergeAgentContent, stripExcludedSkills } = require('./agent-merger');
 const { mergeSkillContent, hasProjectAdditions } = require('./skill-merger');
 const { walkDir } = require('./file-walker');
-const { classifySharedFile, classifyClaudeFile } = require('./zone-classifier');
+const { classifySharedFile, classifyClaudeFile, LOCAL_STATE_PATTERNS } = require('./zone-classifier');
 const { ignoredFilter } = require('./git-ignored');
 const { renderModelProse } = require('./model-prose');
 const { renderWorkflowRoutes } = require('./workflow-routes');
@@ -282,13 +282,13 @@ const RETIRED_OWNED_TREES = [
     /^\.claude\/(?:skills|core|hooks|commands)\//,
     /^\.codex\/(?:core|hooks)\//,
 ];
-// Project-owned, local and state paths are refused even when the ledger or a digest list names them.
+// Project-owned, local and state paths are refused even when the ledger or a digest list names them: the shared
+// list (zone-classifier.js) plus the paths an update DOES write (settings merge, version marker, hook files,
+// render ledger), which must never be deleted either.
 const RETIRED_DENIED = [
-    /^\.agents\/(?:intake|learning-intake)\//,
-    /(?:^|\/)(?:agent-memory|\.state|\.output|node_modules|\.git)\//,
-    /(?:^|\/)[^/]*\.local\.[^/]*$/,
-    /^\.(?:claude|codex)\/(?:settings[^/]*|update-config|shared-agents|push-guardrail|version|hooks|hook-identities)\.json$/,
-    /^\.agents\/(?:render-state|gate\.config)\.json$/,
+    ...LOCAL_STATE_PATTERNS,
+    /^\.(?:claude|codex)\/(?:settings[^/]*|version|hooks|hook-identities)\.json$/,
+    /^\.agents\/render-state\.json$/,
 ];
 
 /** Why a listed path may not be retired, or null when it is a toolkit-owned template file. */
@@ -665,21 +665,51 @@ function renderSharedAgents(root, options = {}) {
 // target's render ledger recorded different bytes (a ledger left stale by a merge or an
 // interrupted update). Looked up only for a conflict candidate, in the source's own git history.
 const shippedCache = new Map();
+const SHIPPED_HISTORY_LIMIT = 300;
+const SHIPPED_GIT_TIMEOUT_MS = 60000;
+
+// The history read must come from the source's own repository, never one a caller's environment redirects
+// to (an updater run from a git hook has GIT_DIR pointing at the adopter's repository, whose own committed
+// local edits would then count as "shipped").
+function gitEnvWithoutOverrides() {
+    const env = { ...process.env };
+    for (const key of Object.keys(env)) if (/^GIT_/i.test(key)) delete env[key];
+    return env;
+}
+
+// `git cat-file --batch` answers each requested object with "<oid> <type> <size>\n<bytes>\n", or
+// "<name> missing\n" with no body when the path is absent at that commit.
+function blobsFromCatFileBatch(output) {
+    const blobs = [];
+    let pos = 0;
+    while (pos < output.length) {
+        const eol = output.indexOf(0x0a, pos);
+        if (eol < 0) break;
+        const header = /^[0-9a-f]+ (\S+) (\d+)$/.exec(output.toString('utf8', pos, eol));
+        pos = eol + 1;
+        if (!header) continue;
+        const size = Number(header[2]);
+        if (header[1] === 'blob') blobs.push(output.subarray(pos, pos + size));
+        pos += size + 1;
+    }
+    return blobs;
+}
+
 function shippedBefore(source, rel, fileDigest) {
     const key = `${source}\0${rel}`;
     if (!shippedCache.has(key)) {
         const seen = new Set();
         try {
+            if (/[\n\0]/.test(rel)) throw new Error('path cannot be requested from git cat-file --batch');
             const { execFileSync } = require('child_process');
-            const opts = { cwd: source, encoding: 'buffer', windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 64 * 1024 * 1024 };
-            const commits = execFileSync('git', ['log', '--format=%H', '-n', '300', '--', rel], opts).toString().split('\n').filter(Boolean);
-            for (const commit of commits) {
-                try {
-                    const blob = execFileSync('git', ['show', `${commit}:${rel}`], opts);
-                    seen.add(digest(blob)); seen.add(digest(blob.toString('utf8')));
-                } catch { /* path absent at that commit */ }
+            const opts = { cwd: source, env: gitEnvWithoutOverrides(), windowsHide: true, timeout: SHIPPED_GIT_TIMEOUT_MS, maxBuffer: 256 * 1024 * 1024 };
+            const commits = execFileSync('git', ['log', '--format=%H', '-n', String(SHIPPED_HISTORY_LIMIT), '--', rel], { ...opts, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).split('\n').filter(Boolean);
+            // One process reads every historical copy; a commit where the path is absent answers "missing".
+            if (commits.length) {
+                const output = execFileSync('git', ['cat-file', '--batch'], { ...opts, input: commits.map(commit => `${commit}:${rel}\n`).join(''), stdio: ['pipe', 'pipe', 'ignore'] });
+                for (const blob of blobsFromCatFileBatch(output)) { seen.add(digest(blob)); seen.add(digest(blob.toString('utf8'))); }
             }
-        } catch { /* not a git checkout: no history to consult */ }
+        } catch { /* not a git checkout, or git failed or timed out: no history to vouch for the bytes */ }
         shippedCache.set(key, seen);
     }
     return shippedCache.get(key).has(fileDigest);
@@ -722,7 +752,7 @@ function syncSharedAgents(source, target, options = {}) {
     const listFile = path.join(source, RETIRED_PATH);
     const versionFile = path.join(source, '.agents/config/version.json');
     const incomingRetirement = fs.existsSync(listFile) ? { list: read(source, RETIRED_PATH), version: fs.existsSync(versionFile) ? read(source, '.agents/config/version.json') : null } : undefined;
-    const before = renderSharedAgents(target, { dryRun: true, excludedSkills: options.excludedSkills, excludedRoles: options.excludedRoles, deferredOutputs: options.deferredOutputs, incomingRetirement });
+    const before = renderSharedAgents(target, { dryRun: true, shippedFrom: source, excludedSkills: options.excludedSkills, excludedRoles: options.excludedRoles, deferredOutputs: options.deferredOutputs, incomingRetirement });
     if (before.conflicts.length) {
         result.conflicts = before.conflicts;
         if (before.prunedConflicts) result.prunedConflicts = before.prunedConflicts;

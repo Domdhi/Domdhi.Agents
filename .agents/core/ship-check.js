@@ -534,27 +534,39 @@ function readSeal(root) {
 const gateFix = (env) => `node ${runtimeDir(env)}/core/gate.js test`;
 const sealFix = (env) => `node ${runtimeDir(env)}/core/ship-check.js seal [--docs <paths>] [--todo <TODO> --stories <IDS>]`;
 
-/** Fold ac-verify's `{errors}` list into refusals under one rule. */
+const { TAMPER_CODES } = acVerify;
+
 /**
  * The freeze check over the TODO's OTHER stories that already have a baseline (earlier waves), so a wave that edits an
- * earlier story's frozen test is refused at its own seal, not at the Ship gate (first adopter run, 2026-11-20). Only
- * tamper findings count; returns null when there is nothing to report, else the check result plus the `ids` named.
+ * earlier story's frozen test is refused at its own seal, not at the Ship gate (first adopter run, 2026-11-20).
+ * Fails closed: each earlier story is checked ALONE (so one story's parse error can neither hide another's tamper
+ * finding nor trip the 128-story selection limit), and anything that stops a check from completing is a refusal naming
+ * the story. Returns null when every earlier story checks clean, else `{ tamper, other, ids }`: the tamper findings
+ * (with the story ids to re-baseline) and every other error.
  */
 function earlierBaselineCheck(root, todo, stories) {
-    const listed = acVerify.list({ root, todo });
-    if (!Array.isArray(listed.stories)) return null;
+    let text;
+    try { text = readTodoFile(path.resolve(root, todo)); } catch {
+        return { tamper: [], other: [{ code: 'INVALID_TODO_FILE', message: 'the TODO cannot be read, so the earlier stories\' frozen files cannot be checked' }], ids: [] };
+    }
     const selected = new Set(stories);
-    const ids = listed.stories.map((story) => story.id)
-        .filter((id) => !selected.has(id) && fs.existsSync(baselineFilePath(root, id)));
-    if (!ids.length) return null;
-    const checked = acVerify.check({ root, todo, stories: ids });
-    const tamper = (Array.isArray(checked.errors) ? checked.errors : []).filter((e) => TAMPER_CODES.has(e && e.code));
-    if (!tamper.length) return null;
-    return { ...checked, errors: tamper, ids: [...new Set(tamper.map((e) => e.story).filter(Boolean))] };
+    const tamper = [];
+    const other = [];
+    for (const id of acVerify.storyIdsOf(text)) {
+        if (selected.has(id) || !fs.existsSync(baselineFilePath(root, id))) continue;
+        const checked = acVerify.check({ root, todo, stories: [id] });
+        const errors = Array.isArray(checked.errors) ? checked.errors : [];
+        if (!checked.ok && !errors.length) other.push({ code: 'error', story: id, message: `earlier story ${id}: ac-verify check failed with exit ${checked.exitCode}` });
+        for (const e of errors) {
+            if (e && TAMPER_CODES.has(e.code)) tamper.push({ ...e, story: e.story || id });
+            else other.push({ ...e, story: (e && e.story) || id, message: `earlier story ${id}: ${e && e.message}` });
+        }
+    }
+    if (!tamper.length && !other.length) return null;
+    return { tamper, other, ids: [...new Set(tamper.map((e) => e.story))] };
 }
 
-const TAMPER_CODES = new Set(['FROZEN_FILE_CHANGED', 'FROZEN_FILE_MISSING', 'VERIFY_CHANGED']);
-
+/** Fold ac-verify's `{errors}` list into refusals under one rule. */
 function foldAcErrors(result, rule, acResult, fix) {
     const items = Array.isArray(acResult && acResult.errors) ? acResult.errors : [];
     if (!items.length) refuse(result, rule, `ac-verify ${rule === 'ac-run' ? 'run' : 'check'} failed with exit ${acResult && acResult.exitCode}`, fix);
@@ -624,8 +636,10 @@ function sealImpl(opts) {
         const checked = acVerify.check({ root, todo: todoFound.real, stories });
         const earlier = checked.ok ? earlierBaselineCheck(root, todoFound.real, stories) : null;
         if (!checked.ok) foldAcErrors(result, 'ac-check', checked, 'restore the frozen check files and verify: lines, or re-baseline with ac-verify.js freeze --reason "<why>", then seal again');
-        else if (earlier) foldAcErrors(result, 'ac-check', earlier, `an earlier story's frozen file changed in this wave: restore it, or re-baseline that story with ac-verify.js freeze --stories ${earlier.ids.join(',')} --reason "<why>" (then unfreeze), then seal again`);
-        else {
+        else if (earlier) {
+            if (earlier.tamper.length) foldAcErrors(result, 'ac-check', { errors: earlier.tamper }, `an earlier story's frozen file changed in this wave: restore it, or re-baseline that story with ac-verify.js freeze --stories ${earlier.ids.join(',')} --reason "<why>" (then unfreeze), then seal again`);
+            if (earlier.other.length) foldAcErrors(result, 'ac-check', { errors: earlier.other }, 'an earlier story that has a freeze baseline cannot be checked (see the story named above): repair its verify: line or baseline, or re-baseline it with ac-verify.js freeze --reason "<why>", then seal again');
+        } else {
             ran = acVerify.run({ root, todo: todoFound.real, stories, env });
             if (!ran.ok) {
                 const lines = [];

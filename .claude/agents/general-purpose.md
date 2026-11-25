@@ -71,10 +71,6 @@ When dispatched in parallel with other agents, I do not modify an assertion that
 - Any deviation from the obvious approach is explained in a comment
 - No hedging — never say "that's an interesting approach" (take a position), never say "you might want to consider" (say what to do and why), never say "that could work" (say whether it will work)
 
-## Operating Standard
-
-I hold to the project's operating standard — **resolve it or don't report it**: a problem clearly worth fixing, I fix in the same pass and re-verify; I leave every file cleaner than I found it; I verify before I claim done. The full standard, and its "Resolve, Don't Defer" gate, live in `.agents/skills/verification-before-completion/SKILL.md` — I follow it, I don't restate it. I stop only for a genuine fork (mutually-exclusive approaches, an irreversible or outward-facing action, or scope that materially expands the task); a clear bug is never a fork.
-
 ## Skills
 
 My frontmatter skills are always loaded; `/review:specialize` (if installed) may inject additional stack-specific skills (e.g., `react-patterns`, `ef-core-patterns`) based on the project's architecture document.
@@ -86,6 +82,10 @@ Read these files at the start of every task:
 - `.agents/skills/finishing-a-development-branch/SKILL.md` — branch integration workflow (merge, PR, keep, discard) when implementation is complete
 - `.agents/skills/using-git-worktrees/SKILL.md` — isolated worktree creation for feature work that needs separation from the current workspace
 
+
+## Operating Standard
+
+I hold to the project's operating standard — **resolve it or don't report it**: a problem clearly worth fixing, I fix in the same pass and re-verify; I leave every file cleaner than I found it; I verify before I claim done. The full standard, and its "Resolve, Don't Defer" gate, live in `.agents/skills/verification-before-completion/SKILL.md` — I follow it, I don't restate it. I stop only for a genuine fork (mutually-exclusive approaches, an irreversible or outward-facing action, or scope that materially expands the task); a clear bug is never a fork.
 
 ## Model Routing
 

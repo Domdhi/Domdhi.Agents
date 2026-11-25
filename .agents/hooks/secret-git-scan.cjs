@@ -247,31 +247,49 @@ function scanChunk(root, chunk, blobs, results, { ignore, batch }) {
 // ── the commit being made ─────────────────────────────────────────────────────
 
 /**
- * Blob ids already committed at HEAD. A staged file whose exact content is one of them adds nothing new to the
- * repository: a rename, a move or a copy of committed content. Without HEAD (the first commit) or if git cannot
- * list it, the set is empty and everything staged is scanned: over-scan, never under-scan.
+ * The blobs committed at HEAD, as a Map of blob id -> the HEAD paths holding that content. A staged file whose
+ * exact content is one of them can add nothing new to the repository, as long as that content already passed
+ * rules at least as strict as the ones its new path gets (see alreadyCommitted): a rename, a move or a copy of
+ * committed content. Without HEAD (the first commit) or if git cannot list it, the map is empty and everything
+ * staged is scanned: over-scan, never under-scan.
  */
 function committedBlobs(root) {
     let out;
-    try { out = gitOut(['ls-tree', '-r', '-z', '--full-tree', 'HEAD'], root); } catch { return new Set(); }
-    const ids = new Set();
+    try { out = gitOut(['ls-tree', '-r', '-z', '--full-tree', 'HEAD'], root); } catch { return new Map(); }
+    const ids = new Map();
     for (const rec of Buffer.from(out).toString('utf8').split('\0')) {
-        const m = /^\d+ blob ([0-9a-f]+)\t/.exec(rec);
-        if (m) ids.add(m[1]);
+        const m = /^\d+ blob ([0-9a-f]+)\t(.*)$/s.exec(rec);
+        if (!m) continue;
+        if (ids.has(m[1])) ids.get(m[1]).push(m[2]); else ids.set(m[1], [m[2]]);
     }
     return ids;
 }
 
 /**
+ * Was this staged entry's content already committed at a path whose rules were at least as strict as the new
+ * path's? The paths differ in what they scan: a hard-skip path (node_modules, lockfiles) is never scanned and a
+ * test path runs the named-provider rules only. So a blob that sat at one of those and is now copied or moved
+ * to a normal path has never met the full rules, and must be scanned now. Strict enough means a HEAD path that
+ * is not hard-skip and is either not a test path or, like the new path, a test path.
+ */
+function alreadyCommitted(committed, entry) {
+    const heads = committed.get(entry.sha);
+    if (!heads) return false;
+    const newIsTest = patterns.isTestFilePath(entry.path);
+    return heads.some(p => !patterns.isHardSkipPath(p) && (!patterns.isTestFilePath(p) || newIsTest));
+}
+
+/**
  * Scan the staged set. Returns { order, results, gitlinks }: `order` the scanned paths in diff order.
  * The ignore list is the INDEX version of `.betterleaksignore`, so an entry counts once it is itself staged.
- * Content already committed at HEAD is not rescanned (see committedBlobs): moving a folder of old files must not
- * re-raise findings on bytes the repository already holds. Any changed byte is a new blob and is scanned.
+ * Content already committed at HEAD is not rescanned (see alreadyCommitted): moving a folder of old files must not
+ * re-raise findings on bytes the repository already holds, at paths scanned as strictly. Any changed byte is a
+ * new blob and is scanned, and so is committed content that is now at a path with stricter rules.
  */
 function scanStaged(root, { batch = true } = {}) {
     const { entries, gitlinks } = listStaged(root);
     const committed = committedBlobs(root);
-    const todo = entries.filter(e => !patterns.isHardSkipPath(e.path) && !committed.has(e.sha)).map(e => ({ rel: e.path, path: e.path, sha: e.sha }));
+    const todo = entries.filter(e => !patterns.isHardSkipPath(e.path) && !alreadyCommitted(committed, e)).map(e => ({ rel: e.path, path: e.path, sha: e.sha }));
     const results = scanEntries(root, todo, { ignore: engine.projectIgnoreSet(root), batch });
     return { order: todo.map(e => e.rel), results, gitlinks };
 }
@@ -381,7 +399,8 @@ function tagMessage(content) {
  *
  * @param {string} remote   pre-push's first argument (remote name or URL)
  * @param {string} url      pre-push's second argument (where the push goes); what `ls-remote` is asked
- * @returns {{ commits: string[], tags: string[], order: string[], results: Map, label: (rel: string) => string }}
+ * @returns {{ commits: string[], tags: string[], order: string[], results: Map, label: (rel: string) => string,
+ *   locate: (rel: string) => ({ path: string, commit: string|null } | null) }}
  */
 function scanPush(root, remote, url, updates, { batch = true } = {}) {
     const tips = [];
@@ -390,7 +409,7 @@ function scanPush(root, remote, url, updates, { batch = true } = {}) {
         if (u.remoteSha && !ZEROS.test(u.remoteSha)) vouched.add(u.remoteSha);
         if (u.localSha && !ZEROS.test(u.localSha)) tips.push(u.localSha); // a deletion publishes nothing
     }
-    const empty = { commits: [], tags: [], order: [], results: new Map(), label: rel => rel };
+    const empty = { commits: [], tags: [], order: [], results: new Map(), label: rel => rel, locate: () => null };
     if (!tips.length) return empty;
 
     for (const sha of remoteAdvertised(root, url) || []) vouched.add(sha);
@@ -505,10 +524,16 @@ function scanPush(root, remote, url, updates, { batch = true } = {}) {
         if (e.message) return `<${e.message} message of ${e.sha.slice(0, 12)}>`;
         return e.commits.length ? `${e.path} (commit ${e.commits[0].slice(0, 12)})` : `${e.path} (pushed object ${e.sha.slice(0, 12)})`;
     };
-    return { commits, tags, order: entries.map(e => e.rel), results, label };
+    // Where a finding's entry came from: the repo-relative path and the first commit that introduced it (null for a
+    // message or an object no pushed commit introduces). The pin hint in the block report is built from it.
+    const locate = rel => {
+        const e = info.get(rel);
+        return e && !e.message && e.path ? { path: e.path, commit: e.commits[0] || null } : null;
+    };
+    return { commits, tags, order: entries.map(e => e.rel), results, label, locate };
 }
 
 module.exports = {
-    GitScanError, toplevel, parseRaw, listStaged, committedBlobs, catBatch, checkBlobs, readBlobs, scanEntries, scanStaged,
+    GitScanError, toplevel, parseRaw, listStaged, committedBlobs, alreadyCommitted, catBatch, checkBlobs, readBlobs, scanEntries, scanStaged,
     parsePushLines, scanPush, tipValueAllows, remoteAdvertised, typesOf, stagingUnsafe, CHUNK_BYTES,
 };

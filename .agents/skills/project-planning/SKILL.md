@@ -57,6 +57,10 @@ These apply to every document in the pipeline.
 
 9. **Mechanical plan checks prove structure, not semantics.** For a large backlog or TODO, check the story-to-index-to-wave mapping, dependency order, per-story file budgets, same-wave writer coordination and forward outputs (a file a later story modifies exists or is created earlier) with a short script rather than by eye. A passing structural check proves no acceptance criterion; semantic acceptance still needs the actual files or commands. Report effort as summed estimates along the dependency chain, never as elapsed time. File budgets are planning estimates: update them and coordinate necessary expansion under `.agents/startup.md`, splitting or resequencing when the work warrants it. Explicit project constraints still apply.
 
+10. **A file list that must be complete comes from a recorded grep.** When a change alters a count or a set of named items that tests and scripts pin (how many stages, steps, levels or variants exist), build the migration list from a grep of every old literal across the tests and scripts, not only from the failures a trial run shows: a trial run shows the pins it happens to hit; the grep shows all of them. The same holds for a follow-up story that closes a bug class (every writer of a field, every route behind a guard): its Files list comes from a grep for the class, and the story records that grep command so a reviewer can re-run it. A list written from memory misses the file nobody was looking at.
+
+11. **Every measured acceptance criterion names its data producer.** For each criterion that measures or counts something, name what produces the data (a recorder field, a fixture, a helper, a log line) and confirm it exists or is created by an earlier story. A criterion whose data nothing produces cannot pass, and it is usually found mid-run, after the stories around it are built.
+
 ---
 
 <!-- @@project-additions:start -->

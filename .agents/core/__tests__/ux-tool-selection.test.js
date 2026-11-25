@@ -58,8 +58,15 @@ describe('UX tool selection runtime and update boundaries', () => {
 
   it('keeps a genuinely customized persona while refreshing shared routing', () => {
     const customized = oldSoul + '\nOur product supports pen input first.\n';
-    const merged = parseAgentSections(mergeAgentContent(role(), oldRole(customized)).content);
-    expect(merged.soulZone.trim()).toBe(customized.trim());
+    const result = mergeAgentContent(role(), oldRole(customized)).content;
+    const merged = parseAgentSections(result);
+    // The v6.4 soul still carries `## Operating Standard`, which now ships in the template-owned
+    // skills zone: its template wording leaves the persona, the adopter's own line stays (under a
+    // project-notes heading), and the role holds the section exactly once.
+    expect(merged.soulZone).toContain('Our product supports pen input first.');
+    expect(merged.soulZone).toContain('## Operating Standard (project notes)');
+    expect(merged.soulZone).toContain('## Quality Standards');
+    expect(result.match(/^## Operating Standard\s*$/gm)).toHaveLength(1);
     expect(merged.skillsZone).toBe(parseAgentSections(role()).skillsZone);
     expect(merged.projectCtx).toContain('Keep our native desktop stack.');
   });

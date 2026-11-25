@@ -13,12 +13,12 @@
 
 ## Executive Summary
 
-The Bowflex training `/run-todo` in AdopterApp spent 34% of its 19.3 subagent-hours fixing review findings. It ran 32 reviews (about one per story) and 24 fix rounds, yet only about 9 reviews found a MAJOR or CRITICAL. The cause is in `/todo`: it writes a reviewer into every story's Ownership line, so `/run-todo` reviews each story.
+The Example training `/run-todo` in AdopterApp spent 34% of its 19.3 subagent-hours fixing review findings. It ran 32 reviews (about one per story) and 24 fix rounds, yet only about 9 reviews found a MAJOR or CRITICAL. The cause is in `/todo`: it writes a reviewer into every story's Ownership line, so `/run-todo` reviews each story.
 
 This TODO:
 1. Measures that run and today's vault `TODO_studio` run with a toolkit time-split tool, and writes an evaluation.
 2. Writes one shared review-cadence reference that `/todo`, `/do` and `/run-todo` point to. Reviews happen per wave, at mid-epic (looking back and forward) and at the end of the epic. The reference states purpose and judgment, keeps a few firm lines, and requires a logged decision per wave.
-3. Proves the new `/todo` against the old one by replaying the Bowflex brief, judged blind against what actually happened. The new version is adopted only if it wins.
+3. Proves the new `/todo` against the old one by replaying the Example brief, judged blind against what actually happened. The new version is adopted only if it wins.
 4. Applies the same purpose-and-firm-lines rewrite to the worst remaining skills.
 
 Wave shape is role-based: measure → write → prove → spread. The adoption gate between waves 3 and 4 is a hard stop: if the new `/todo` does not win, waves 3b and 4 revert to the old workflows and skip the spread.
@@ -28,14 +28,14 @@ Wave shape is role-based: measure → write → prove → spread. The adoption g
 ## Dependency Graph
 
 ```
-Wave 1  RC-1.1 time-split tool ──► Wave 2  RC-1.2 evaluate Bowflex run ─┐
+Wave 1  RC-1.1 time-split tool ──► Wave 2  RC-1.2 evaluate Example run ─┐
                                            RC-1.3 evaluate studio run ──┤
                                                                        ▼
 Wave 3  RC-2.1 shared review-cadence reference ──► RC-2.2 /todo ─┐
                                                    RC-2.3 /run-todo ┤
                                                    RC-2.4 /do ──────┤
                                                                     ▼
-Wave 4  RC-3.1 replay old vs new /todo on the Bowflex brief ─► RC-3.2 blind judge + decision
+Wave 4  RC-3.1 replay old vs new /todo on the Example brief ─► RC-3.2 blind judge + decision
                                                                     │ (win → keep; else revert RC-2.x)
                                                                     ▼
 Wave 5  RC-4.1 … RC-4.4 rework remaining skills (only on a win)
@@ -66,10 +66,10 @@ Wave 5  RC-4.1 … RC-4.4 rework remaining skills (only on a win)
   * **Files:** `.agents/core/session-timesplit.js` (new), `.agents/core/__tests__/session-timesplit.test.js` (new)
   * **Agent budget:** 0 modified, 2 created
   * **Ownership:** production general-purpose (MODEL, high); tests in the same story; review at the wave
-  * **Research notes:** Port `/scratch/path` (main-thread buckets, `BOOK` regex, tool categories). A `.meta.json` looks like `{"agentType","description":"Fix TR-2.26 findings","model":"model","pickedEffortModel":...}`. Project dirs are under `~/.claude/projects/-home-dom-code-<Repo>/`.
+  * **Research notes:** Port `/scratch/path` (main-thread buckets, `BOOK` regex, tool categories). A `.meta.json` looks like `{"agentType","description":"Fix TR-2.26 findings","model":"model","pickedEffortModel":...}`. Project dirs are under `~/.claude/projects/-home-<user>-code-<Repo>/`.
 
-* **Story RC-1.2 (M): Evaluate the Bowflex training run**
-  * **As** the owner, **I want** the Bowflex `/run-todo` scored by outcome, **So that** the `/todo` fix is based on what went wrong.
+* **Story RC-1.2 (M): Evaluate the Example training run**
+  * **As** the owner, **I want** the Example `/run-todo` scored by outcome, **So that** the `/todo` fix is based on what went wrong.
   * **AC:**
     * [x] The report section covers the following, each with numbers and file or line citations:
       - time split and fix-vs-build (from RC-1.1);
@@ -83,10 +83,10 @@ Wave 5  RC-4.1 … RC-4.4 rework remaining skills (only on a win)
   * **Files:** `docs/.output/findings/reviews/{stamp}-run-todo-evaluation.md` (shared with RC-1.3; Main Agent merges)
   * **Agent budget:** 0 modified, 1 created (section draft in the work folder)
   * **Ownership:** analysis general-purpose (MODEL, high), read-only on AdopterApp; Main Agent assembles
-  * **Research notes:** The transcript is `~/.claude/projects/-home-dom-code-Domdhi-OS/8739d8f7-9d22-4df6-9dc6-6a45bee1bdd3.jsonl` and `.../subagents/` (198 files, about 99 runs). Already measured: 22.4 h wall clock, of which 44% waiting on the owner, 40% waiting on agents and 16% own work. Subagent time was 9.3 h build, 6.6 h fix (24 rounds) and 2.5 h review (32 reviews, about 9 of them MAJOR+, 1 CRITICAL TR-2.15 buffer, all 7 security audits clean).
+  * **Research notes:** The transcript is `~/.claude/projects/-home-<user>-code-<Repo>/00000000-0000-4000-8000-000000000001.jsonl` and `.../subagents/` (198 files, about 99 runs). Already measured: 22.4 h wall clock, of which 44% waiting on the owner, 40% waiting on agents and 16% own work. Subagent time was 9.3 h build, 6.6 h fix (24 rounds) and 2.5 h review (32 reviews, about 9 of them MAJOR+, 1 CRITICAL TR-2.15 buffer, all 7 security audits clean).
 
 * **Story RC-1.3 (M): Evaluate the vault TODO_studio run**
-  * Same AC as RC-1.2, applied to `notes-repo/docs/work/todo/TODO_studio.md`, plan `notes-repo/docs/.output/plans/261112-1117-run-todo-studio.md`, and transcript `~/.claude/projects/-home-dom-code-Domdhi-Vault/7df1f93a-d7b6-4f76-a907-f69abda8d745.jsonl`.
+  * Same AC as RC-1.2, applied to `notes-repo/docs/work/todo/TODO_studio.md`, plan `notes-repo/docs/.output/plans/261112-1117-run-todo-studio.md`, and transcript `~/.claude/projects/-home-<user>-code-<Repo>/00000000-0000-4000-8000-000000000002.jsonl`.
   * **Estimate:** M · **Complexity:** 5 · **Release:** core · **Risk tier:** standard · **Dependencies:** RC-1.1
   * **Files:** section draft in the work folder, merged into the RC-1.2 report
   * **Agent budget:** 0 modified, 1 created

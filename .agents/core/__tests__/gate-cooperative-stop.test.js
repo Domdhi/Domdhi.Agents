@@ -158,3 +158,35 @@ describe('runCommandAsync (the POSIX stage runner)', () => {
     else expect(r).toHaveProperty('treeConfirmed');
   });
 });
+
+describe('stop: lock identity and owner identity (review G)', () => {
+  const lockText = (extra = {}) => JSON.stringify({ pid: 4242, started: '2026-11-25T10:00:00.000Z', protocol: 'domdhi-gate/uncontained-posix-v1', phase: 'idle', ...extra });
+
+  it('the gate rewriting its own lock is not a release; only a missing file or another gate\'s lock is', () => {
+    const before = lockText({ childPid: 4300 });
+    expect(gate.lockReleasedSince(before, lockText())).toBe(false);                                    // the stage settled: childPid cleared
+    expect(gate.lockReleasedSince(before, lockText({ childPid: 4301, phase: 'running' }))).toBe(false);  // a lease phase change
+    expect(gate.lockReleasedSince(before, before)).toBe(false);
+    expect(gate.lockReleasedSince(before, '{"pid":42')).toBe(false);                                   // half-written
+    expect(gate.lockReleasedSince(before, '')).toBe(false);
+    expect(gate.lockReleasedSince(before, null)).toBe(true);                                           // the file is gone
+    expect(gate.lockReleasedSince(before, lockText({ started: '2026-11-25T11:00:00.000Z' }))).toBe(true); // another gate took it
+    expect(gate.lockReleasedSince(before, lockText({ pid: 4243 }))).toBe(true);
+    expect(gate.lockIdentity('not json')).toBeNull();
+    expect(gate.lockIdentity(JSON.stringify({ pid: 'x' }))).toBeNull();
+  });
+
+  it.skipIf(!posix)('processLooksLikeGate: true when the command line names gate.js, false for any other process or a missing PID', async () => {
+    const dir = tmp('gate-identity-');
+    const script = path.join(dir, 'gate.js');
+    fs.writeFileSync(script, 'setTimeout(() => {}, 60000);');
+    const named = spawn(process.execPath, [script], { stdio: 'ignore' });
+    const other = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'], { stdio: 'ignore' });
+    try {
+      await new Promise(resolve => setTimeout(resolve, 300));
+      expect(gate.processLooksLikeGate(named.pid)).toBe(true);
+      expect(gate.processLooksLikeGate(other.pid)).toBe(false);
+      expect(gate.processLooksLikeGate(2147483646)).toBe(false);
+    } finally { named.kill('SIGKILL'); other.kill('SIGKILL'); }
+  });
+});

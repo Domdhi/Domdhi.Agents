@@ -105,7 +105,7 @@ describe('detectDocDrift', () => {
         write('docs/TODO_Project.md');                                            // live master
         write('docs/work/todo/TODO_epic01_foo.md');                               // live per-epic
         write('docs/work/todo/_archive/cycle-1-260606-1214/backlog.md');          // archived backlog
-        write('docs/work/todo/_archive/cycle-1-260606-1214/TODO_DomdhiCrypto.md'); // archived master
+        write('docs/work/todo/_archive/cycle-1-260606-1214/TODO_Example.md');       // archived master
         write('docs/work/todo/_archive/cycle-1-260606-1214/TODO_epic01_foo.md');   // archived per-epic
         const r = detectDocDrift(root);
         expect(r.misplacedTodos).toEqual([]);   // _archive (underscore) is skipped, not flagged

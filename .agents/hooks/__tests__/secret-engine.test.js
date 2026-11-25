@@ -501,14 +501,21 @@ describe('ignore file: value-sha256 entries pin one reviewed value, not a locati
         expect(named.every(f => f.allowKey === undefined)).toBe(true);
     });
 
-    it('formatFindings prints the Allow line only when asked (the git hooks), never the value', () => {
+    it('formatFindings prints a Pin line only when asked (the git hooks): a location and a command, never the value or a digest of it', () => {
         const found = engine.scanContent(`key = "${VALUE}"\n`, 'one.ps1');
-        expect(patterns.formatFindings(found)).not.toMatch(/value-sha256/);
-        const report = patterns.formatFindings(found, { valueKeys: true });
-        expect(report).toContain(`Allow: value-sha256:${sha(VALUE)}`);
+        const withCommand = found.map(f => ({ ...f, pinCommand: 'node secret-scanner.cjs --pin one.ps1:1' }));
+        expect(patterns.formatFindings(withCommand)).not.toMatch(/Pin:|value-sha256/);
+        const report = patterns.formatFindings(withCommand, { pinHints: true });
+        expect(report).toContain('Pin:   node secret-scanner.cjs --pin one.ps1:1');
         expect(report).not.toContain(VALUE);
-        expect(patterns.bypassAdvice(found)).toMatch(/value-sha256/);
-        expect(patterns.bypassAdvice(engine.scanContent(`const k = "${STRIPE}";\n`, 'src/a.js'))).not.toMatch(/value-sha256/);
+        expect(report).not.toContain(sha(VALUE));
+        expect(report).not.toMatch(/Allow:|value-sha256|[0-9a-f]{64}/);
+        // A finding the scanner attached no command to (a commit message, a named provider) prints no Pin line.
+        expect(patterns.formatFindings(found, { pinHints: true })).not.toMatch(/Pin:/);
+        const advice = patterns.bypassAdvice(found);
+        expect(advice).toMatch(/"Pin:" command/);
+        expect(advice).not.toMatch(/[0-9a-f]{64}/);
+        expect(patterns.bypassAdvice(engine.scanContent(`const k = "${STRIPE}";\n`, 'src/a.js'))).not.toMatch(/value-sha256|Pin:/);
     });
 });
 

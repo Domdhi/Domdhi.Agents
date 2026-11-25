@@ -876,7 +876,7 @@ exec ${real} "$@"
       fs.writeFileSync(path.join(d, 'docs/.output/.state/telemetry/ship-seal.json'), '{}\n');
       fs.appendFileSync(path.join(d, 'docs/.output/.state/telemetry/gate-failures.jsonl'), '{}\n');
       git(d, 'add', 'tracked.txt');
-      git(d, 'commit', '-q', '-m', 'dom commits during the run');
+      git(d, 'commit', '-q', '-m', 'alice commits during the run');
     });
     expect(r.real).toBe('');
   });

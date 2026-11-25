@@ -119,10 +119,10 @@ const ATTRIBUTE_MIN_DISTINCT_TOKENS = 2; // a single incidental literal must nev
 
 // Winner-over-runner-up ratio required to call an attribution CONFIDENT.
 //
-// Measured across a project's real agent-update sections: margins ran 1.04-1.27 with
+// Measured across a sample of real agent-update sections: margins ran 1.04-1.27 with
 // one outlier at 1.91. A known-CORRECT attribution sat at 1.19 and a known-WRONG one
-// (a test-honesty signal that matched only because a tool in the stack shares a word
-// with the skill's name) sat at 1.17. They are not separable by margin, and re-scoping
+// (a signal that matched only because an unrelated word in its text also appears in
+// the skill's name) sat at 1.17. They are not separable by margin, and re-scoping
 // the text window flipped 6 of 8 winners.
 //
 // So this threshold does NOT filter good from bad — nothing does, at this signal
@@ -159,9 +159,8 @@ const STOPWORDS = new Set(
         // Generic English that survives the 4-char filter and scores like a domain
         // term. A skill DESCRIPTION is natural prose, so these appear in many of
         // them — and IDF cannot save a word that happens to be unique to one
-        // description. A section about retry predicates, session guards and a visual
-        // settle helper was once attributed to a design-system skill on nothing but
-        // a handful of such words.
+        // description. A section with no real subject overlap can be attributed to a
+        // skill on nothing but a handful of such words.
         // Words that are also real domain terms (form, mode, site, time, line, name, work,
         // show, case, part, place, word, sign, sort, turn) are deliberately NOT listed: this
         // set is applied to skill names and descriptions and to memory clustering too, where
@@ -267,11 +266,9 @@ function buildSkillIndex(skillsRoot) {
  * Inverse document frequency of every token across the skill index.
  *
  * Without this, attribution is raw presence-counting and one incidental word
- * decides a whole section. Reproduced: a section about a tab `aria-pressed` choice,
- * a brand scanner and a click-retry revert was attributed to an
- * `email-and-password-best-practices` skill with 4 of its 6 points coming from the
- * NAME tokens `email` and `password`, which were present only because the log
- * quotes the fixture error string `401 INVALID_EMAIL_OR_PASSWORD`. A quoted identifier is not evidence about
+ * decides a whole section. Example: a section can be attributed to a skill with most of its
+ * points coming from two NAME tokens that were present only because the text quotes a
+ * fixture identifier containing those two words. A quoted identifier is not evidence about
  * a skill. Weighting by IDF makes a token that half the skills share nearly
  * free, so a signal has to match something actually distinctive to bind.
  */

@@ -490,6 +490,61 @@ function mergeAgentFile(srcPath, dstPath, opts) {
 }
 
 /** Same section/fence-aware merge, available for a write-free update preview. */
+/**
+ * A preserved soul zone may still hold a `## Heading` section that the template now ships in its
+ * template-owned skills zone (`ownerZone`). Remove the template's own wording from that copy so
+ * the merged role carries the section once; keep anything the adopter added. Paragraphs that
+ * match a paragraph of the owner's section (whitespace-normalized) are dropped; when other text
+ * remains it stays under `## {Heading} (project notes)`, so no adopter text is lost.
+ * Fence-aware: a heading inside a fenced code block is not a section.
+ */
+function dropSectionsOwnedBy(zone, ownerZone) {
+    if (!zone || !ownerZone) return zone;
+    const norm = (t) => t.replace(/\s+/g, ' ').trim();
+    const sections = (text) => {
+        const out = new Map();
+        let inFence = false;
+        let current = null;
+        for (const line of text.split('\n')) {
+            if (/^\s*(```|~~~)/.test(line)) inFence = !inFence;
+            if (!inFence && /^## \S/.test(line)) {
+                current = line.trim();
+                out.set(current, []);
+            } else if (current) out.get(current).push(line);
+        }
+        return out;
+    };
+    const paragraphs = (lines) => lines.join('\n').split(/\n\s*\n/).map(norm).filter(Boolean);
+    const owned = new Map([...sections(ownerZone)].map(([h, body]) => [h, new Set(paragraphs(body))]));
+    const lines = zone.split('\n');
+    const out = [];
+    let inFence = false;
+    let changed = false;
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        if (/^\s*(```|~~~)/.test(line)) inFence = !inFence;
+        if (inFence || !/^## \S/.test(line) || !owned.has(line.trim())) {
+            out.push(line);
+            continue;
+        }
+        // Collect this section's body (to the next unfenced `## ` heading or the end).
+        let k = i + 1;
+        let bodyFence = false;
+        while (k < lines.length && (bodyFence || !/^## \S/.test(lines[k]))) {
+            if (/^\s*(```|~~~)/.test(lines[k])) bodyFence = !bodyFence;
+            k++;
+        }
+        const ownedParas = owned.get(line.trim());
+        const kept = lines.slice(i + 1, k).join('\n').split(/\n\s*\n/)
+            .filter((p) => p.trim() && !ownedParas.has(norm(p)));
+        changed = true;
+        if (kept.length > 0) out.push(`${line.trim()} (project notes)`, '', kept.join('\n\n'), '');
+        i = k - 1;
+    }
+    if (!changed) return zone;
+    return out.join('\n').replace(/\n{3,}/g, '\n\n').replace(/\n+$/, '\n');
+}
+
 function mergeAgentContent(srcContent, destContent, opts = {}) {
 
     const src = parseAgentSections(srcContent);
@@ -520,8 +575,13 @@ function mergeAgentContent(srcContent, destContent, opts = {}) {
         })
         : src.frontmatter;
 
-    // Choose soul zone
-    const mergedSoulZone = personalized && !retiredSoul ? dest.soulZone : src.soulZone;
+    // Choose soul zone. A preserved (personalized) soul zone may still carry a
+    // `## Heading` section the template has since moved into the template-owned
+    // skills zone (`## Operating Standard` did): drop it from the soul zone, or the
+    // merged role would hold the section twice.
+    const mergedSoulZone = personalized && !retiredSoul
+        ? dropSectionsOwnedBy(dest.soulZone, src.skillsZone)
+        : src.soulZone;
 
     // Skills zone always from source
     const mergedSkillsZone = src.skillsZone;

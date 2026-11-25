@@ -249,7 +249,8 @@ class MemoryHealthChecker {
         } finally {
             // Clean up the probe — diagnostics must not accumulate in the curated store.
             try {
-                await this.manager.deleteMemory(CONSTANTS.MEMORY_CATEGORIES.PATTERNS, testId);
+                // force: the probe is this check's own throwaway memory; skip the referrer sweep.
+                await this.manager.deleteMemory(CONSTANTS.MEMORY_CATEGORIES.PATTERNS, testId, { force: true });
             } catch { /* non-fatal — fixed key means next run overwrites anyway */ }
         }
     }

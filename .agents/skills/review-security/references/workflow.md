@@ -67,6 +67,7 @@ Use the Task tool with `subagent_type: "security-auditor"` to perform the audit.
 5. The `security-auditor` agent auto-loads the `code-review` skill via frontmatter (for severity classification)
 6. Instruction to perform a full OWASP Top 10 assessment against the code in scope
 7. Instruction to scan for hardcoded secrets, credentials, API keys, tokens in all files
+   - and to check that no hook, guard, scanner or log output prints a hash, length or prefix of a secret's own characters (a public format marker such as a vendor key prefix is not secret material). Each one narrows a guess at the secret. A code comment claiming such output is safe is itself a finding.
 8. Instruction to verify authorization on every protected endpoint (not just authentication)
 9. Instruction to check input validation at all system boundaries
 10. Instruction to think in attack chains — how LOW findings combine into higher-severity paths

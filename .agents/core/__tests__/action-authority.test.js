@@ -662,11 +662,14 @@ describe('pointers to the matrix', () => {
   };
   const sentences = (s) => s.split(/(?<=[.!?])\s+/).filter(Boolean);
 
-  it('reviewCadenceFirmLine3_keepsItsOriginalSentenceAndStaysThreeLines', () => {
+  // Four firm lines: line 4 (one independent review of the high-risk surface list before release)
+  // was owner-approved on 2026-11-25. The action-authority pointer stays in line 3 alone.
+  it('reviewCadenceFirmLine3_keepsItsOriginalSentenceAndTheListStaysFourLines', () => {
     const lines = firmLines();
 
-    expect(lines).toHaveLength(3);
+    expect(lines).toHaveLength(4);
     expect(lines[2].startsWith(`3. ${ORIGINAL_LINE3}`)).toBe(true);
+    expect(lines[3]).not.toMatch(/Action authority|startup-reference\.md/);
   });
 
   it('reviewCadenceFirmLine3_gainsExactlyOnePointerSentence', () => {

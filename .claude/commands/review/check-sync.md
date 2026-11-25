@@ -42,11 +42,17 @@ INPUT: $ARGUMENTS
 
 ### 1. Gather Context (main agent)
 
-Collect the raw data that agents will need:
+Collect the raw data that agents will need. **The orchestrator runs every git command itself and pastes the output into each prompt in Step 2.** `project-planner` and `product-strategist` have no Bash, so a prompt that tells them to run git gets a guess or an error instead of history; `architect` has Bash in some runtimes, but it gets the same pasted snapshot so all three dispatches judge the same repository state.
 
 ```bash
-# Git history for story/commit cross-reference
-git log --oneline -50
+# Git history for story/commit cross-reference (the window, or the last 50)
+git log --oneline <range>      # e.g. <last-sync-commit>..HEAD; fall back to -50
+
+# Branch state: uncommitted work and the branch line
+git status -sb
+
+# Ahead/behind the default remote branch, when one exists
+git rev-list --left-right --count origin/<default-branch>...HEAD
 
 # Package/dependency files
 Glob: package.json, *.csproj, *.sln, *.slnx, requirements.txt, Cargo.toml, go.mod, pyproject.toml
@@ -69,7 +75,7 @@ Launch applicable agents **in parallel** based on scope. Each agent auto-loads i
 
 **2a. Architecture sync** (if scope is `all` or `architecture`) — `subagent_type: "architect"`
 
-Task prompt:
+Task prompt (paste the Step 1 git output under a `Git snapshot` heading):
 1. Read `docs/architecture/overview.md` — extract tech stack, project structure, key directories, dependency list
 2. Read the actual package/dependency files: {list files found in Step 1}
 3. Scan actual project structure: run Glob on `src/**/*`, `lib/**/*`, `app/**/*`
@@ -84,7 +90,7 @@ Task prompt:
    should be checked against (the module `brief.md`, the epic TODO's Story Index, the migration
    ledger, the schema file) and **recount or re-read directly**. Never rate SYNCED on the strength of:
    the doc's own internal consistency; a keyword grep against it; a commit message (which states the
-   world *at that commit* — run `git log --after=<that commit's date>` before repeating any status it
+   world *at that commit* — check the pasted `git log` for later commits before repeating any status it
    asserts); or a prior pass's verification of the same claim.
    > This check exists because it has failed in practice, twice. A sweep miscounted a requirement
    > total by treating a summary as corroboration. Later, a drift agent read a project instruction
@@ -102,9 +108,9 @@ Task prompt:
 
 **2b. Story status sync** (if scope is `all` or `stories`) — `subagent_type: "project-planner"`
 
-Task prompt:
+Task prompt (paste the Step 1 git output under a `Git snapshot` heading):
 1. Read all TODO checklists: {list TODO files found in Step 1}
-2. Read git log: `git log --oneline -50`
+2. Read the pasted git log, status and ahead/behind count (you have no Bash; do not try to run git)
 3. For stories marked `[x]` (completed): check git log for commits referencing that story. If no commits → flag "marked done but no commits found"
 4. For stories marked `[ ]` (pending): check if commits or code already implement it. If implementation exists → flag "implemented but not marked done"
 5. If master index exists (`docs/TODO_*.md`): verify epic-level done counts match per-epic checklists
@@ -116,7 +122,7 @@ Task prompt:
 
 **2c. PRD coverage sync** (if scope is `all` or `prd`) — `subagent_type: "product-strategist"`
 
-Task prompt:
+Task prompt (paste the Step 1 git output under a `Git snapshot` heading; this role has no Bash):
 1. Read `docs/product/requirements.md` — extract functional requirements list
 2. For each requirement: search the codebase for related implementations (by keyword, module name, route, component)
 3. Note whether each requirement appears implemented, partial, or missing

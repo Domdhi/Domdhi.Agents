@@ -57,6 +57,7 @@ All Fast-Lane items, plus:
 - [ ] **Tests are meaningful** (not just coverage padding — they assert real behavior)
 - [ ] **Coverage claims are verified, not trusted**: a "covered" file can still be fictitiously tested if assertions key off mocked or seeded data that never exercised the real code path. Spot-check that the asserted behavior ran. (See the AC-vs-Test anti-patterns in `two-stage-review.md`.)
 - [ ] **No N+1 queries or unbounded collections** in data access paths
+- [ ] **A new enum or status value has a writer matrix.** List every writer of the field (updates, inserts, conditional or case expressions, defaults and fallbacks, imports and migrations) and every reader of it, each with "handles the new value: yes/no", and require a test that drives each writer with a record already in the new state. Readers are usually updated with the feature; a writer that predates the value and overwrites it unconditionally is the usual miss (`verification-before-completion`, fix-site enumeration).
 - [ ] **Logging is appropriate** (enough to debug, not so much it's noisy)
 
 ---

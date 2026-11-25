@@ -75,7 +75,7 @@ function loadNotes(dir) {
         if (!isLive(fm)) continue;
         const name = fmValue(fm, 'name') || e.name.slice(0, -3);
         const description = fmValue(fm, 'description');
-        out[e.name] = { key: e.name, source: 'notes', file: e.name, name, description, body: body.trim(), text: `${name}\n${description}\n${body}`.trim(), sha: sha1(raw) };
+        out[e.name] = { key: e.name, source: 'notes', file: e.name, name, description, body: body.trim(), text: `${name}\n${description}\n${body}`.trim(), sha: sha1(raw), importedFrom: fmValue(fm, 'importedFrom') };
     }
     return out;
 }
@@ -109,7 +109,7 @@ function engineBody(content) {
 }
 
 /** Engine JSON memories as read-only documents. `root` = docs/.output/.memory. */
-function loadEngine(root) {
+function loadEngine(root, retired = null) {
     const out = {};
     let cats;
     try { cats = fs.readdirSync(root, { withFileTypes: true }).filter(d => d.isDirectory()).map(d => d.name).sort(); } catch { return out; }
@@ -119,7 +119,8 @@ function loadEngine(root) {
         for (const f of files) {
             let raw, j;
             try { raw = fs.readFileSync(path.join(root, cat, f), 'utf8'); j = JSON.parse(raw); } catch { continue; }
-            if (!j || typeof j !== 'object' || Array.isArray(j) || j.invalid_at) continue;
+            if (!j || typeof j !== 'object' || Array.isArray(j)) continue;
+            if (j.invalid_at) { if (retired) retired[`${cat}/${f}`] = true; continue; }
             const name = slugify(typeof j.id === 'string' && j.id ? j.id : f.slice(0, -5), 70) || f.slice(0, -5);
             const body = engineBody(j.content);
             if (!body) continue;
@@ -131,14 +132,32 @@ function loadEngine(root) {
     return out;
 }
 
-/** Notes + engine, notes shadowing same-named engine memories. */
+/**
+ * A note made by `import-engine` carries `importedFrom: toolkit-engine <category/file> [<sha12>]`. It is a copy, and a copy that
+ * outlives its source misleads: when the JSON twin is retired (`invalid_at`, e.g. superseded) or has changed since the import,
+ * the copy is stale and must neither shadow the twin nor be recalled. Copies made before the sha was stamped are only checked for
+ * retirement. Pure: `retired` is {file: true}, `engineByFile` is {file: engine doc}.
+ */
+function isStaleImport(note, retired, engineByFile) {
+    const m = /^toolkit-engine\s+(\S+)(?:\s+([0-9a-f]{12}))?\s*$/.exec(note.importedFrom || '');
+    if (!m) return false;
+    if (retired[m[1]]) return true;
+    const twin = engineByFile[m[1]];
+    return Boolean(m[2] && twin && twin.sha.slice(0, 12) !== m[2]);
+}
+
+/** Notes + engine, notes shadowing same-named engine memories (a stale `import-engine` copy is dropped, see isStaleImport). */
 function loadCorpus({ memoryDir, engineRoot }) {
-    const notes = loadNotes(memoryDir);
+    const loaded = loadNotes(memoryDir);
+    const retired = {};
+    const engine = engineRoot ? loadEngine(engineRoot, retired) : {};
+    const engineByFile = {};
+    for (const d of Object.values(engine)) engineByFile[d.file] = d;
+    const notes = {};
+    for (const [k, d] of Object.entries(loaded)) if (!isStaleImport(d, retired, engineByFile)) notes[k] = d;
     const names = new Set(Object.values(notes).map(d => d.name));
     const corpus = { ...notes };
-    if (engineRoot) {
-        for (const [k, d] of Object.entries(loadEngine(engineRoot))) if (!names.has(d.name)) corpus[k] = d;
-    }
+    for (const [k, d] of Object.entries(engine)) if (!names.has(d.name)) corpus[k] = d;
     return corpus;
 }
 

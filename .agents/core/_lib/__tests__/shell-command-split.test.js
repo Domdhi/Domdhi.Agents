@@ -143,7 +143,7 @@ describe('stripWrapperPrefix', () => {
 
   it('strips env value-taking flags with a SEPARATE value (-u NAME / -C DIR) without leaving the value as the head', () => {
     expect(stripWrapperPrefix('env -u PATH rm .env').trim()).toBe('rm .env');
-    const home = ['', 'home', 'dom'].join('/');
+    const home = '/srv/app';
     expect(stripWrapperPrefix(`env -C ${home} rm -rf .env`).trim()).toBe('rm -rf .env');
     expect(stripWrapperPrefix('env --unset PATH rm .env').trim()).toBe('rm .env');
     expect(stripWrapperPrefix('env --unset=PATH rm .env').trim()).toBe('rm .env');

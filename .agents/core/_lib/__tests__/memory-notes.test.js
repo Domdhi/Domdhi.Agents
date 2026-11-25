@@ -96,4 +96,39 @@ describe('engine adapter', () => {
         const corpus = N.loadCorpus({ memoryDir: d, engineRoot: root });
         expect(Object.keys(corpus).sort()).toEqual(['bw-sync-first.md', 'engine:constraints/other-one.json']);
     });
+
+    describe('a markdown copy made by import-engine outlives its twin', () => {
+        const importedNote = (d, name, importedFrom) => {
+            fs.mkdirSync(d, { recursive: true });
+            fs.writeFileSync(path.join(d, `${name}.md`), `---\nname: ${name}\ndescription: "copy"\nmetadata:\n  type: feedback\n  importedFrom: ${importedFrom}\n---\n\ncopy body\n`);
+        };
+        const root = () => path.join(tmp.root, '.memory');
+        const mem = () => path.join(tmp.root, 'mem');
+        const twinFile = () => path.join(root(), 'constraints', 'twin.json');
+
+        it('is dropped (and recall stops injecting it) once the JSON twin is superseded', () => {
+            engine(root(), 'constraints', 'twin', { content: { description: 'engine text' } });
+            importedNote(mem(), 'twin', 'toolkit-engine constraints/twin.json');
+            expect(Object.keys(N.loadCorpus({ memoryDir: mem(), engineRoot: root() }))).toEqual(['twin.md']);
+            fs.writeFileSync(twinFile(), JSON.stringify({ id: 'twin', invalid_at: '2026-11-01T00:00:00Z', content: { description: 'engine text' } }));
+            expect(Object.keys(N.loadCorpus({ memoryDir: mem(), engineRoot: root() }))).toEqual([]);
+        });
+        it('is dropped when the twin changed since the stamped sha, and the live twin takes its place', () => {
+            engine(root(), 'constraints', 'twin', { content: { description: 'engine v1' } });
+            const sha12 = N.loadEngine(root())['engine:constraints/twin.json'].sha.slice(0, 12);
+            importedNote(mem(), 'twin', `toolkit-engine constraints/twin.json ${sha12}`);
+            expect(Object.keys(N.loadCorpus({ memoryDir: mem(), engineRoot: root() }))).toEqual(['twin.md']);
+            engine(root(), 'constraints', 'twin', { content: { description: 'engine v2, corrected' } });
+            expect(Object.keys(N.loadCorpus({ memoryDir: mem(), engineRoot: root() }))).toEqual(['engine:constraints/twin.json']);
+        });
+        it('an unstamped copy (made before the sha was recorded) still shadows a live twin, and a hand-written note is never touched', () => {
+            engine(root(), 'constraints', 'twin', { content: { description: 'engine text' } });
+            importedNote(mem(), 'twin', 'toolkit-engine constraints/twin.json');
+            fs.writeFileSync(path.join(mem(), 'mine.md'), '---\nname: mine\ndescription: "hand"\n---\n\nmine\n');
+            expect(Object.keys(N.loadCorpus({ memoryDir: mem(), engineRoot: root() })).sort()).toEqual(['mine.md', 'twin.md']);
+            // once the twin is retired the copy goes, while the hand-written note stays
+            fs.writeFileSync(twinFile(), JSON.stringify({ id: 'twin', invalid_at: '2026-11-01T00:00:00Z', content: { description: 'x' } }));
+            expect(Object.keys(N.loadCorpus({ memoryDir: mem(), engineRoot: root() })).sort()).toEqual(['mine.md']);
+        });
+    });
 });

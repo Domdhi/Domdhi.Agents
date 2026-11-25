@@ -154,6 +154,8 @@ function embedConfig(env = process.env) {
 // ---------------------------------------------------------------- server fallback
 
 const HOST_RETRY_MS = 2 * 60 * 1000;
+// A timeout inside a short budget (a prompt's 400 ms recall) is a soft mark: the host goes last for this long, not HOST_RETRY_MS.
+const SOFT_RETRY_MS = 30 * 1000;
 const SHORT_BUDGET_MS = 5000;
 
 function readHosts(file) {
@@ -169,11 +171,23 @@ function writeHosts(file, hosts) {
 }
 
 /**
- * The servers to try, in order: those not marked failed within HOST_RETRY_MS keep their listed order and come
- * first, then the recently failed ones (still tried, in case they are back). Pure: `hosts` maps url -> failure time.
+ * The recent failure mark of `url`, or null: `{at, soft}`. A hard mark is a failure time (number) and lasts HOST_RETRY_MS;
+ * a soft mark is `{at, soft: true}` (a short-budget timeout) and lasts SOFT_RETRY_MS. Junk and future times are ignored.
+ */
+function recentFailure(hosts, url, now) {
+    const v = hosts[url];
+    const soft = Boolean(v) && typeof v === 'object' && v.soft === true;
+    const at = soft ? v.at : v;
+    if (!Number.isFinite(at) || now - at < 0 || now - at >= (soft ? SOFT_RETRY_MS : HOST_RETRY_MS)) return null;
+    return { at, soft };
+}
+
+/**
+ * The servers to try, in order: those with no recent failure mark keep their listed order and come first, then the
+ * recently failed ones (still tried, in case they are back). Pure: `hosts` maps url -> failure mark (see recentFailure).
  */
 function serverOrder(urls, hosts, now) {
-    const fresh = u => !(Number.isFinite(hosts[u]) && now - hosts[u] >= 0 && now - hosts[u] < HOST_RETRY_MS);
+    const fresh = u => !recentFailure(hosts, u, now);
     return [...urls.filter(fresh), ...urls.filter(u => !fresh(u))];
 }
 
@@ -198,10 +212,17 @@ async function withFallback(urls, call, { timeoutMs, hostsFile, now = Date.now }
             } catch (e) {
                 lastError = e;
                 // A server loading its model takes seconds on the first call after idle; inside a short budget (a prompt's
-                // recall) that timeout is not a fault, and the load finishes for the next prompt. Other failures (refused,
-                // unreachable, model missing) and timeouts with a long budget mark the server.
+                // recall) that timeout is not proof the host is down, but a host that HANGS (off, asleep, packets dropped)
+                // looks identical and would eat the whole shared budget on every prompt, so the next listed server would
+                // never be tried. A short-budget timeout therefore leaves a SOFT mark (SOFT_RETRY_MS): the host is only
+                // demoted (serverOrder still tries it, so a cold-loading sole server is unaffected) and never overwrites a
+                // live hard mark. Other failures (refused, unreachable, model missing) and long-budget timeouts mark hard.
                 const timedOut = e && (e.name === 'TimeoutError' || e.name === 'AbortError');
-                if (!(timedOut && timeoutMs < SHORT_BUDGET_MS)) { hosts[url] = now(); changed = true; }
+                const t = now();
+                if (timedOut && timeoutMs < SHORT_BUDGET_MS) {
+                    const live = recentFailure(hosts, url, t);
+                    if (!(live && !live.soft)) { hosts[url] = { at: t, soft: true }; changed = true; }
+                } else { hosts[url] = t; changed = true; }
             }
         }
     } finally {
@@ -345,4 +366,4 @@ async function recall({ corpus, query, k = 3, floor = DEFAULT_FLOOR, kwScore = K
     return { hits, source, stale };
 }
 
-module.exports = { STOP, DEFAULT_FLOOR, tokens, queryTerms, minMatched, minScore, tuningFromEnv, KW_SCORE_PER_LN, bm25Rank, embedConfig, embed, loadIndex, staleKeys, syncIndex, recall, indexFile, urlList, serverOrder, withFallback, readHosts, hostsFileFor, HOST_RETRY_MS };
+module.exports = { STOP, DEFAULT_FLOOR, tokens, queryTerms, minMatched, minScore, tuningFromEnv, KW_SCORE_PER_LN, bm25Rank, embedConfig, embed, loadIndex, staleKeys, syncIndex, recall, indexFile, urlList, serverOrder, recentFailure, withFallback, readHosts, hostsFileFor, HOST_RETRY_MS, SOFT_RETRY_MS };

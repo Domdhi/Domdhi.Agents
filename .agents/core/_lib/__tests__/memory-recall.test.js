@@ -148,13 +148,52 @@ describe('several embedding servers, best first', () => {
         const both = { provider: 'openai', url: `${dead.url}/v1`, urls: [`${dead.url}/v1`, `${dead.url}/v1/x`], model: 'm', key: '' };
         await expect(R.embed(['x'], 'query', both, { timeoutMs: 5000, hostsFile: file })).rejects.toThrow(/all 2 embedding servers failed.*500/);
     });
-    it('a timeout inside a short budget (a cold model load) does not mark the server; a long-budget timeout does', async () => {
+    it('a timeout inside a short budget (a cold model load) leaves only a soft mark; a long-budget timeout marks hard', async () => {
         const slow = (url, ms) => new Promise((_, reject) => setTimeout(() => reject(Object.assign(new Error('timed out'), { name: 'TimeoutError' })), 5));
         const file = hostsFile();
         await expect(R.withFallback(['legion'], slow, { timeoutMs: 400, hostsFile: file })).rejects.toThrow(/timed out/);
-        expect(R.readHosts(file)).toEqual({});
+        const soft = R.readHosts(file).legion;
+        expect(soft).toMatchObject({ soft: true });
+        expect(Number.isFinite(soft.at)).toBe(true);
         await expect(R.withFallback(['legion'], slow, { timeoutMs: 60000, hostsFile: file })).rejects.toThrow(/timed out/);
-        expect(Object.keys(R.readHosts(file))).toEqual(['legion']);
+        expect(Number.isFinite(R.readHosts(file).legion)).toBe(true);   // hard: a plain failure time
+        // A later short-budget timeout never downgrades a live hard mark.
+        await expect(R.withFallback(['legion'], slow, { timeoutMs: 400, hostsFile: file })).rejects.toThrow(/timed out/);
+        expect(Number.isFinite(R.readHosts(file).legion)).toBe(true);
+    });
+    it('a soft mark demotes a host for SOFT_RETRY_MS only, and a sole server is still tried', async () => {
+        const urls = ['legion', 'pc'];
+        const soft = { legion: { at: 1000, soft: true } };
+        expect(R.serverOrder(urls, soft, 1000 + R.SOFT_RETRY_MS - 1)).toEqual(['pc', 'legion']);
+        expect(R.serverOrder(urls, soft, 1000 + R.SOFT_RETRY_MS)).toEqual(urls);
+        expect(R.SOFT_RETRY_MS).toBeLessThan(R.HOST_RETRY_MS);
+        expect(R.serverOrder(['legion'], soft, 1001)).toEqual(['legion']);
+        expect(R.serverOrder(urls, { legion: { at: 'x', soft: true }, pc: { at: 5000, soft: true } }, 1000)).toEqual(urls); // junk and future marks are ignored
+    });
+    it('a HANGING first server does not starve the second: the next prompt tries the second first', async () => {
+        // Fake clock: the hanging host consumes its whole budget and then times out, exactly as a dropped-packet peer does.
+        let clock = 10000;
+        const now = () => clock;
+        const tried = [];
+        const call = async (url, left) => {
+            tried.push(url);
+            if (url === 'legion') { clock += left; throw Object.assign(new Error('timed out'), { name: 'TimeoutError' }); }
+            return 'ok';
+        };
+        const file = hostsFile();
+        const opts = { timeoutMs: 400, hostsFile: file, now };
+        const urls = ['legion', 'pc'];
+        await expect(R.withFallback(urls, call, opts)).rejects.toThrow(/timed out|no answer/);   // prompt 1 pays for the dead host
+        expect(tried).toEqual(['legion']);
+        clock += 1000;
+        await expect(R.withFallback(urls, call, opts)).resolves.toBe('ok');                      // prompt 2 reaches pc first
+        expect(tried).toEqual(['legion', 'pc']);
+        clock += 1000;
+        await expect(R.withFallback(urls, call, opts)).resolves.toBe('ok');
+        expect(tried).toEqual(['legion', 'pc', 'pc']);
+        clock += R.SOFT_RETRY_MS;                                                                 // the soft mark expired: legion is retried
+        await expect(R.withFallback(urls, call, opts)).rejects.toThrow();
+        expect(tried[tried.length - 1]).toBe('legion');
     });
     it('recall falls through to the second server within its budget and stays hybrid', async () => {
         const dead = await embedServer({ fail: true });

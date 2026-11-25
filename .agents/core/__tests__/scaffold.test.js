@@ -6,7 +6,7 @@
 //   - Root config copy: root template files land at destDir (project root equiv)
 //   - Cross-platform: path.join used everywhere; no hardcoded forward-slash separators in logic
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll, vi } from 'vitest';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import fs from 'node:fs';
@@ -22,6 +22,8 @@ const {
     KNOWN_SCAFFOLD_VARS,
     SKILL_TEMPLATE_MANIFEST,
     applyManagedBlock,
+    FORMER_STARTUP_BRAND_SHA256,
+    isToolkitStartupBrand,
 } = require('../../../.agents/core/scaffold');
 const { createTmpDir } = require('./_helpers/tmp-dir');
 
@@ -1024,8 +1026,24 @@ describe('applyManagedBlock — NA2.3 startup marker migration', () => {
     const directive = 'Read `.agents/startup.md` before task work.';
     const expectedBlock = block('Domdhi', directive);
     const options = () => ({ startup: true, containRoot: tmp.root });
+    // A stand-in former brand: the module knows former brands only by SHA-256, so the test registers one.
+    const legacy = 'Formerco';
+    const legacyHash = require('crypto').createHash('sha256').update(legacy).digest('hex');
+    beforeAll(() => { FORMER_STARTUP_BRAND_SHA256.add(legacyHash); });
+    afterAll(() => { FORMER_STARTUP_BRAND_SHA256.delete(legacyHash); });
+    // A different toolkit's brand: nothing this toolkit ever used.
+    const foreign = 'Example';
 
-    it.each(['Domdhi', 'Example'])('startup_%sBlock_preservesExactNormalizedSurroundingProseAndRepeat', brand => {
+    it('startup_theKnownBrandsAreTheCurrentOneAndHashedFormerNames', () => {
+        expect(isToolkitStartupBrand('Domdhi')).toBe(true);
+        expect(isToolkitStartupBrand(legacy)).toBe(true);
+        expect(isToolkitStartupBrand(foreign)).toBe(false);
+        // the shipped set holds exactly one real former brand besides the registered stand-in, as a digest only
+        expect([...FORMER_STARTUP_BRAND_SHA256].filter(h => h !== legacyHash)).toHaveLength(1);
+        expect([...FORMER_STARTUP_BRAND_SHA256].every(h => /^[0-9a-f]{64}$/.test(h))).toBe(true);
+    });
+
+    it.each([['current', 'Domdhi'], ['former', legacy]])('startup_%sBrandBlock_preservesExactNormalizedSurroundingProseAndRepeat', (_which, brand) => {
         const before = '# Project rules  \n\nKeep tabs:\tand Unicode: café.\n\n';
         const after = '\n\n## Local context\nKeep trailing spaces.  \n\n';
         const target = path.join(tmp.root, 'AGENTS.md');
@@ -1043,8 +1061,8 @@ describe('applyManagedBlock — NA2.3 startup marker migration', () => {
 
     it.each([
         ['old duplicates', ['Domdhi', 'Domdhi']],
-        ['new duplicates', ['Example', 'Example']],
-        ['mixed duplicates', ['Example', 'Domdhi', 'Example']],
+        ['former-brand duplicates', [legacy, legacy]],
+        ['mixed duplicates', [legacy, 'Domdhi', legacy]],
     ])('startup_%s_collapsesBlocksWithoutDroppingInterleavedRules', (_label, brands) => {
         const target = path.join(tmp.root, 'CLAUDE.md');
         const segments = ['# Keep before\n\n', '\n\nRule between A.  \n\n', '\n\nRule between B.\n\n', '\n\nKeep after.\n'];
@@ -1105,14 +1123,14 @@ describe('applyManagedBlock — NA2.3 startup marker migration', () => {
     });
 
     it.each([
-        ['old end only', end('Domdhi')],
-        ['new end only', end('Example')],
-        ['old start only', start('Domdhi') + '\nkeep'],
-        ['new start only', start('Example') + '\nkeep'],
-        ['crossed brands', start('Domdhi') + '\nkeep\n' + end('Example')],
-        ['nested blocks', start('Domdhi') + '\n' + block('Example', 'keep') + '\n' + end('Domdhi')],
-        ['extra end', block('Domdhi', 'keep') + '\n' + end('Example')],
-        ['corrupt second block', block('Domdhi', 'keep') + '\n' + start('Example') + '\nkeep'],
+        ['current end only', end('Domdhi')],
+        ['former end only', end(legacy)],
+        ['current start only', start('Domdhi') + '\nkeep'],
+        ['former start only', start(legacy) + '\nkeep'],
+        ['crossed brands', start('Domdhi') + '\nkeep\n' + end(legacy)],
+        ['nested blocks', start('Domdhi') + '\n' + block(legacy, 'keep') + '\n' + end('Domdhi')],
+        ['extra end', block('Domdhi', 'keep') + '\n' + end(legacy)],
+        ['corrupt second block', block('Domdhi', 'keep') + '\n' + start(legacy) + '\nkeep'],
     ])('startup_malformed_%s_refusesPreviewAndLiveWithoutWriting', (_label, malformed) => {
         const target = path.join(tmp.root, 'AGENTS.md');
         const original = '# PROJECT_KEEP\r\n' + malformed.replace(/\n/g, '\r\n') + '\r\n';
@@ -1122,6 +1140,65 @@ describe('applyManagedBlock — NA2.3 startup marker migration', () => {
             expect(() => applyManagedBlock(target, directive, { ...options(), dryRun })).toThrow(/corrupt managed block/i);
             expect(fs.readFileSync(target, 'utf8')).toBe(original);
         }
+    });
+
+    // A block another toolkit wrote with the same marker wording is not ours to replace or delete.
+    describe('a foreign <X>.Agents block', () => {
+        let warn;
+        beforeEach(() => { warn = vi.spyOn(console, 'warn').mockImplementation(() => {}); });
+        afterEach(() => warn.mockRestore());
+
+        it('startup_foreignOnlyBlock_survivesByteForByteAndOurBlockIsAppendedWithAWarning', () => {
+            const target = path.join(tmp.root, 'CLAUDE.md');
+            const original = '# Project\n\n' + block(foreign, 'FOREIGN_RULES\n- keep me') + '\n\nTail prose.\n';
+            fs.writeFileSync(target, original);
+
+            expect(applyManagedBlock(target, directive, { ...options(), dryRun: true })).toBe('appended');
+            expect(fs.readFileSync(target, 'utf8')).toBe(original);
+            expect(applyManagedBlock(target, directive, options())).toBe('appended');
+
+            const after = fs.readFileSync(target, 'utf8');
+            expect(after.startsWith(original)).toBe(true);
+            expect(after).toContain('FOREIGN_RULES\n- keep me');
+            expect(after.endsWith(expectedBlock + '\n')).toBe(true);
+            expect(warn.mock.calls.flat().join('\n')).toMatch(new RegExp(`"${foreign}\\.Agents".*not a brand this toolkit has used`));
+            // The second run finds its own block and leaves everything, the foreign block included, alone.
+            expect(applyManagedBlock(target, directive, options())).toBe('unchanged');
+            expect(fs.readFileSync(target, 'utf8')).toBe(after);
+        });
+
+        it('startup_foreignBlockBesideOurs_isKeptWhileOursIsReplacedInPlace', () => {
+            const target = path.join(tmp.root, 'AGENTS.md');
+            const foreignBlock = block(foreign, 'FOREIGN_RULES');
+            const before = `# Keep\n\n${foreignBlock}\n\nBetween.\n\n`;
+            const after = '\n\nEnd prose.\n';
+            fs.writeFileSync(target, before + block(legacy, 'STALE_OURS') + after);
+
+            expect(applyManagedBlock(target, directive, options())).toBe('replaced');
+
+            expect(fs.readFileSync(target, 'utf8')).toBe(before + expectedBlock + after);
+            expect(applyManagedBlock(target, directive, options())).toBe('unchanged');
+        });
+
+        it('startup_foreignBlockBetweenTwoOfOurs_isKeptAndTheDuplicateOfOursIsCollapsed', () => {
+            const target = path.join(tmp.root, 'AGENTS.md');
+            const original = block('Domdhi', 'STALE_A') + '\n\n' + block(foreign, 'FOREIGN_RULES') + '\n\n' + block(legacy, 'STALE_B') + '\n';
+            fs.writeFileSync(target, original);
+
+            expect(applyManagedBlock(target, directive, options())).toBe('replaced');
+
+            expect(fs.readFileSync(target, 'utf8')).toBe(expectedBlock + '\n\n' + block(foreign, 'FOREIGN_RULES') + '\n\n\n');
+        });
+
+        it('startup_aLoneForeignMarkerIsPlainText_notACorruptBlock', () => {
+            const target = path.join(tmp.root, 'AGENTS.md');
+            const original = `# Notes\n${start(foreign)}\nunterminated example\n${end('Other')}\n`;
+            fs.writeFileSync(target, original);
+
+            expect(applyManagedBlock(target, directive, options())).toBe('appended');
+
+            expect(fs.readFileSync(target, 'utf8')).toBe(original + '\n' + expectedBlock + '\n');
+        });
     });
 
     it('generic_gitignore_keepsLegacyManagedMarkersOutsideStartupMigration', () => {

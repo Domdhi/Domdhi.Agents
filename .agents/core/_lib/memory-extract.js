@@ -243,6 +243,16 @@ async function callOpenAI({ baseUrl, model, key, text, known, fetchImpl = global
     return { text: (j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) || '', inputTokens: 0, outputTokens: 0 };
 }
 
+/**
+ * A usable item has a non-empty STRING text. A weak model may answer text/title/evidence_quote as an array, object or number;
+ * such an item would pass a truthiness check and then throw in candidateFile (after the paid call, before the ledger), so it is
+ * dropped here. A non-string title or quote becomes '' (filterCandidates then drops the item as empty / no_quote).
+ */
+function usableItem(x) {
+    if (!x || typeof x !== 'object' || typeof x.text !== 'string' || !x.text.trim()) return null;
+    return { ...x, title: typeof x.title === 'string' ? x.title : '', evidence_quote: typeof x.evidence_quote === 'string' ? x.evidence_quote : '' };
+}
+
 /** Parse the model output; salvages complete items from truncated JSON. */
 function parseItems(text) {
     const t = String(text || '').trim();
@@ -250,7 +260,7 @@ function parseItems(text) {
     if (i < 0) return [];
     try {
         const arr = JSON.parse(t.slice(i, t.lastIndexOf(']') + 1));
-        return Array.isArray(arr) ? arr.filter(x => x && typeof x === 'object' && x.text) : [];
+        return Array.isArray(arr) ? arr.map(usableItem).filter(Boolean) : [];
     } catch { /* fall through to salvage */ }
     const items = [];
     let pos = i + 1;
@@ -266,7 +276,7 @@ function parseItems(text) {
             else if (c === '}' && --depth === 0) { end = p; break; }
         }
         if (end < 0) break;
-        try { const o = JSON.parse(t.slice(start, end + 1)); if (o && o.text) items.push(o); } catch { /* skip malformed item */ }
+        try { const o = usableItem(JSON.parse(t.slice(start, end + 1))); if (o) items.push(o); } catch { /* skip malformed item */ }
         pos = end + 1;
     }
     return items;
@@ -275,7 +285,15 @@ function parseItems(text) {
 // ---------------------------------------------------------------- filters
 
 const norm = s => String(s || '').replace(/\s+/g, ' ').trim().toLowerCase();
-const WORD_STOP = new Set(['the', 'and', 'for', 'with', 'that', 'this', 'from', 'not', 'you', 'are', 'was', 'when', 'use', 'dom', 'his', 'their']);
+// The account holder's own name shows up in every memory ("<name> prefers ..."), so it carries no similarity signal. It is read from
+// the running account instead of being written into the shipped source.
+function accountName() {
+    try {
+        const n = String(os.userInfo().username || '').toLowerCase();
+        return /^[a-z0-9_.-]{3,}$/.test(n) ? n : '';
+    } catch { return ''; }
+}
+const WORD_STOP = new Set(['the', 'and', 'for', 'with', 'that', 'this', 'from', 'not', 'you', 'are', 'was', 'when', 'use', 'his', 'their', accountName()].filter(Boolean));
 
 function words(s) {
     const set = new Set(norm(s).match(/[a-z0-9_.-]{3,}/g) || []);
@@ -304,7 +322,7 @@ function filterCandidates(cands, r, existing, { isSecret = t => SECRET_RE.test(t
     const rawN = norm(r.raw), userN = norm(r.userRaw);
     const seenHere = [];
     for (const c of cands) {
-        const title = c.title || '', text = c.text || '', q = c.evidence_quote || '';
+        const title = typeof c.title === 'string' ? c.title : '', text = typeof c.text === 'string' ? c.text : '', q = typeof c.evidence_quote === 'string' ? c.evidence_quote : '';
         if (!title || !text) { dropped.empty++; continue; }
         if (!norm(q) || !rawN.includes(norm(q))) { dropped.no_quote++; continue; }
         if (isSecret(`${title} ${text} ${q}`) || SECRET_RE.test(`${title} ${text} ${q}`)) { dropped.secret++; continue; }

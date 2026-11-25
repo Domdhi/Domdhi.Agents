@@ -221,15 +221,23 @@ const WORK_REFS_COLUMNS = 4;
  * Locate the insertion point right after the Work Document References table's
  * header separator row.
  *
+ * The search is bounded to the section: it stops at the next `#` or `##`
+ * heading, so a section with no table of its own can never borrow the first
+ * table of a later section.
+ *
  * @returns {{ index: number, columns: number } | null} — null when the
  *   section/table isn't present. `columns` is the separator row's column count,
- *   so a caller can flag a table whose shape doesn't match the row it writes.
+ *   so a caller can refuse a table whose shape doesn't match the row it writes.
  */
 function findWorkRefsInsertPoint(content) {
     const workRefsIndex = content.indexOf('## Work Document References');
     if (workRefsIndex === -1) return null;
 
-    const afterHeader = content.slice(workRefsIndex);
+    const fromHeader = content.slice(workRefsIndex);
+    // The section ends at the next level-1 or level-2 heading (the heading line itself is skipped).
+    const headingEnd = fromHeader.indexOf('\n');
+    const nextHeading = headingEnd === -1 ? -1 : fromHeader.slice(headingEnd).search(/\n#{1,2} /);
+    const afterHeader = nextHeading === -1 ? fromHeader : fromHeader.slice(0, headingEnd + nextHeading);
     // Layout-generic separator match. The old pattern hardcoded FOUR columns and
     // omitted `:`, so it rejected both a 3- or 5-column table and the perfectly
     // ordinary alignment syntax `|:---|:---|:---|:---|` — and `updateWorkRefs`
@@ -297,14 +305,15 @@ function updateWorkRefs(projectDir, dateFolderName, finalName, storyNumber, topi
     if (todoContent.includes(finalName)) return;
     if (found.columns !== WORK_REFS_COLUMNS) {
         // The row written below is Date|Document|Story|Topic. Which of those a
-        // differently-shaped table wants is not inferable, so write the canonical
-        // row anyway and say so — better a visible shape mismatch than a silent
-        // drop (the pre-fix behaviour) or a guessed column mapping.
+        // differently-shaped table wants is not inferable, and a row of the wrong
+        // shape would corrupt a table the tracker's parsers read. Refuse, and say
+        // so — a visible refusal, not a silent drop and not a guessed mapping.
         process.stderr.write(
             `[organize] "## Work Document References" in ${path.relative(projectDir, todoFile)} ` +
-            `has ${found.columns} column(s); writing the canonical ` +
-            `${WORK_REFS_COLUMNS}-column row (Date | Document | Story | Topic).\n`
+            `has ${found.columns} column(s), not the canonical ${WORK_REFS_COLUMNS} ` +
+            `(Date | Document | Story | Topic) — plan row for "${finalName}" not recorded.\n`
         );
+        return;
     }
 
     const displayTopic = topic || 'Implementation';
@@ -327,7 +336,7 @@ function updateWorkRefs(projectDir, dateFolderName, finalName, storyNumber, topi
     const freshContent = safeReadFileSync(todoFile);
     if (freshContent === null || freshContent.includes(finalName)) return;
     const fresh = findWorkRefsInsertPoint(freshContent);
-    if (fresh === null) return;
+    if (fresh === null || fresh.columns !== WORK_REFS_COLUMNS) return;
 
     const updatedContent = freshContent.slice(0, fresh.index) + newRow + freshContent.slice(fresh.index);
     fs.writeFileSync(todoFile, updatedContent);

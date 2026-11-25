@@ -537,13 +537,51 @@ describe('SEC-MAJOR-4: the commit paths beyond `git commit`', () => {
         expect(R.gitOut(remote, ['rev-parse', 'main'])).toBe(R.gitOut(repo, ['rev-parse', 'HEAD']));
       });
 
-      sh('the block report prints the value hash for a generic finding, never the value', () => {
+      // The report names a location and an owner-run command, never the value and never a digest of it: an unsalted
+      // SHA-256 beside a redacted preview is an offline verifier for a short secret, and this output reaches the agent
+      // transcript and CI logs.
+      const noDigest = out => {
+        expect(out).not.toMatch(/[0-9a-f]{64}/);
+        expect(out).not.toMatch(/Allow:|value-sha256:[0-9a-f]/);
+      };
+
+      sh('the block report prints a pin command for a generic finding, never the value or its hash', () => {
         commitValue('deploy/install.sh', PUB, 'feat: installer\n');
         const r = R.git(repo, ['push', 'origin', 'main']);
         expect(r.status, r.out).not.toBe(0);
-        expect(r.out).toContain(`Allow: ${valueKey(PUB)}`);
-        expect(r.out).toMatch(/value-sha256:<hash>/);
+        expect(r.out).toMatch(/Pin: +node \S*secret-scanner\.cjs --pin deploy\/install\.sh:1 --rev [0-9a-f]{40}/);
+        expect(r.out).toMatch(/"Pin:" command/);
         expect(r.out).not.toContain(PUB);
+        noDigest(r.out);
+      });
+
+      sh('the commit-time block report prints the pin command for the staged path, with no --rev and no hash', () => {
+        R.stage(repo, 'deploy/install.sh', `key = "${PUB}"\n`);
+        const r = commitF(repo, 'feat: installer\n');
+        expect(r.status, r.out).not.toBe(0);
+        expect(r.out).toMatch(/Pin: +node \S*secret-scanner\.cjs --pin deploy\/install\.sh:1(?! --rev)/);
+        expect(r.out).not.toContain(PUB);
+        noDigest(r.out);
+      });
+
+      sh('running the printed pin command in the owner\'s terminal clears a blocked push once the list is committed', () => {
+        commitValue('deploy/install.sh', PUB, 'feat: installer\n');
+        const blocked = R.git(repo, ['push', 'origin', 'main']);
+        expect(blocked.status, blocked.out).not.toBe(0);
+        const printed = /Pin: +node (\S+) (--pin \S+) --rev ([0-9a-f]{40})/.exec(blocked.out);
+        expect(printed, blocked.out).not.toBeNull();
+        const pinRun = spawnSync(process.execPath, [printed[1], '--pin', printed[2].slice('--pin '.length), '--rev', printed[3], '--reason', 'owner-reviewed'], {
+          cwd: repo, env: R.cleanEnv(repo), encoding: 'utf8', windowsHide: true,
+        });
+        expect(pinRun.status, pinRun.stdout + pinRun.stderr).toBe(0);
+        expect(pinRun.stdout + pinRun.stderr).not.toContain(PUB);
+        noDigest(pinRun.stdout + pinRun.stderr);
+        expect(fs.readFileSync(path.join(repo, '.betterleaksignore'), 'utf8')).toBe(`${valueKey(PUB)} # owner-reviewed\n`);
+        // The entry counts once it is part of a commit (the scans read the index or HEAD, never the work tree).
+        expect(R.git(repo, ['add', '--', '.betterleaksignore']).status).toBe(0);
+        expect(commitF(repo, 'chore: owner-reviewed value\n').status).toBe(0);
+        const r = R.git(repo, ['push', 'origin', 'main']);
+        expect(r.status, r.out).toBe(0);
       });
 
       sh('a different value in the same range still blocks, and only it is reported', () => {
@@ -552,9 +590,10 @@ describe('SEC-MAJOR-4: the commit paths beyond `git commit`', () => {
         allowInTip(`${valueKey(PUB)}\n`);
         const r = R.git(repo, ['push', 'origin', 'main']);
         expect(r.status, r.out).not.toBe(0);
-        expect(r.out).toContain(`Allow: ${valueKey(PUB2)}`);
-        expect(r.out).not.toContain(`Allow: ${valueKey(PUB)}`);
+        expect(r.out).toMatch(/--pin deploy\/other\.sh:1 --rev [0-9a-f]{40}/);
+        expect(r.out).not.toMatch(/--pin deploy\/install\.sh/);
         expect(r.out).toMatch(/deploy\/other\.sh/);
+        expect(r.out).not.toMatch(/[0-9a-f]{64}/);
       });
 
       sh('a prefix or malformed hash in the tip allows nothing', () => {
@@ -563,7 +602,8 @@ describe('SEC-MAJOR-4: the commit paths beyond `git commit`', () => {
         allowInTip(`${full.slice(0, full.length - 1)}\n${full}0\n${full.slice(0, 30)}\n`);
         const r = R.git(repo, ['push', 'origin', 'main']);
         expect(r.status, r.out).not.toBe(0);
-        expect(r.out).toContain(`Allow: ${full}`);
+        expect(r.out).toMatch(/--pin deploy\/install\.sh:1 --rev [0-9a-f]{40}/);
+        expect(r.out).not.toContain(full);
       });
 
       sh('a value hash committed BEFORE the tip and removed again does not count (only the tip list does)', () => {
@@ -1074,6 +1114,83 @@ describe('moved or copied committed content is not rescanned; changed content is
     expect(r.status, r.out).not.toBe(0);
     expect(r.out).toMatch(/fresh\.txt/);
     expect(r.out).not.toMatch(/renamed\.txt/);
+  });
+
+  // A blob committed at a path with weaker rules has never met the full rules: a test path runs the named-provider
+  // rules only and a hard-skip path (node_modules, lockfiles) is not scanned. Copying or moving it to a normal path
+  // must scan it, so the skip applies only when the content already passed rules at least as strict.
+  describe('content committed at a weaker path is scanned when it reaches a normal path', () => {
+    // A generic assignment (no provider prefix): scanned under the full rules, ignored at a test path.
+    const GENERIC = ['Zx9Qm4', 'Lp2Rt7'].join('');
+    const generic = `password = "${GENERIC}"\n`;
+    const commitAt = (rel, text = generic) => {
+      R.stage(repo, rel, text);
+      const r = commitF(repo, `chore: add ${rel}\n`);
+      expect(r.status, r.out).toBe(0);
+    };
+
+    sh('a test fixture moved to src/ is blocked', () => {
+      commitAt('__tests__/fixture.js');
+      fs.mkdirSync(path.join(repo, 'src'), { recursive: true });
+      R.git(repo, ['mv', '__tests__/fixture.js', 'src/config.js']);
+      const before = count();
+      const r = commitF(repo, 'chore: move fixture\n');
+      expect(r.status, r.out).not.toBe(0);
+      expect(r.out).toMatch(/src\/config\.js/);
+      expect(r.out).not.toContain(GENERIC);
+      expect(count()).toBe(before);
+    });
+
+    sh('a vendored file copied out of node_modules is blocked', () => {
+      commitAt('node_modules/dep/index.js');
+      R.stage(repo, 'src/other.js', generic);
+      const before = count();
+      const r = commitF(repo, 'chore: copy vendored file\n');
+      expect(r.status, r.out).not.toBe(0);
+      expect(r.out).toMatch(/src\/other\.js/);
+      expect(count()).toBe(before);
+    });
+
+    // The skip itself, proved with a named-provider key (it blocks wherever it is scanned, test paths included):
+    // the commit passes only because the content already met rules at least as strict at a HEAD path.
+    sh('the same content moved from a normal path into a test path still skips the rescan', () => {
+      keyFile('src/a.js');
+      bypassCommit();
+      fs.mkdirSync(path.join(repo, '__tests__'), { recursive: true });
+      R.git(repo, ['mv', 'src/a.js', '__tests__/a.js']);
+      const r = commitF(repo, 'chore: into a test path\n');
+      expect(r.status, r.out).toBe(0);
+    });
+
+    sh('a test fixture moved to another test path still skips the rescan', () => {
+      keyFile('__tests__/k.js');
+      bypassCommit();
+      fs.mkdirSync(path.join(repo, 'spec'), { recursive: true });
+      R.git(repo, ['mv', '__tests__/k.js', 'spec/k.test.js']);
+      const r = commitF(repo, 'chore: move between test paths\n');
+      expect(r.status, r.out).toBe(0);
+    });
+
+    sh('one strict HEAD path is enough: content also held at a normal path skips, though a test path holds it too', () => {
+      keyFile('__tests__/k.js');
+      bypassCommit();
+      keyFile('src/k.js');
+      bypassCommit('chore: key at a normal path\n');
+      R.stage(repo, 'src/k-copy.js', `k=${R.AWS_KEY}\n`);
+      const r = commitF(repo, 'chore: copy\n');
+      expect(r.status, r.out).toBe(0);
+    });
+
+    sh('content held only at a test path is scanned when copied to a normal path', () => {
+      keyFile('__tests__/k.js');
+      bypassCommit();
+      R.stage(repo, 'src/k-copy.js', `k=${R.AWS_KEY}\n`);
+      const before = count();
+      const r = commitF(repo, 'chore: copy\n');
+      expect(r.status, r.out).not.toBe(0);
+      expect(r.out).toMatch(/AWS Access Key/);
+      expect(count()).toBe(before);
+    });
   });
 
   sh('pushing a rename of content already on the remote passes', () => {

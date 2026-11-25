@@ -1,5 +1,5 @@
 /**
- * Memory Lint — 9-check health audit over a pre-assembled list of memories.
+ * Memory Lint — 10-check health audit over a pre-assembled list of memories.
  *
  * Extracted from memory-manager.js:740-911 (lintMemories). Pure function of its
  * inputs — no `this.*` coupling in the body. Caller is responsible for:
@@ -8,7 +8,9 @@
  *      manager's own implementation (with its per-instance resolver)
  *
  * Checks produce `{ count, severity, findings: [...] }` per category; overall
- * health score starts at 70 and deducts {error:3, warning:2, info:1} per finding.
+ * health score starts at 70 and deducts {error:3, warning:2, info:1} per finding,
+ * capped per check at CHECK_CAPS[severity] so one noisy check cannot floor the score:
+ * with every check firing the score stays above 0, and fixing real errors moves it.
  */
 
 const { jaccardFromSets, tokenizeText } = require('./jaccard');
@@ -17,6 +19,8 @@ const POSITIVE_SIGNALS = ['always', 'must', 'should', 'require', 'use', 'do'];
 const NEGATIVE_SIGNALS = ["don't", 'never', 'avoid', 'skip', 'stop', 'remove'];
 
 const DEDUCTIONS = { error: 3, warning: 2, info: 1 };
+// Most points one check can take, by severity. Ten checks at their caps sum to 62 (< 70).
+const CHECK_CAPS = { error: 15, warning: 7, info: 3 };
 
 const CORRECTION_MARKER = /\b(?:CORRECTED|CORRECTION|OBSOLETE|REFUTED|RETRACTED|SUPERSEDED|NO LONGER (?:TRUE|VALID|ACCURATE))\b/;
 const CORRECTION_KEY = /^(?:correction|corrections|historical_\w+)$/;
@@ -44,6 +48,13 @@ function idDrift(id, lowerText) {
     return missing.length * 3 >= terms.length * 2 ? { terms: terms.length, missing } : null;
 }
 
+/** "[[slug]]" -> "slug"; any other value is returned unchanged. */
+function unbracketRefId(raw) {
+    if (typeof raw !== 'string') return raw;
+    const m = /^\s*\[\[\s*([^\]]*?)\s*\]\]\s*$/.exec(raw);
+    return m ? m[1] : raw;
+}
+
 /**
  * Run the 9 lint checks and return a structured health report.
  *
@@ -63,7 +74,8 @@ function idDrift(id, lowerText) {
 function lintMemories(allMemories, { calculateDecayedConfidence, categories, retiredIds = [] }) {
     const findings = {
         broken_refs:      { count: 0, severity: 'error',   findings: [] },
-        orphaned:         { count: 0, severity: 'warning', findings: [] },
+        // A never-recalled memory is a pruning candidate, not a defect: info.
+        orphaned:         { count: 0, severity: 'info',    findings: [] },
         contradictions:   { count: 0, severity: 'warning', findings: [] },
         stale:            { count: 0, severity: 'warning', findings: [] },
         duplicates:       { count: 0, severity: 'warning', findings: [] },
@@ -71,6 +83,7 @@ function lintMemories(allMemories, { calculateDecayedConfidence, categories, ret
         corrected_in_place: { count: 0, severity: 'warning', findings: [] },
         id_drift:         { count: 0, severity: 'info',    findings: [] },
         schema_drift:     { count: 0, severity: 'info',    findings: [] },
+        bracketed_refs:   { count: 0, severity: 'warning', findings: [] },
     };
 
     const knownIds = new Set([...allMemories.map(m => m.full.id), ...retiredIds]);
@@ -122,10 +135,24 @@ function lintMemories(allMemories, { calculateDecayedConfidence, categories, ret
             flagRef(category, full, match[1], 'wiki-link');
         }
         // (c) explicit content.references array of slug ids.
+        // A list entry written as "[[slug]]" is the prose wiki-link form in the wrong
+        // place: strip the brackets before the id lookup (so it is not reported as
+        // broken) and warn once per entry that the list takes bare ids.
+        const listRef = (raw, source) => {
+            const bare = unbracketRefId(raw);
+            if (bare !== raw) {
+                findings.bracketed_refs.findings.push({
+                    memory: `${category}/${full.id}`,
+                    referenced_id: bare,
+                    detail: `${source} entry "${raw}" is bracketed: use bare ids ("${bare}")`,
+                });
+            }
+            flagRef(category, full, bare, source);
+        };
         const refs = full.content?.references;
         if (Array.isArray(refs)) {
             for (const ref of refs) {
-                if (typeof ref === 'string') flagRef(category, full, ref, 'references[]');
+                if (typeof ref === 'string') listRef(ref, 'references[]');
             }
         }
         // (d) content.see_also[]: slug strings or { category, id } objects. The largest
@@ -134,11 +161,12 @@ function lintMemories(allMemories, { calculateDecayedConfidence, categories, ret
         if (Array.isArray(seeAlso)) {
             for (const ref of seeAlso) {
                 const id = typeof ref === 'string' ? ref : ref?.id;
-                if (typeof id === 'string') flagRef(category, full, id, 'see_also[]');
+                if (typeof id === 'string') listRef(id, 'see_also[]');
             }
         }
     }
     findings.broken_refs.count = findings.broken_refs.findings.length;
+    findings.bracketed_refs.count = findings.bracketed_refs.findings.length;
 
     // Check 2 — Orphaned concepts
     const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
@@ -309,10 +337,11 @@ function lintMemories(allMemories, { calculateDecayedConfidence, categories, ret
     }
     findings.schema_drift.count = findings.schema_drift.findings.length;
 
-    // Health score: start at 70, deduct per finding by severity
+    // Health score: start at 70, deduct per finding by severity, capped per check.
     let score = 70;
     for (const check of Object.values(findings)) {
-        score -= check.count * DEDUCTIONS[check.severity];
+        check.deduction = Math.min(check.count * DEDUCTIONS[check.severity], CHECK_CAPS[check.severity]);
+        score -= check.deduction;
     }
     score = Math.max(0, score);
 
@@ -324,4 +353,4 @@ function lintMemories(allMemories, { calculateDecayedConfidence, categories, ret
     };
 }
 
-module.exports = { lintMemories, idDrift, DEDUCTIONS };
+module.exports = { lintMemories, idDrift, unbracketRefId, DEDUCTIONS, CHECK_CAPS };

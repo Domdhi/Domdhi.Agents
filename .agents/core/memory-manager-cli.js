@@ -25,15 +25,59 @@ const { MEMORY_DECAY } = require('./constants');
  * deep, reads as empty, and injects as "(no summary)" at SessionStart. Detect the
  * envelope — a lone `content` object with none of the real content fields present
  * at the top level — and unwrap one level with a warning.
+ *
+ * Fields an author often puts BESIDE the envelope (`importance`, `related`,
+ * `see_also`, `confidence`) are merged into the unwrapped content rather than
+ * dropped: createMemory/updateMemory read them from content (importance is then
+ * promoted to the top level). A sibling whose value differs from the same key
+ * inside the envelope is ambiguous, so it throws an EnvelopeClashError and the
+ * CLI exits 2. Any other sibling is ignored with a warning naming it.
  */
+const ENVELOPE_SIBLINGS = ['importance', 'related', 'see_also', 'confidence'];
+
+class EnvelopeClashError extends Error {}
+
 function unwrapContentEnvelope(obj) {
     if (obj && typeof obj === 'object' && !Array.isArray(obj)
         && obj.content && typeof obj.content === 'object' && !Array.isArray(obj.content)
         && obj.description === undefined && obj.pattern === undefined && obj.evidence === undefined) {
         console.warn('⚠️  content JSON was wrapped in a redundant { "content": … } envelope — unwrapping one level. Pass the content object directly, e.g. \'{"description":"…","importance":3}\'.');
-        return obj.content;
+        const merged = { ...obj.content };
+        const ignored = [];
+        for (const key of Object.keys(obj)) {
+            if (key === 'content') continue;
+            if (!ENVELOPE_SIBLINGS.includes(key)) { ignored.push(key); continue; }
+            if (merged[key] !== undefined && JSON.stringify(merged[key]) !== JSON.stringify(obj[key])) {
+                throw new EnvelopeClashError(`"${key}" is set both beside the envelope and inside content with different values; pass it once.`);
+            }
+            merged[key] = obj[key];
+        }
+        if (ignored.length > 0) {
+            console.warn(`⚠️  ignored field(s) beside the envelope: ${ignored.join(', ')} (only ${ENVELOPE_SIBLINGS.join(', ')} are merged).`);
+        }
+        return merged;
     }
     return obj;
+}
+
+/** Parse and unwrap a content-json argument; exit 1 on bad JSON, 2 on an envelope clash. */
+function parseContentArg(raw, fallback) {
+    let parsed;
+    try {
+        parsed = JSON.parse(raw === undefined ? fallback : raw);
+    } catch (e) {
+        console.error(`Error: content must be valid JSON — ${e.message}`);
+        process.exit(1);
+    }
+    try {
+        return unwrapContentEnvelope(parsed);
+    } catch (e) {
+        if (e instanceof EnvelopeClashError) {
+            console.error(`Error: ${e.message}`);
+            process.exit(2);
+        }
+        throw e;
+    }
 }
 
 async function main() {
@@ -43,7 +87,7 @@ async function main() {
     switch (command) {
         case 'create': {
             const [category, id] = args;
-            const content = unwrapContentEnvelope(JSON.parse(args[2] || '{}'));
+            const content = parseContentArg(args[2], '{}');
             const overwrite = args.includes('--overwrite');
             const created = await manager.createMemory(category, id, content, { overwrite });
             if (!created) {
@@ -65,10 +109,10 @@ async function main() {
         case 'delete': {
             const [category, id] = args;
             if (!category || !id) {
-                console.error('Error: delete requires <category> <id>');
+                console.error('Error: delete requires <category> <id> [--force]');
                 process.exit(1);
             }
-            const result = await manager.deleteMemory(category, id);
+            const result = await manager.deleteMemory(category, id, { force: args.includes('--force') });
             if (result.deleted) {
                 console.log(`🗑️  Deleted: ${category}/${id}`);
             } else {
@@ -84,13 +128,7 @@ async function main() {
                 console.error('  content-json is merged into the memory\'s content (e.g. \'{"description":"..."}\')');
                 process.exit(1);
             }
-            let content;
-            try {
-                content = unwrapContentEnvelope(JSON.parse(args[2]));
-            } catch (e) {
-                console.error(`Error: content must be valid JSON — ${e.message}`);
-                process.exit(1);
-            }
+            const content = parseContentArg(args[2]);
             const updated = await manager.updateMemory(category, id, { content });
             if (!updated) {
                 console.error(`❌ Update failed: ${category}/${id} not found`);
@@ -101,6 +139,11 @@ async function main() {
         case 'inbox-list': {
             const entries = await manager.inboxList();
             console.log(JSON.stringify(entries, null, 2));
+            const invalid = entries.filter((e) => e.problems);
+            if (invalid.length > 0) {
+                console.error(`⚠️  ${invalid.length} invalid draft(s): fix and promote, or discard by the id shown:`);
+                for (const e of invalid) console.error(`  ${e.id}: ${e.problems.join('; ')}`);
+            }
             break;
         }
         case 'inbox-promote': {
@@ -376,18 +419,23 @@ async function main() {
                 console.log('');
                 let deleted = 0;
                 let failed = 0;
+                let kept = 0;
                 for (const c of candidates) {
                     const result = await manager.deleteMemory(c.category, c.id);
                     if (result.deleted) {
                         console.log(`  DELETED  ${c.category}/${c.id}`);
                         deleted++;
+                    } else if (result.referencedBy) {
+                        // Still cited by other memories: deleting would leave dangling links.
+                        console.log(`  KEPT     ${c.category}/${c.id}  — referenced by ${result.referencedBy.join(', ')}`);
+                        kept++;
                     } else {
                         console.error(`  FAILED   ${c.category}/${c.id}  — ${result.error}`);
                         failed++;
                     }
                 }
                 console.log('');
-                console.log(`Done: ${deleted} deleted, ${failed} failed.`);
+                console.log(`Done: ${deleted} deleted, ${kept} kept (referenced), ${failed} failed.`);
                 if (failed > 0) process.exit(1);
             }
             break;
@@ -404,8 +452,19 @@ Usage:
     to merge new fields into the existing memory instead.
   node memory-manager-cli.js read <category> <id>
   node memory-manager-cli.js update <category> <id> <content-json>
+    <content> / <content-json> is the content object, passed flat:
+      '{"description":"…","evidence":"…","importance":4,"see_also":["other-id"]}'
+    importance (1–5) goes in it and is stored top-level; related, see_also,
+    references and confidence are stored inside content. Cross-reference
+    lists take bare ids ("other-id", not "[[other-id]]"; brackets are stripped).
+    A redundant {"content":{…}} envelope is unwrapped; importance, related,
+    see_also and confidence beside it are merged in, and a sibling that
+    contradicts the same key inside the envelope exits 2.
   node memory-manager-cli.js list <category>
-  node memory-manager-cli.js delete <category> <id>
+  node memory-manager-cli.js delete <category> <id> [--force]
+    Refuses while other memories reference the id ([[id]], references,
+    related, see_also) and lists them; prefer a RESOLVED note or supersede.
+    --force deletes anyway.
   node memory-manager-cli.js supersede <category> <oldId> <newId>
   node memory-manager-cli.js search <term>
   node memory-manager-cli.js inbox-list
@@ -457,4 +516,4 @@ if (require.main === module) {
     main().catch(err => { console.error(err.message); process.exit(1); });
 }
 
-module.exports = { main, unwrapContentEnvelope };
+module.exports = { main, unwrapContentEnvelope, EnvelopeClashError, ENVELOPE_SIBLINGS };

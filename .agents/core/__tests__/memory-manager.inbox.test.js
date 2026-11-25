@@ -314,3 +314,60 @@ describe('memory-manager inbox', () => {
     });
   });
 });
+
+describe('inbox draft validation and exact-name resolution', () => {
+  it('inboxList flags an invalid draft with its problems instead of skipping it', async () => {
+    writeInboxFile('2026-11-25-1200-good-one', makeDraft());
+    fs.mkdirSync(inboxDir(), { recursive: true });
+    fs.writeFileSync(path.join(inboxDir(), '2026-11-25-1201-broken.json'), '{ not json');
+    writeInboxFile('2026-11-25-1202-bad-id', makeDraft({ suggested_id: 'Bad Id', category: 'nope' }));
+    const m = makeManager();
+
+    const entries = await m.inboxList();
+
+    expect(entries.map((e) => e.id)).toEqual(['2026-11-25-1200-good-one', '2026-11-25-1201-broken', '2026-11-25-1202-bad-id']);
+    expect(entries[0].problems).toBeUndefined();
+    expect(entries[1].problems.join(' ')).toMatch(/malformed JSON/);
+    expect(entries[2].problems.join(' ')).toMatch(/category/);
+    expect(entries[2].problems.join(' ')).toMatch(/suggested_id/);
+  });
+
+  it('flags a legacy uppercase file name, and discards it by the exact id inbox-list printed', async () => {
+    writeInboxFile('2026-11-25-1200-Legacy-Upper', makeDraft());
+    const m = makeManager();
+    const [entry] = await m.inboxList();
+    expect(entry.problems.join(' ')).toMatch(/file name/);
+
+    const result = await m.inboxDiscard(entry.id);
+
+    expect(result).toEqual({ discarded: true });
+    expect(fs.existsSync(path.join(inboxDir(), '2026-11-25-1200-Legacy-Upper.json'))).toBe(false);
+  });
+
+  it('accepts the printed file path and a bare name.json for promote', async () => {
+    writeInboxFile('2026-11-25-1200-Legacy-Promote', makeDraft({ suggested_id: 'legacy-promoted-memory' }));
+    const m = makeManager();
+    const [entry] = await m.inboxList();
+
+    const result = await m.inboxPromote(entry.file);
+
+    expect(result.promoted).toBe(true);
+    expect(result.id).toBe('legacy-promoted-memory');
+  });
+
+  it('accepts a bare name.json for discard', async () => {
+    writeInboxFile('2026-11-25-1200-Another-Legacy', makeDraft());
+    const m = makeManager();
+
+    expect(await m.inboxDiscard('2026-11-25-1200-Another-Legacy.json')).toEqual({ discarded: true });
+  });
+
+  it('still refuses traversal and a non-existent uppercase name', async () => {
+    const m = makeManager();
+
+    expect((await m.inboxDiscard('../../secret')).discarded).toBe(false);
+    expect((await m.inboxDiscard('..')).discarded).toBe(false);
+    expect((await m.inboxDiscard('Not-There')).error).toMatch(/Invalid inbox id/);
+    expect((await m.inboxPromote('../x')).promoted).toBe(false);
+  });
+});

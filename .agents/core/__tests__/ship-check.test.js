@@ -1310,6 +1310,94 @@ describe('seal: a wave that edits an earlier story\'s frozen test is refused at 
   });
 });
 
+describe('seal: the earlier-stories freeze check fails closed (sweep p1, theme F)', () => {
+  const B_TEST = 'src/__tests__/b.test.js';
+  const EXTRA = { [B_TEST]: 'expect(2).toBe(2);\n' };
+  const TWO = {
+    'T-1.1': { criteria: ['Earlier. verify: node ok.js'], files: [A_TEST, IMPL] },
+    'T-1.2': { criteria: ['Current. verify: node ok.js'], files: [B_TEST] },
+  };
+  const messages = (out) => out.json.errors.map((e) => e.message).join('\n');
+  const rewriteTodo = (repo, stories) => repo.write('docs/TODO_fixture.md', todoText(stories));
+
+  it('exports one TAMPER_CODES definition that ship-check imports instead of redefining', () => {
+    const acVerify = require('../ac-verify');
+    expect([...acVerify.TAMPER_CODES].sort()).toEqual(['FROZEN_FILE_CHANGED', 'FROZEN_FILE_MISSING', 'VERIFY_CHANGED']);
+    const source = fs.readFileSync(path.resolve('.agents/core/ship-check.js'), 'utf8');
+    expect(source).not.toMatch(/const TAMPER_CODES = new Set/);
+    expect(source).toMatch(/TAMPER_CODES\s*}\s*=\s*acVerify/);
+  });
+
+  it('control: an unfrozen later story with a malformed verify: line does not stop an intact seal', () => {
+    const repo = shipRepo({ stories: TWO, extra: EXTRA });
+    rewriteTodo(repo, { ...TWO, 'T-1.3': { criteria: ['Later. verify:'], files: [] } });
+    writeGateReceipt(repo);
+
+    const out = sealCli(repo, { ids: ['T-1.2'] });
+
+    expect(out.status, `${out.stdout}${out.stderr}`).toBe(0);
+  });
+
+  it('refuses an earlier story\'s tampered frozen file even when a later story of the TODO has a malformed verify: line', () => {
+    const repo = shipRepo({ stories: TWO, extra: EXTRA });
+    rewriteTodo(repo, { ...TWO, 'T-1.3': { criteria: ['Later. verify:'], files: [] } });
+    repo.write(A_TEST, 'expect(1).toBe(1); // edited in a later wave\n');
+    writeGateReceipt(repo);
+
+    const out = sealCli(repo, { ids: ['T-1.2'] });
+
+    expect(out.status).not.toBe(0);
+    expect(rules(out)).toContain('ac-check');
+    expect(messages(out)).toContain('FROZEN_FILE_CHANGED');
+    expect(messages(out)).toContain(A_TEST);
+    expect(out.json.errors.find((e) => e.rule === 'ac-check').fix).toContain('--stories T-1.1');
+  });
+
+  it('refuses an earlier story\'s tampered frozen file when the TODO holds more than 128 stories', () => {
+    const repo = shipRepo({ stories: TWO, extra: EXTRA });
+    const many = { ...TWO };
+    for (let n = 0; n < 128; n++) many[`T-9.${n}`] = { criteria: ['Filler. [manual]'], files: [] };
+    rewriteTodo(repo, many);
+    repo.write(A_TEST, 'expect(1).toBe(1); // edited in a later wave\n');
+    writeGateReceipt(repo);
+
+    const out = sealCli(repo, { ids: ['T-1.2'] });
+
+    expect(out.status).not.toBe(0);
+    expect(messages(out)).toContain('FROZEN_FILE_CHANGED');
+    expect(messages(out)).toContain(A_TEST);
+  });
+
+  it('refuses the seal naming an earlier frozen story whose verify: line became malformed, and still reports another earlier story\'s tampering', () => {
+    const three = { ...TWO, 'T-1.3': { criteria: ['Third. verify: node ok.js'], files: [] } };
+    const repo = shipRepo({ stories: three, extra: EXTRA });
+    rewriteTodo(repo, { ...three, 'T-1.3': { criteria: ['Third. verify:'], files: [] } });
+    repo.write(A_TEST, 'expect(1).toBe(1); // edited in a later wave\n');
+    writeGateReceipt(repo);
+
+    const out = sealCli(repo, { ids: ['T-1.2'] });
+
+    expect(out.status).not.toBe(0);
+    expect(rules(out)).toEqual(['ac-check']);
+    expect(messages(out)).toContain('FROZEN_FILE_CHANGED');
+    expect(messages(out)).toMatch(/earlier story T-1\.3: .*verify/);
+    expect(out.json.errors.every((e) => typeof e.fix === 'string' && e.fix.length > 0)).toBe(true);
+  });
+
+  it('refuses the seal naming an earlier frozen story whose verify: line became malformed, with no file tampering', () => {
+    const three = { ...TWO, 'T-1.3': { criteria: ['Third. verify: node ok.js'], files: [] } };
+    const repo = shipRepo({ stories: three, extra: EXTRA });
+    rewriteTodo(repo, { ...three, 'T-1.3': { criteria: ['Third. verify:'], files: [] } });
+    writeGateReceipt(repo);
+
+    const out = sealCli(repo, { ids: ['T-1.2'] });
+
+    expect(out.status).not.toBe(0);
+    expect(rules(out)).toEqual(['ac-check']);
+    expect(messages(out)).toMatch(/earlier story T-1\.3/);
+  });
+});
+
 describe('verify: a commit naming different stories from the seal is a clear mismatch, not records-drift (first adopter run, 2026-11-20)', () => {
   const B_TEST = 'src/__tests__/b.test.js';
   const TWO = {

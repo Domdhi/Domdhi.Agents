@@ -93,16 +93,22 @@ The engine drops input that looks like a binary file (a zip, bzip2, rar, ar, cab
 
 **`.betterleaksignore`** (project root, one fingerprint per line, `path:rule:line`, read from the INDEX, else HEAD, never from the working tree) applies to whole-file scans only: the commit scans, the push scan, a Write with full content and `--file`. It never applies to an Edit or MultiEdit fragment (its line numbers restart at 1) or to content that needed the newline rescan. `.gitleaksignore` is not read. A fingerprint is bound to a line, not a value, and one token can fire two rules (a GitHub token fires `github-pat` and `domdhi-github-token`), so list every rule that fires. The engine runs in an empty directory of its own, so an ignore file in the working directory has no effect.
 
-**Reviewed values already in history: `value-sha256:` entries.** A `path:rule:line` fingerprint only counts in the commit that introduced the blob, so a reviewed non-secret that sits in older unpushed commits could not be cleared without rewriting history or the audited bypass. For that case the **owner** (never the agent; the file is read-only to agents) adds one line per value to `.betterleaksignore` in a new commit:
+**Reviewed values already in history: `value-sha256:` entries.** A `path:rule:line` fingerprint only counts in the commit that introduced the blob, so a reviewed non-secret that sits in older unpushed commits could not be cleared without rewriting history or the audited bypass. For that case the **owner** (never the agent; the file is read-only to agents) pins the value, in their own terminal, with the command the block report prints for every *generic* finding:
+
+```sh
+node .claude/hooks/secret-scanner.cjs --pin src/deploy.sh:12 [--rev <commit>] [--reason "RustDesk server public key"]   # .codex/hooks/ in Codex
+```
+
+The report line is `Pin:   node ... --pin <path>:<line>` (with `--rev <commit>` when an older commit introduced the blob, so the value is read from that commit and not the work tree). The command reads the value from the file, appends one line to `.betterleaksignore` as UTF-8 and prints neither the value nor its hash, then you stage and commit that file:
 
 ```
 value-sha256:<64 lowercase hex> # reason, e.g. RustDesk server public key (reviewed 2026-11-10)
 ```
 
-- The hash is SHA-256 of the exact matched value with surrounding quotes removed. The git hooks print it for every *generic* finding as `Allow: value-sha256:...` in the block report, so it is copied, not computed by hand, and the value itself is never printed. Named-provider findings get no `Allow:` line.
+- **The hash is never printed.** The block report names a location and a command only. An unsalted SHA-256 next to the redacted preview (the first four characters of a short value) is an offline verifier for a short secret, and a hook's stderr reaches the agent transcript, CI logs and scrollback. The digest is SHA-256 of the exact matched value with surrounding quotes removed, computed inside `--pin`. Named-provider findings get no `Pin:` line and `--pin` refuses them. Every generic finding at the named line is pinned; a value already listed is not added twice; a UTF-16 ignore file (PowerShell's `>>`) is refused rather than corrupted.
 - It matches that one value at any path, rule and line, and nothing else. It is never a location, never a prefix: an entry that is not exactly `value-sha256:` plus 64 hex digits (optionally followed by whitespace and `# ...`) allows nothing and is dropped. Hex case does not matter.
 - Wherever the ignore list applies (commit scans, Write with full content, `--file`), it applies like any entry. In the **push scan**, the `value-sha256:` entries of the pushed **tip** commit also cover every blob the push publishes, whichever commit introduced it. With several refs in one push, an entry counts only if every tip lists it; a tip with no list allows nothing. Location fingerprints in the tip still do not reach older commits, and nothing ignores a finding in a commit or tag message.
-- A hash hides a high-entropy value, but a short guessable value can be recovered from its hash: use these entries only for values that are not secret.
+- A hash hides a high-entropy value, but a short guessable value can be recovered from its hash, and `.betterleaksignore` is committed: pin only values that are not secret.
 
 `commit.js` also scans the **commit message** (inline `-m` or the message file) and blocks on a finding. `commit.js --no-scan` remains a last resort and is logged as its own `bypass` event (a raw `git commit` bypassed with `CLAUDE_COMMIT_NO_SCAN=1` logs a `git-hook-no-scan` event from the hook); blocks log the rule names that fired and a count, never a value, and `/review:feedback` shows the top rules. A `git commit -F` run outside `commit.js` is scanned by the managed git hooks when they are installed and active.
 

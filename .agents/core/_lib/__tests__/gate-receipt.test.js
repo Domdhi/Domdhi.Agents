@@ -225,20 +225,189 @@ describe('projectClosure', () => {
 
 describe('buildClosure', () => {
   const meta = { engine: 'e', configHash: 'c', mode: 'normal' };
+  const buildLeg = { argv: ['dotnet', 'build', 'App.sln'] };
   it('joins every project in a root solution, and is unknown when one cannot be resolved', () => {
     const sln = 'Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "A", "A\\A.csproj", "{1}"\nProject("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Z", "Z\\Z.csproj", "{2}"\n';
     const files = { ...base(), 'App.sln': sln };
     const r = repo(files);
     const projectClosures = [gr.dotnetClosure({ ...r, projectPath: 'C/C.csproj' })];
-    const missing = gr.buildClosure({ projectClosures, snapshot: { hash: 'h', entries: r.entries }, readText: r.readText, meta, buildDisplay: 'b' });
+    const missing = gr.buildClosure({ projectClosures, snapshot: { hash: 'h', entries: r.entries }, readText: r.readText, meta, buildDisplay: 'b', buildLeg });
     expect(missing.known).toBe(false);
     const r2 = repo({ ...base(), 'Z/Z.csproj': csproj(), 'Z/Z.cs': 'z', 'App.sln': sln });
-    const ok = gr.buildClosure({ projectClosures, snapshot: { hash: 'h', entries: r2.entries }, readText: r2.readText, meta, buildDisplay: 'b' });
+    const ok = gr.buildClosure({ projectClosures, snapshot: { hash: 'h', entries: r2.entries }, readText: r2.readText, meta, buildDisplay: 'b', buildLeg });
     expect(ok.known).toBe(true);
     expect([...ok.files.keys()]).toContain('Z/Z.cs');
   });
   it('is unknown when any project closure is unknown', () => {
     expect(gr.buildClosure({ projectClosures: [{ known: false }], snapshot: { hash: 'h', entries: new Map() }, readText: () => null, meta, buildDisplay: 'b' }).known).toBe(false);
+  });
+});
+
+// ── review G: what the closure must see ─────────────────────────────
+
+describe('dotnetClosure: the configuration chain is scanned like the project file (review G, MAJOR)', () => {
+  const props = (body) => `<Project>\n${body}\n</Project>\n`;
+  const closureOf = (files, projectPath = 'C/C.csproj') => gr.dotnetClosure({ ...repo(files), projectPath });
+  const hashOf = (c) => gr.hashFiles(c.files, 'm');
+
+  it('follows an Import in Directory.Build.props, so editing the imported file changes the closure', () => {
+    const files = { ...base(), 'Directory.Build.props': props('<Import Project="$(MSBuildThisFileDirectory)eng/Versions.props" />'), 'eng/Versions.props': props('<PropertyGroup><LangVersion>11</LangVersion></PropertyGroup>') };
+    const before = closureOf(files);
+    expect(before.known).toBe(true);
+    expect([...before.files.keys()]).toContain('eng/Versions.props');
+    const after = closureOf({ ...files, 'eng/Versions.props': props('<PropertyGroup><LangVersion>12.0</LangVersion></PropertyGroup>') });
+    expect(hashOf(after)).not.toBe(hashOf(before));
+  });
+  it('is unknown when an unconditional Import in Directory.Build.props points at a file that is not in the tree', () => {
+    const files = { ...base(), 'Directory.Build.props': props('<Import Project="$(MSBuildThisFileDirectory)eng/Missing.props" />') };
+    expect(closureOf(files)).toMatchObject({ known: false });
+  });
+  it('follows a Compile item in Directory.Build.props that points outside the project directory', () => {
+    const files = { ...base(), 'Directory.Build.props': props('<ItemGroup><Compile Include="$(MSBuildThisFileDirectory)shared/Info.cs" /></ItemGroup>'), 'shared/Info.cs': 'class Info {}' };
+    const before = closureOf(files);
+    expect(before.known).toBe(true);
+    expect([...before.files.keys()]).toContain('shared/Info.cs');
+    expect(hashOf(closureOf({ ...files, 'shared/Info.cs': 'class Info { int x; }' }))).not.toBe(hashOf(before));
+  });
+  it('is unknown when a Compile item in Directory.Build.props uses a property it cannot resolve', () => {
+    const files = { ...base(), 'Directory.Build.props': props('<ItemGroup><Compile Include="$(GeneratedDir)/x.cs" /></ItemGroup>') };
+    expect(closureOf(files)).toMatchObject({ known: false });
+  });
+  it('scans a Directory.Build.props above a nested project with that project as the project directory', () => {
+    const files = {
+      ...base(), 'src/App/App.csproj': csproj(), 'src/App/App.cs': 'class App {}',
+      'src/Directory.Build.props': props('<ItemGroup><Compile Include="$(MSBuildThisFileDirectory)common/Common.cs" /></ItemGroup>'), 'src/common/Common.cs': 'class Common {}',
+    };
+    const closure = closureOf(files, 'src/App/App.csproj');
+    expect(closure.known).toBe(true);
+    expect([...closure.files.keys()]).toContain('src/common/Common.cs');
+  });
+});
+
+describe('dotnetClosure: item lists, file-valued elements and floating versions (review G, MINOR)', () => {
+  const withProject = (body, extra = {}) => gr.dotnetClosure({ ...repo({ ...base(), ...extra, 'C/C.csproj': `<Project Sdk="x">\n${body}\n</Project>` }), projectPath: 'C/C.csproj' });
+  const up = (rel) => `../${rel}`; // a path one level above the project directory (C/)
+
+  it('splits an item list on ";" and follows each path', () => {
+    const c = withProject(`<ItemGroup><Compile Include="Foo.cs;${up('shared/Bar.cs')}" /></ItemGroup>`, { 'shared/Bar.cs': 'class Bar {}' });
+    expect(c.known).toBe(true);
+    expect([...c.files.keys()]).toContain('shared/Bar.cs');
+    expect(withProject(`<ItemGroup><Compile Include="Foo.cs;${up('shared/Gone.cs')}" /></ItemGroup>`).known).toBe(false);
+  });
+  it('follows a HintPath and a rule set that live outside the project directory', () => {
+    const hintBody = `<ItemGroup><Reference Include="Lib"><HintPath>${up('libs/Lib.dll')}</HintPath></Reference></ItemGroup>`;
+    const hint = withProject(hintBody, { 'libs/Lib.dll': 'binary' });
+    expect(hint.known).toBe(true);
+    expect([...hint.files.keys()]).toContain('libs/Lib.dll');
+    const rules = withProject(`<PropertyGroup><CodeAnalysisRuleSet>${up('rules/x.ruleset')}</CodeAnalysisRuleSet></PropertyGroup>`, { 'rules/x.ruleset': '<RuleSet/>' });
+    expect(rules.known).toBe(true);
+    expect([...rules.files.keys()]).toContain('rules/x.ruleset');
+    // A path that cannot be found, or a property it cannot resolve, is unknown (RUN), never skipped.
+    expect(withProject(hintBody).known).toBe(false);
+    expect(withProject('<PropertyGroup><AssemblyOriginatorKeyFile>$(KeyDir)/k.snk</AssemblyOriginatorKeyFile></PropertyGroup>').known).toBe(false);
+    // Inside the project directory the directory contents already cover it.
+    expect(withProject('<PropertyGroup><ApplicationIcon>app.ico</ApplicationIcon></PropertyGroup>').known).toBe(true);
+  });
+  it('is unknown for a floating package version (attribute or child element), known for a pinned one', () => {
+    expect(withProject('<ItemGroup><PackageReference Include="X" Version="1.*" /></ItemGroup>')).toMatchObject({ known: false });
+    expect(withProject('<ItemGroup><PackageReference Include="X" Version="*" /></ItemGroup>').known).toBe(false);
+    expect(withProject('<ItemGroup><PackageReference Include="X"><Version>2.1.*</Version></PackageReference></ItemGroup>').known).toBe(false);
+    expect(withProject('<ItemGroup><PackageReference Include="X" Version="1.2.3" /></ItemGroup>').known).toBe(true);
+    const packages = gr.dotnetClosure({ ...repo({ ...base(), 'Directory.Packages.props': '<Project><ItemGroup><PackageVersion Include="X" Version="3.*" /></ItemGroup></Project>' }), projectPath: 'C/C.csproj' });
+    expect(packages).toMatchObject({ known: false });
+  });
+});
+
+describe('buildTargets and the build key (review G, MAJOR)', () => {
+  const entriesOf = (...paths) => new Map(paths.map(p => [p, { mode: '100644', blob: `b-${p}` }]));
+  const root = entriesOf('App.sln', 'A/A.csproj');
+
+  it('understands dotnet build/publish/pack/msbuild/test with explicit targets, including a non-root solution', () => {
+    expect(gr.buildTargets({ argv: ['dotnet', 'build', 'src/App.sln', '--configuration', 'Release'] }, root)).toEqual({ understood: true, targets: ['src/App.sln'] });
+    expect(gr.buildTargets({ command: 'dotnet publish src/Web/Web.csproj -c Release' }, root)).toEqual({ understood: true, targets: ['src/Web/Web.csproj'] });
+    expect(gr.buildTargets({ legs: [{ argv: ['dotnet', 'build', 'A.sln'] }, { argv: ['dotnet', 'pack', 'B/B.csproj'] }] }, root)).toEqual({ understood: true, targets: ['A.sln', 'B/B.csproj'] });
+    expect(gr.buildTargets({ argv: ['C:\\tools\\dotnet.exe', 'build', 'src\\App.sln'] }, root)).toEqual({ understood: true, targets: ['src/App.sln'] });
+  });
+  it('with no target, takes the one root solution (else the one root project) and nothing ambiguous', () => {
+    expect(gr.buildTargets({ argv: ['dotnet', 'build'] }, root)).toEqual({ understood: true, targets: ['App.sln'] });
+    expect(gr.buildTargets({ argv: ['dotnet', 'build'] }, entriesOf('Only.csproj'))).toEqual({ understood: true, targets: ['Only.csproj'] });
+    expect(gr.buildTargets({ argv: ['dotnet', 'build'] }, entriesOf('One.sln', 'Two.sln')).understood).toBe(false);
+    expect(gr.buildTargets({ argv: ['dotnet', 'build'] }, entriesOf('docs/x.md')).understood).toBe(false);
+  });
+  it('does not understand npm, make, other dotnet verbs, shell lines or paths outside the repository', () => {
+    for (const leg of [
+      { command: 'npm run build' }, { command: 'make build' }, { argv: ['dotnet', 'format', 'App.sln'] }, { command: 'dotnet build App.sln && npm run build' },
+      { argv: ['dotnet', 'build', '/abs/App.sln'] }, { argv: ['dotnet', 'build', 'sub/../../Other.sln'] }, { argv: ['dotnet', 'build', 'C:\\x\\App.sln'] },
+      { legs: [{ argv: ['dotnet', 'build', 'App.sln'] }, { command: 'npm run build' }] }, undefined, {}, { argv: [] },
+    ]) {
+      expect(gr.buildTargets(leg, root).understood, JSON.stringify(leg)).toBe(false);
+    }
+  });
+
+  const meta = { engine: 'e', configHash: 'c', mode: 'normal' };
+  const closureOfBuild = (files, buildLeg, extraMeta = {}) => {
+    const r = repo(files);
+    const projectClosures = [gr.dotnetClosure({ ...r, projectPath: 'C/C.csproj' })];
+    return gr.buildClosure({ projectClosures, snapshot: { hash: 'same-tree-hash', entries: r.entries }, readText: r.readText, meta: { ...meta, ...extraMeta }, buildDisplay: 'b', buildLeg });
+  };
+  const sln = 'Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Web", "Web\\Web.csproj", "{1}"\n';
+  const webFiles = () => ({ ...base(), 'src/App.sln': sln, 'src/Web/Web.csproj': csproj(), 'src/Web/P.cs': 'class P {}' });
+
+  it('a non-root solution the build names joins the closure: editing a project that no test references changes it', () => {
+    const leg = { argv: ['dotnet', 'build', 'src/App.sln'] };
+    const before = closureOfBuild(webFiles(), leg);
+    expect(before.known, before.reason).toBe(true);
+    expect(before.files).toBeInstanceOf(Map);
+    expect([...before.files.keys()]).toContain('src/Web/P.cs');
+    const edited = closureOfBuild({ ...webFiles(), 'src/Web/P.cs': 'class P { int broken; }' }, leg);
+    expect(edited.hash).not.toBe(before.hash);
+    // ...and an unrelated file still does not (the reuse that makes the closure worth computing).
+    expect(closureOfBuild({ ...webFiles(), 'docs/x.md': 'doc edited' }, leg).hash).toBe(before.hash);
+  });
+  it('a build command that is not understood is keyed on the whole tree: the key moves with the tree hash alone', () => {
+    const closure = closureOfBuild(webFiles(), { command: 'npm run build' });
+    expect(closure.known).toBe(true);
+    expect(closure.files).toBeNull();
+    expect(closure.wholeTree).toEqual(expect.any(String));
+    const r = repo({ ...webFiles(), 'web/app.ts': 'export const a = 1;' });
+    const projectClosures = [gr.dotnetClosure({ ...r, projectPath: 'C/C.csproj' })];
+    const withTree = (treeHash) => gr.buildClosure({ projectClosures, snapshot: { hash: treeHash, entries: r.entries }, readText: r.readText, meta, buildDisplay: 'npm run build', buildLeg: { command: 'npm run build' } });
+    expect(withTree('tree-a').hash).not.toBe(withTree('tree-b').hash);
+    expect(withTree('tree-a').hash).toBe(withTree('tree-a').hash);
+  });
+  it('a missing build leg is not understood either (whole tree), never a guess', () => {
+    const r = repo(webFiles());
+    const projectClosures = [gr.dotnetClosure({ ...r, projectPath: 'C/C.csproj' })];
+    const at = (treeHash) => gr.buildClosure({ projectClosures, snapshot: { hash: treeHash, entries: r.entries }, readText: r.readText, meta, buildDisplay: 'b' });
+    expect(at('t1').files).toBeNull();
+    expect(at('t1').hash).not.toBe(at('t2').hash);
+  });
+  it('is unknown when a named target is not in the tree or one of its projects cannot be resolved', () => {
+    expect(closureOfBuild(base(), { argv: ['dotnet', 'build', 'src/Nope.sln'] }).known).toBe(false);
+    const broken = { ...base(), 'App.sln': 'Project("{F}") = "Z", "Z\\Z.csproj", "{2}"\n' };
+    expect(closureOfBuild(broken, { argv: ['dotnet', 'build', 'App.sln'] }).known).toBe(false);
+  });
+  it('the SDK version is part of every key when given, and keys without it keep their shape', () => {
+    const files = webFiles();
+    const leg = { argv: ['dotnet', 'build', 'src/App.sln'] };
+    expect(closureOfBuild(files, leg, { sdk: '8.0.100' }).hash).not.toBe(closureOfBuild(files, leg, { sdk: '8.0.101' }).hash);
+    expect(closureOfBuild(files, leg, { sdk: '8.0.100' }).hash).not.toBe(closureOfBuild(files, leg).hash);
+    const project = (extraMeta) => gr.projectClosure({ project: { inputs: [], path: 'C/C.csproj', display: 'x' }, snapshot: { hash: 'h', entries: repo(files).entries }, readText: repo(files).readText, meta: { engine: 'e', configHash: 'c', filter: 'f', mode: 'normal', ...extraMeta } });
+    expect(project({ sdk: '8.0.100' }).hash).not.toBe(project({ sdk: '8.0.101' }).hash);
+    expect(project({}).hash).toBe(project({ sdk: undefined }).hash);
+  });
+});
+
+describe('scanStaticReads: wider read patterns (review G, MINOR)', () => {
+  const scan = (text) => gr.scanStaticReads([{ path: 'T/Arch.cs', text }]);
+  it.each([
+    'var doc = XDocument.Load(path);', 'var d = XmlDocument.Load(p);', 'using var r = new StreamReader(path);', 'using var s = new FileStream(p, FileMode.Open);',
+    'builder.AddJsonFile("appsettings.json");', 'Process.Start("git", "status");', 'var a = Assembly.LoadFrom(p);', 'var i = new ProcessStartInfo("git");',
+  ])('flags %s', (line) => {
+    expect(scan(line), line).toHaveLength(1);
+  });
+  it('does not flag look-alike identifiers', () => {
+    expect(scan('var x = MyXDocumentLoader.Name; var y = NewStreamReaderFactory();')).toHaveLength(0);
   });
 });
 
@@ -473,6 +642,158 @@ describe('verifyReceiptForRoot and checkReceiptForPr', () => {
     const pr = gr.checkReceiptForPr({ root: t.root });
     expect(pr.required).toBe(true);
     expect(pr.ok).toBe(false);
+  });
+});
+
+// ── review G: snapshot, engine identity and the PR check ────────────
+
+describe('treeSnapshot: files git does not report (review G, MINOR)', () => {
+  it.each(['--assume-unchanged', '--skip-worktree'])('an edit to a file flagged %s moves the hash, and reverting it brings the hash back', (flag) => {
+    const t = tempRepo();
+    const clean = hashOf(t.root);
+    t.git('update-index', flag, 'a.txt');
+    expect(hashOf(t.root)).toBe(clean);
+    t.write('a.txt', 'edited behind git\n');
+    const edited = hashOf(t.root);
+    expect(edited).not.toBe(clean);
+    t.write('a.txt', 'a\n');
+    expect(hashOf(t.root)).toBe(clean);
+    fs.rmSync(path.join(t.root, 'a.txt'));
+    expect(hashOf(t.root)).not.toBe(clean);
+  });
+});
+
+describe('engineIdentity: the gate\'s whole require closure (review G, MINOR)', () => {
+  function coreDir() {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gate-core-'));
+    dirs.push(dir);
+    fs.mkdirSync(path.join(dir, '_lib'));
+    fs.writeFileSync(path.join(dir, 'gate.js'), "const owned = require('./_lib/owned');\nconst r = require('./_lib/gate-receipt');\nfunction later() { return require('./build-lock'); }\n");
+    fs.writeFileSync(path.join(dir, '_lib', 'gate-receipt.js'), '// receipt\n');
+    fs.writeFileSync(path.join(dir, '_lib', 'owned.js'), "module.exports = require('./deep');\n");
+    fs.writeFileSync(path.join(dir, '_lib', 'deep.js'), '// deep v1\n');
+    fs.writeFileSync(path.join(dir, 'build-lock.js'), '// lock v1\n');
+    fs.writeFileSync(path.join(dir, '_lib', 'unrelated.js'), '// never required\n');
+    return dir;
+  }
+  it('changes with a required, a transitively required and a lazily required module, and not with an unrelated file', () => {
+    const t = tempRepo();
+    const core = coreDir();
+    const before = gr.engineIdentity(t.root, core);
+    expect(before).toMatch(/^[0-9a-f]{64}$/);
+    expect(gr.engineIdentity(t.root, core)).toBe(before);
+    fs.writeFileSync(path.join(core, '_lib', 'unrelated.js'), '// edited, still never required\n');
+    expect(gr.engineIdentity(t.root, core)).toBe(before);
+    for (const [rel, text] of [['_lib/deep.js', '// deep v2\n'], ['build-lock.js', '// lock v2\n'], ['_lib/gate-receipt.js', '// receipt v2\n'], ['gate.js', "require('./_lib/owned'); require('./_lib/gate-receipt'); require('./build-lock'); // v2\n"]]) {
+      const changed = coreDir();
+      fs.writeFileSync(path.join(changed, rel), text);
+      expect(gr.engineIdentity(t.root, changed), rel).not.toBe(before);
+    }
+  });
+  it('is unknown (null) when gate.js is missing, and the real gate engine covers the process-tree bridge', () => {
+    const t = tempRepo();
+    expect(gr.engineIdentity(t.root, fs.mkdtempSync(path.join(os.tmpdir(), 'gate-core-empty-')))).toBeNull();
+    const realCore = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+    expect(gr.engineIdentity(t.root, realCore)).toMatch(/^[0-9a-f]{64}$/);
+  });
+});
+
+describe('the PR check fails closed (review G, MAJOR and MINOR)', () => {
+  const GATE_CONFIG = '.claude/gate.config.json';
+  const repoWithConfig = (text) => {
+    const t = tempRepo();
+    t.write(GATE_CONFIG, text);
+    t.git('add', '-A'); t.git('commit', '-q', '-m', 'config');
+    return t;
+  };
+  /** A full, passing receipt for the tree as it is right now. */
+  const writeFullReceipt = (t) => {
+    const snap = gr.treeSnapshot(t.root);
+    expect(snap.ok, snap.reason).toBe(true);
+    gr.writeReceipt(t.root, {
+      schema: gr.RECEIPT_SCHEMA, id: 'pr-check', status: 'passed', exitCode: 0, mode: 'full', changedOnly: false, head: gr.headSha(t.root),
+      treeHashStart: snap.hash, treeHashEnd: snap.hash, engine: gr.engineIdentity(t.root), configHash: gr.readGateConfigFile(t.root).hash,
+      build: { status: 'passed' }, projects: [], test: { status: 'passed' },
+    });
+  };
+  const REQUIRED = JSON.stringify({ receipts: { requireFullForPr: true } });
+
+  it('receiptsConfig says when the PR rule is not a boolean or receipts is not an object', () => {
+    expect(gr.receiptsConfig({ receipts: { requireFullForPr: 'true' } })).toMatchObject({ requireFullForPr: false, requireFullForPrInvalid: true });
+    expect(gr.receiptsConfig({ receipts: 'yes' })).toMatchObject({ requireFullForPrInvalid: true });
+    expect(gr.receiptsConfig({ receipts: 'yes' }).warnings).toHaveLength(1);
+    expect(gr.receiptsConfig({ receipts: { requireFullForPr: true } }).requireFullForPrInvalid).toBe(false);
+    expect(gr.receiptsConfig({}).requireFullForPrInvalid).toBe(false);
+    expect(gr.receiptsConfig({ receipts: { maxAgeHours: 3 } }).requireFullForPrInvalid).toBe(false);
+  });
+  it('readGateConfigFile tells an absent config from a damaged one', () => {
+    const t = tempRepo();
+    expect(gr.readGateConfigFile(t.root)).toMatchObject({ present: false, parseError: null, config: {} });
+    t.write(GATE_CONFIG, '{ "receipts": { "requireFullForPr": true, } }');
+    expect(gr.readGateConfigFile(t.root)).toMatchObject({ present: true, config: {}, parseError: expect.any(String) });
+    t.write(GATE_CONFIG, '[1, 2]');
+    expect(gr.readGateConfigFile(t.root)).toMatchObject({ present: true, config: {}, parseError: expect.stringContaining('not a JSON object') });
+    t.write(GATE_CONFIG, REQUIRED);
+    expect(gr.readGateConfigFile(t.root)).toMatchObject({ present: true, parseError: null, config: { receipts: { requireFullForPr: true } } });
+  });
+  it('an unparseable gate config counts as requireFullForPr: true, refuses without a receipt, and says so', () => {
+    for (const text of ['{ "receipts": { "requireFullForPr": true, } }', '<<<<<<< HEAD\n{}\n=======\n{}\n>>>>>>> branch']) {
+      const t = repoWithConfig(text);
+      const check = gr.checkReceiptForPr({ root: t.root });
+      expect(check).toMatchObject({ required: true, ok: false });
+      expect(check.warnings).toEqual([expect.stringContaining('treating receipts.requireFullForPr as true')]);
+    }
+  });
+  it('a requireFullForPr that is a string counts as required, with a warning naming the fix', () => {
+    const t = repoWithConfig(JSON.stringify({ receipts: { requireFullForPr: 'true' } }));
+    const check = gr.checkReceiptForPr({ root: t.root });
+    expect(check).toMatchObject({ required: true, ok: false });
+    expect(check.warnings.join('\n')).toContain('not a true/false value');
+    expect(check.warnings.join('\n')).toContain('requireFullForPr');
+  });
+  it('a valid config with the rule off, or no config, stays not required and carries no warnings', () => {
+    expect(gr.checkReceiptForPr({ root: tempRepo().root })).toEqual({ required: false, ok: true, reasons: [] });
+    const off = repoWithConfig(JSON.stringify({ receipts: { requireFullForPr: false } }));
+    expect(gr.checkReceiptForPr({ root: off.root })).toEqual({ required: false, ok: true, reasons: [] });
+  });
+  it('workingTreeChanges lists staged, modified and untracked paths and ignores the gitignored state folder', () => {
+    const t = tempRepo();
+    expect(gr.workingTreeChanges(t.root)).toEqual({ ok: true, paths: [] });
+    t.write('docs/.output/.state/telemetry/gate-receipt.json', '{}');
+    t.write('ignored.txt', 'x');
+    expect(gr.workingTreeChanges(t.root)).toEqual({ ok: true, paths: [] });
+    t.write('a.txt', 'edited\n');
+    t.write('Helpers.cs', 'class Helpers {}\n');
+    t.write('staged.txt', 's\n'); t.git('add', 'staged.txt');
+    expect(gr.workingTreeChanges(t.root).paths.sort()).toEqual(['Helpers.cs', 'a.txt', 'staged.txt']);
+    expect(gr.workingTreeChanges(fs.mkdtempSync(path.join(os.tmpdir(), 'gate-notgit-')))).toMatchObject({ ok: false });
+  });
+  it('a full receipt for a tree with an untracked file does not pass: the PR would not carry that file', () => {
+    const t = repoWithConfig(REQUIRED);
+    writeFullReceipt(t);
+    expect(gr.checkReceiptForPr({ root: t.root })).toMatchObject({ required: true, ok: true });
+    // The same tree plus a file the tests need but the commit lacks: the receipt is made for the dirty tree.
+    t.write('Helpers.cs', 'class Helpers {}\n');
+    writeFullReceipt(t);
+    expect(gr.verifyReceiptForRoot({ root: t.root, mode: 'full' }).ok).toBe(true);
+    const check = gr.checkReceiptForPr({ root: t.root });
+    expect(check.required).toBe(true);
+    expect(check.ok).toBe(false);
+    expect(check.reasons).toEqual([{ check: 'cleanTree', message: expect.stringContaining('working tree has uncommitted changes') }]);
+    expect(check.reasons[0].message).toContain('Helpers.cs');
+    // Committed, with a receipt for the committed tree, it passes again.
+    t.git('add', '-A'); t.git('commit', '-q', '-m', 'helpers');
+    writeFullReceipt(t);
+    expect(gr.checkReceiptForPr({ root: t.root })).toMatchObject({ required: true, ok: true, reasons: [] });
+  });
+  it('an edit to a tracked file and a staged file count as uncommitted too', () => {
+    const t = repoWithConfig(REQUIRED);
+    t.write('a.txt', 'edited\n');
+    writeFullReceipt(t);
+    expect(gr.checkReceiptForPr({ root: t.root }).reasons.map(r => r.check)).toEqual(['cleanTree']);
+    t.git('add', 'a.txt');
+    writeFullReceipt(t);
+    expect(gr.checkReceiptForPr({ root: t.root }).reasons.map(r => r.check)).toEqual(['cleanTree']);
   });
 });
 

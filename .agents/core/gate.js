@@ -992,9 +992,9 @@ function parseTestOutput(output, exitCode) {
     //      no parenthesised total, so the envelope regex never matched it and it contributed
     //      nothing at all. The aggregate `isZeroCollected` guard could not see it either, because
     //      the OTHER packages' counts kept the total non-zero.
-    // Measured impact: a monorepo package whose test worker crashed at boot stayed hidden for
-    // 8 days while this function reported PASSED, because vitest exits 0 after the crash and
-    // another package's summary landed last.
+    // Impact: a monorepo package whose test worker crashed at boot stayed hidden while this
+    // function reported PASSED, because vitest exits 0 after the crash and another package's
+    // summary landed last.
     const tests = { passed: 0, failed: 0, skipped: 0, total: 0, failures: [], deadProjects: 0, errorCount: 0 };
     const lines = output.split('\n');
 
@@ -1311,16 +1311,24 @@ function settleReceipt(run, { overall, interrupted = false, exitCode, by }) {
     return { overall: finalOverall, invalid };
 }
 
-/** The project source files the static scan reads: the project's own directory, minus bin/obj. */
-function projectSourceFiles(project, snapshot) {
+/**
+ * The source files the static scan reads: every .cs/.fs/.vb file in the project's input closure, which is the project's own
+ * directory (minus bin/obj) plus every project it references and the files its project files pull in. The scan is the only
+ * guard for reads outside the closure, and a helper project a test calls can read the repository as well as the test project.
+ * A closure keyed on the whole tree has no file list, so that project's own directory is scanned.
+ */
+function projectSourceFiles(project, snapshot, closure) {
     if (!project.path || !/\.(?:cs|fs|vb)proj$/i.test(project.path)) return [];
-    const dir = project.path.includes('/') ? project.path.slice(0, project.path.lastIndexOf('/')) : '';
-    const prefix = dir === '' ? '' : `${dir}/`;
+    let rels;
+    if (closure && closure.files instanceof Map) rels = [...closure.files.keys()].filter(rel => snapshot.entries.has(rel));
+    else {
+        const dir = project.path.includes('/') ? project.path.slice(0, project.path.lastIndexOf('/')) : '';
+        const prefix = dir === '' ? '' : `${dir}/`;
+        rels = [...snapshot.entries.keys()].filter(rel => rel.startsWith(prefix) && !/^(?:bin|obj)\//.test(rel.slice(prefix.length)));
+    }
     const files = [];
-    for (const rel of snapshot.entries.keys()) {
-        if (!rel.startsWith(prefix) || !/\.(?:cs|fs|vb)$/i.test(rel)) continue;
-        const rest = rel.slice(prefix.length);
-        if (rest.startsWith('bin/') || rest.startsWith('obj/')) continue;
+    for (const rel of rels) {
+        if (!/\.(?:cs|fs|vb)$/i.test(rel)) continue;
         const text = readProjectText(rel);
         if (text !== null) files.push({ path: rel, text });
     }
@@ -1328,19 +1336,34 @@ function projectSourceFiles(project, snapshot) {
 }
 
 /**
+ * The .NET SDK a `dotnet` call here would use (`dotnet --version`, which honours global.json), or undefined when no project
+ * is a .NET project. It joins the reuse key: a test result can change with the installed SDK when nothing pins it, and
+ * no byte of the tree changes. When dotnet cannot be resolved the key holds a fixed marker, so it stays stable.
+ */
+function dotnetSdkVersion(projects) {
+    if (!projects.some(p => p.path && /\.(?:cs|fs|vb)proj$/i.test(p.path))) return undefined;
+    const result = spawnSync('dotnet', ['--version'], {
+        cwd: PROJECT_ROOT, encoding: 'utf8', timeout: 60000, windowsHide: true,
+        env: { ...process.env, DOTNET_NOLOGO: '1', DOTNET_CLI_TELEMETRY_OPTOUT: '1', DOTNET_SKIP_FIRST_TIME_EXPERIENCE: '1' },
+    });
+    const version = result.error || result.status !== 0 ? '' : String(result.stdout).trim().split(/\r?\n/).pop().trim();
+    return version || 'dotnet-unavailable';
+}
+
+/**
  * Decide, for every configured project and for the build, run or reuse. Nothing here runs anything.
  * `now` is read once by the caller; an unknown anywhere means RUN.
  */
-function planReuse({ projects, snapshot, filter, mode, now, settings, engine, configHash, buildDisplay, skipBuild, ci }) {
+function planReuse({ projects, snapshot, filter, mode, now, settings, engine, configHash, buildDisplay, buildLeg, sdk, skipBuild, ci }) {
     const plans = new Map();
-    const meta = { engine, configHash, filter, mode };
+    const meta = { engine, configHash, filter, mode, ...(sdk === undefined ? {} : { sdk }) };
     for (const project of projects) {
         let closure; let hits = [];
         if (!snapshot.ok) closure = { known: false, reason: `tree hash unavailable: ${snapshot.reason}` };
         else if (!engine) closure = { known: false, reason: 'the gate engine identity (gate code and test runner) could not be computed' };
         else {
             closure = receipt.projectClosure({ project, snapshot, readText: readProjectText, meta });
-            if (closure.known && project.reuse) hits = receipt.scanStaticReads(projectSourceFiles(project, snapshot));
+            if (closure.known && project.reuse) hits = receipt.scanStaticReads(projectSourceFiles(project, snapshot, closure));
         }
         // CI runs everything: a result from an earlier run is never a substitute there.
         const decision = ci ? { reuse: false, reason: 'CI runs everything' } : receipt.decideReuse({
@@ -1352,7 +1375,7 @@ function planReuse({ projects, snapshot, filter, mode, now, settings, engine, co
     let build = { closure: { known: false, reason: 'no projects' }, decision: { reuse: false, reason: 'not computed' } };
     if (projects.length && snapshot.ok && engine) {
         const closure = receipt.buildClosure({
-            projectClosures: projects.map(p => plans.get(p.name).closure), snapshot, readText: readProjectText, meta, buildDisplay,
+            projectClosures: projects.map(p => plans.get(p.name).closure), snapshot, readText: readProjectText, meta, buildDisplay, buildLeg,
         });
         const allReused = projects.every(p => plans.get(p.name).decision.reuse);
         let decision;
@@ -1377,7 +1400,7 @@ function planReuse({ projects, snapshot, filter, mode, now, settings, engine, co
  *
  * @returns {Promise<{test:object, log:string}>} `test` has the same shape as the single-command leg
  */
-async function runProjectTests({ projects, plans, run, mode, filter, limit, interrupted }) {
+async function runProjectTests({ projects, plans, run, mode, filter, limit, interrupted, skipBuild = false }) {
     let log = '';
     const r = run.receipt;
     const results = [];
@@ -1427,7 +1450,9 @@ async function runProjectTests({ projects, plans, run, mode, filter, limit, inte
         if (result.stopped) interruptSignal = interruptSignal || 'STOP';
         const record = { name: project.name, status, closureHash: plan.closure.known ? plan.closure.hash : null, passed: parsed.passed, failed: parsed.failed, skipped: parsed.skipped, total: parsed.total, ranAt };
         Object.assign(entry || {}, { status, reused: false, closureHash: record.closureHash, passed: parsed.passed, failed: parsed.failed, skipped: parsed.skipped, total: parsed.total, ranAt });
-        if (record.closureHash && r) run.records.push({ id: r.id, ...record, filter, mode, command: project.display, exitCode: result.exitCode });
+        // A `--no-build` run tests whatever binaries are already on disk, which can be older than the closure hashed at the start:
+        // its result says nothing about that closure, so it is never recorded as reusable (a later run reruns the project).
+        if (record.closureHash && r && !skipBuild) run.records.push({ id: r.id, ...record, filter, mode, command: project.display, exitCode: result.exitCode });
         results.push({ name: project.name, status, reused: false, passed: parsed.passed, failed: parsed.failed, skipped: parsed.skipped, total: parsed.total });
         if (result.stopped) break;
     }
@@ -1464,6 +1489,46 @@ function runVerifyReceipt() {
 function sleepMs(ms) { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); }
 
 /**
+ * The identity of a lock: the gate that wrote it (its PID and start time). The gate rewrites its own lock while it runs (it
+ * records and clears the stage's `childPid`, and moves through lease phases), so the bytes changing says nothing about
+ * the lock being released. Null for text that is not a lock with an integer pid.
+ */
+function lockIdentity(text) {
+    try {
+        const lock = JSON.parse(text);
+        return lock && typeof lock === 'object' && Number.isInteger(lock.pid) ? `${lock.pid}\0${lock.started}` : null;
+    } catch { return null; }
+}
+
+/**
+ * Has the gate that held the lock read as `before` let go? `now` is the lock file's current text, or null when it is gone.
+ * Only a missing file or another gate's lock counts; an unreadable or half-written lock is still held, so `stop`
+ * does not report "stopped" while the gate is still writing its interrupted receipt.
+ */
+function lockReleasedSince(before, now) {
+    if (now === null) return true;
+    const mine = lockIdentity(before);
+    const current = lockIdentity(now);
+    return mine !== null && current !== null && mine !== current;
+}
+
+/**
+ * Is `pid` a running gate? The lock file survives a gate that was killed outright, and the PID can then belong to an
+ * unrelated process, which `stop` must never signal. true / false when the command line could be read (/proc, else ps);
+ * null when it could not, which `stop` treats as not confirmed.
+ */
+function processLooksLikeGate(pid) {
+    const namesGate = (args) => args.some(arg => /(?:^|[\\/])gate\.js$/.test(arg));
+    try { return namesGate(fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0')); } catch { /* no /proc here, or not readable */ }
+    try {
+        const ps = spawnSync('ps', ['-p', String(pid), '-o', 'args='], { encoding: 'utf8', timeout: 10000, windowsHide: true });
+        if (ps.error || ps.status === null) return null;
+        if (ps.status !== 0) return false;
+        return namesGate(String(ps.stdout).trim().split(/\s+/));
+    } catch { return null; }
+}
+
+/**
  * `gate.js stop` — ask the running gate to stop and report whether the lock went away.
  * Windows: a stop-request file the owned-process bridge watches (the supervisor kills the job and
  * writes its tree proof; nothing here claims a stopped tree without that proof). POSIX: SIGTERM to
@@ -1490,9 +1555,19 @@ function runStop() {
             'Use the lock recovery helper (build-lock-recovery.js) once its evidence is verified; this command never removes a lock.');
         process.exit(1);
     }
-    const lockGone = () => {
-        try { return fs.readFileSync(LOCK_FILE, 'utf-8') !== text; } catch (error) { return error.code === 'ENOENT'; }
+    if (process.platform !== 'win32') {
+        // Signals go only to a process confirmed to be a gate; anything else keeps its lock evidence and is reported.
+        const isGate = processLooksLikeGate(lock.pid);
+        if (isGate !== true) {
+            console.log(`[GATE] stop: still held: the lock's owner PID ${lock.pid} ${isGate === false ? 'is not a gate (its command line does not name gate.js; the PID was probably reused after the gate was killed)' : 'could not be confirmed as a gate'}, so it was not signalled. ` +
+                'Use the lock recovery helper (build-lock-recovery.js) once its evidence is verified; this command never removes a lock.');
+            process.exit(1);
+        }
+    }
+    const readLock = () => {
+        try { return fs.readFileSync(LOCK_FILE, 'utf-8'); } catch (error) { return error.code === 'ENOENT' ? null : undefined; }
     };
+    const lockGone = () => { const now = readLock(); return now === undefined ? false : lockReleasedSince(text, now); };
     try { fs.writeFileSync(STOP_MARKER, JSON.stringify({ requestedBy: process.pid, pid: lock.pid })); } catch { /* the signal / request file still work */ }
     if (process.platform === 'win32') {
         if (typeof lock.stopRequestPath === 'string' && lock.stopRequestPath) {
@@ -1506,9 +1581,14 @@ function runStop() {
     let escalated = false;
     for (let waited = 0; waited < 30000; waited += 250) {
         if (lockGone()) { try { fs.rmSync(STOP_MARKER, { force: true }); } catch { /* best effort */ } console.log('[GATE] stop: stopped (the gate released its lock).'); process.exit(0); }
-        if (!escalated && waited >= 10000 && process.platform !== 'win32' && Number.isInteger(lock.childPid) && lock.childPid > 0) {
+        if (!escalated && waited >= 10000 && process.platform !== 'win32') {
             escalated = true;
-            killStageGroup(lock.childPid, 'SIGTERM');
+            // The stage PID comes from the lock as it is NOW, written by the gate that is still alive; the one read at the start may be gone.
+            let current = null;
+            try { current = JSON.parse(readLock()); } catch { /* unreadable: nothing to escalate to */ }
+            if (current && lockIdentity(JSON.stringify(current)) === lockIdentity(text) && Number.isInteger(current.childPid) && current.childPid > 0) {
+                killStageGroup(current.childPid, 'SIGTERM');
+            }
         }
         sleepMs(250);
     }
@@ -1672,7 +1752,7 @@ async function main() {
         if (projectsMode) {
             reusePlan = planReuse({
                 projects, snapshot, filter: testFilter, mode: runMode, now: nowMs, settings, engine: run.engine, configHash: run.configHash,
-                buildDisplay: describeLeg(config.build), skipBuild, ci: runningInCi(),
+                buildDisplay: describeLeg(config.build), buildLeg: config.build, sdk: dotnetSdkVersion(projects), skipBuild, ci: runningInCi(),
             });
         }
         safeWriteReceipt(run.receipt);
@@ -1779,7 +1859,7 @@ async function main() {
             let testResult;
             if (projectsMode) {
                 const projectRun = await runProjectTests({
-                    projects, plans: reusePlan.plans, run, mode: runMode, filter: testFilter, limit,
+                    projects, plans: reusePlan.plans, run, mode: runMode, filter: testFilter, limit, skipBuild,
                     interrupted: () => Boolean(interruptRequested()),
                 });
                 fullLog += projectRun.log;
@@ -2131,4 +2211,4 @@ if (require.main === module) {
     });
 }
 
-module.exports = { runCommandAsync, runStage, PARSED, killSignal, killNote, SIGNAL_EXIT_CODES, legTimeout, formatTimeout, DEFAULT_LEG_TIMEOUT_MS, loadConfig, parseBuildOutput, parseTestOutput, isZeroCollected, testPassed, runCommand, describeLeg, legRunnable, resolveTestTimeout, acquireLock, releaseLock, isProcessAlive, STALE_LOCK_MS, DEFAULT_TEST_TIMEOUT_MS, TEST_TIMEOUT_ENV };
+module.exports = { runCommandAsync, runStage, PARSED, killSignal, killNote, SIGNAL_EXIT_CODES, legTimeout, formatTimeout, DEFAULT_LEG_TIMEOUT_MS, loadConfig, parseBuildOutput, parseTestOutput, isZeroCollected, testPassed, runCommand, describeLeg, legRunnable, resolveTestTimeout, acquireLock, releaseLock, isProcessAlive, STALE_LOCK_MS, DEFAULT_TEST_TIMEOUT_MS, TEST_TIMEOUT_ENV, lockIdentity, lockReleasedSince, processLooksLikeGate };

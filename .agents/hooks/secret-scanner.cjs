@@ -21,6 +21,9 @@
  *                 node secret-scanner.cjs --hook-bypass <hook>        CLAUDE_COMMIT_NO_SCAN=1: record, skip
  *                 node secret-scanner.cjs --hook-protocol             print the protocol version the shims check
  *   Manual:       node secret-scanner.cjs --file <path>
+ *   Owner:        node secret-scanner.cjs --pin <path>:<line> [--rev <commit>] [--reason <text>]
+ *                 appends the value-sha256 entry of the reviewed generic value at that line to .betterleaksignore;
+ *                 the block report prints this command instead of a hash (see secret-pin.cjs)
  *
  * In every git mode the repository root is what git says it is for the working directory (git runs a hook
  * in the work tree it is committing in): no environment variable redirects a commit or push scan.
@@ -335,7 +338,7 @@ function engineBlock(err, what, content) {
 /** The block report for findings, never printing a value. */
 function reportFindings(findings, what) {
     recordScannerBlock(summarizeFindings(findings)); // source-tagged guardrail event for the feedback digest
-    console.error(formatFindings(findings, { valueKeys: true }));
+    console.error(formatFindings(findings, { pinHints: true }));
     console.error(`\n${what} blocked. Remove secrets and try again.`);
     console.error(bypassAdvice(findings));
     process.exit(1);
@@ -343,9 +346,10 @@ function reportFindings(findings, what) {
 
 /**
  * Collect the findings of scan results in order; an unreadable or unscannable entry blocks (fail closed).
- * `label(rel)` names an entry in output.
+ * `label(rel)` names an entry in output. `locate(rel)` (with `root`) says where a generic finding's entry can be
+ * read back, `{ path, commit|null }`, so the report can print the owner-run pin command for it.
  */
-function collectFindings(order, results, label, what) {
+function collectFindings(order, results, label, what, { root, locate } = {}) {
     const all = [];
     for (const rel of order) {
         const result = results.get(rel);
@@ -356,7 +360,12 @@ function collectFindings(order, results, label, what) {
                 : `[secret-scanner] FAIL-CLOSED: could not scan "${shown}" (${result ? result.error : 'no result'}). Blocking ${what}.`);
             process.exit(1);
         }
-        for (const f of result.findings) all.push(f.file === rel ? { ...f, file: shown } : f);
+        const where = locate ? locate(rel) : null;
+        for (const f of result.findings) {
+            const shownFinding = f.file === rel ? { ...f, file: shown } : f;
+            const pinCommand = where && f.allowKey ? require('./secret-pin.cjs').pinCommand(root, __filename, where, f.line) : null;
+            all.push(pinCommand ? { ...shownFinding, pinCommand } : shownFinding);
+        }
     }
     return all;
 }
@@ -380,7 +389,7 @@ async function runGitPrecommit() {
     for (const sub of scan.gitlinks) {
         console.error(`[secret-scanner] "${sub}" is a submodule pointer (a commit id, no content) — not scanned here; the submodule's own repository scans its content.`);
     }
-    const findings = collectFindings(scan.order, scan.results, rel => rel, 'the commit');
+    const findings = collectFindings(scan.order, scan.results, rel => rel, 'the commit', { root, locate: rel => ({ path: rel, commit: null }) });
     if (findings.length > 0) {
         console.error('');
         reportFindings(findings, 'Commit');
@@ -443,7 +452,7 @@ async function runPrePush(remote, url) {
         process.exit(1);
     }
     await require('./secret-engine.cjs').settleSignals();
-    const findings = collectFindings(scan.order, scan.results, scan.label, 'the push');
+    const findings = collectFindings(scan.order, scan.results, scan.label, 'the push', { root, locate: scan.locate });
     if (findings.length > 0) {
         console.error(`\n[secret-scanner] ${scan.commits.length} commit(s) and ${scan.tags.length} tag(s) would be published; some of that content holds what looks like a secret:`);
         reportFindings(findings, 'Push');
@@ -569,7 +578,7 @@ const GIT_FLAGS = ['--git-precommit', '--commit-msg', '--pre-push', '--hook-bypa
 if (require.main === module) {
     const args = process.argv.slice(2);
     const flagArgs = args.filter(a => a.startsWith('--'));
-    const known = [...GIT_FLAGS, '--file'];
+    const known = [...GIT_FLAGS, '--file', '--pin', '--rev', '--reason'];
     const unknown = flagArgs.find(a => !known.includes(a));
 
     if (unknown) {
@@ -579,6 +588,10 @@ if (require.main === module) {
         process.exit(2);
     } else if (args.includes('--hook-protocol')) {
         runHookProtocol();
+    } else if (args.includes('--pin') || args.includes('--rev') || args.includes('--reason')) {
+        // The owner-run pin: the value is read from the file and never printed. --rev / --reason alone is a usage
+        // error, never the Claude-hook mode that reads stdin.
+        process.exit(require('./secret-pin.cjs').main(args));
     } else if (args.includes('--git-precommit')) {
         runGitPrecommit().catch(failClosed);
     } else if (args.includes('--commit-msg')) {

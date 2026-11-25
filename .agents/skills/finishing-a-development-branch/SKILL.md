@@ -30,7 +30,7 @@ Guide completion of development work by presenting clear options and handling ch
 npm test / cargo test / pytest / go test ./...
 ```
 
-**Reuse a proof that already covers the tree.** When the project uses the toolkit gate, `node .claude/core/gate.js verify-receipt` first: exit 0 means a passing receipt covers this exact tree (the branch tip), so it is the test evidence and nothing is re-run. Run the suite only when it fails. A branch that changes no file the gate builds or tests (docs, content outside the gated app) still needs that receipt or a run: this skill does not judge which files are code.
+**Reuse a proof that already covers the tree.** When the project uses the toolkit gate, run `node .claude/core/gate.js verify-receipt` and `git status --porcelain`: exit 0 means a passing receipt covers this exact working tree, and that tree is the branch tip only when `git status --porcelain` prints nothing (a file that is staged, modified or untracked is covered by the receipt but is not in the commit that a merge or a PR carries). Both together are the test evidence and nothing is re-run. Run the suite only when either one fails, and commit or remove the uncommitted files first. A branch that changes no file the gate builds or tests (docs, content outside the gated app) still needs that receipt or a run: this skill does not judge which files are code.
 
 **If tests fail:**
 ```
@@ -53,6 +53,16 @@ git merge-base HEAD main 2>/dev/null || git merge-base HEAD master 2>/dev/null
 ```
 
 Or ask: "This branch split from main - is that correct?"
+
+### Step 2b: Make-Up Review of Unreviewed High-Risk Commits
+
+Before a merge or a push, list the branch's commits that touch auth, money or access paths and that no review report cites:
+
+```bash
+node .claude/core/review-coverage.js <merge-base>..HEAD
+```
+
+When it lists any, run one make-up review of those commits before Step 3: a `code-reviewer`, plus `security-auditor` for money, authentication or access (review-cadence firm line 2), each report persisted under `docs/.output/findings/reviews/`. Fix what they find and re-run Step 1. A project without the toolkit helper does the same by reading `git log --name-only <merge-base>..HEAD` against its review reports. Direct commits and follow-up fix batches are where these reviews get skipped.
 
 ### Step 3: Present Options
 
@@ -201,6 +211,10 @@ Without `--force` Git keeps a worktree that holds uncommitted work or untracked 
 
 **For Options 2 and 3:** Keep the worktree.
 
+### Going Live
+
+When the merge or PR is the release that puts a feature live, update the places that still say otherwise in the same change: the TODO header, the module brief's status, and any ADR or data-model line that says "not deployed", each with the release date and the owner checks still open. This is the deploy half of the close-out fan-out in `/run-todo` (Phase 3, "Verify all stories complete"), which lists the full set; a branch finished outside a run uses the same list.
+
 ## Quick Reference
 
 | Option | Merge | Push | Keep Worktree | Cleanup Branch |
@@ -248,6 +262,7 @@ Without `--force` Git keeps a worktree that holds uncommitted work or untracked 
 
 **Always:**
 - Verify tests before offering options
+- Run the Step 2b make-up review when high-risk commits have no review report
 - Present exactly 4 options
 - Get typed confirmation for Option 4
 - Run branch commands from the main checkout

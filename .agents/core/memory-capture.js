@@ -70,18 +70,33 @@ function captureProviders(env = process.env) {
     return chain.length ? chain : ['anthropic'];
 }
 
+/**
+ * The model name for one provider of the chain. Each model-id family has its own variable (MEMORY_CAPTURE_OPENAI_MODEL for an
+ * OpenAI-compatible server, MEMORY_CAPTURE_ANTHROPIC_MODEL for the anthropic and claude-cli providers). The shared
+ * MEMORY_CAPTURE_MODEL applies only to providers of the SAME family as the first provider of the chain: a local model name such
+ * as qwen3.5:9b is not an Anthropic model id, and `haiku` is not a model on a local server, so a mixed chain never sends one
+ * family's name to the other.
+ */
+const modelFamily = p => (p === 'openai' ? 'openai' : 'anthropic');
+function modelFor(env, provider) {
+    const own = env[provider === 'openai' ? 'MEMORY_CAPTURE_OPENAI_MODEL' : 'MEMORY_CAPTURE_ANTHROPIC_MODEL'];
+    if (own) return own;
+    return modelFamily(provider) === modelFamily(captureProviders(env)[0]) ? env.MEMORY_CAPTURE_MODEL || '' : '';
+}
+
 function captureConfig(env = process.env, which) {
     const asked = which || captureProviders(env)[0];
     const provider = asked === 'openai' ? 'openai' : asked === 'claude-cli' ? 'claude-cli' : 'anthropic';
+    const configured = modelFor(env, provider);
     if (provider === 'openai') {
-        const model = env.MEMORY_CAPTURE_MODEL || '';
+        const model = configured;
         // MEMORY_CAPTURE_BASE_URL may list several servers, comma-separated, best machine first; each call tries them in order.
         const baseUrls = rec.urlList(env.MEMORY_CAPTURE_BASE_URL);
         if (!baseUrls.length) baseUrls.push('http://127.0.0.1:11434/v1');
         return { provider, model, baseUrl: baseUrls[0], baseUrls, key: env.MEMORY_CAPTURE_API_KEY || '', keySource: 'n/a', ready: Boolean(model) };
     }
     const { models, defaultAlias } = ex.modelTable();
-    const alias = env.MEMORY_CAPTURE_MODEL || defaultAlias;
+    const alias = configured || defaultAlias;
     const entry = models[alias];
     // An unknown name is taken as a raw API model id (cost unknown); a known alias with no table entry cannot be resolved.
     const model = entry ? entry.id : /^(haiku|sonnet)$/.test(alias) ? '' : alias;
@@ -111,6 +126,27 @@ function engineSecretCheck(text) {
     } catch { scanner = null; return false; }
 }
 const isSecret = t => ex.SECRET_RE.test(t) || engineSecretCheck(t);
+// Hooks use the regex alone: the engine check spawns a process per call, and a hook cannot afford one per note inside SessionStart
+// (2 s hard timeout) or SessionEnd. Nothing reaches git without the commit scan, which runs the engine over the staged notes.
+const isSecretFast = t => ex.SECRET_RE.test(t);
+
+// An Authorization header value in a tool call (Bash curl lines): no fixed prefix for SECRET_RE to key on.
+const BEARER_RE = /\bBearer\s+[A-Za-z0-9._~+\/=-]{16,}/gi;
+
+/**
+ * The transcript text with secrets replaced by <REDACTED:...>, for text about to leave the machine. Passes: the secret engine
+ * (named providers when it cannot run) names what it finds, then SECRET_RE and a Bearer-header pattern blank whatever they still match, so one pass failing
+ * or being unavailable never lets a key through. Never throws. Quote validation runs against the unredacted render, so a quote
+ * that contains a redaction simply fails validation (the safe direction).
+ */
+function redactForProvider(text) {
+    let out = String(text || '');
+    try {
+        if (scanner === undefined) scanner = require('../hooks/secret-patterns.cjs');
+        if (scanner) out = scanner.redactSecretsInText(out, 'memory-session.txt');
+    } catch { /* the SECRET_RE pass below still runs */ }
+    return out.replace(new RegExp(ex.SECRET_RE.source, 'gi'), '<REDACTED:secret>').replace(BEARER_RE, 'Bearer <REDACTED:token>');
+}
 
 // ---------------------------------------------------------------- small fs helpers
 
@@ -191,7 +227,7 @@ async function captureOne(file, ctx, o, env, io) {
         if (!o.dryRun) { if (from) ledgerTouch(ctx, sid); else ledgerAdd(ctx, sid, 0, 0, full.events.length); }
         return { staged: 0, cost: 0 };
     }
-    const input = o.method === 'U' ? ex.userOnly(r) : r.text;
+    const input = redactForProvider(o.method === 'U' ? ex.userOnly(r) : r.text);
     const parts = ex.chunks(input);
     io.log(`session ${sid.slice(0, 8)}: ${from ? `events ${from}-${full.events.length}, ` : ''}${input.length} chars to send in ${parts.length} call(s) to ${cfg.provider === 'openai' ? (cfg.baseUrls || [cfg.baseUrl]).join(' > ') : cfg.provider === 'claude-cli' ? `claude -p (${cfg.model}, your Claude login)` : cfg.model}`);
     if (o.dryRun) return { staged: 0, cost: 0 };
@@ -301,11 +337,19 @@ const commands = {
         const todo = pendingSessions(ctx, Number(a.flags['older-than-min'] ?? 30)).slice(0, Number(a.flags['max-sessions'] ?? 10));
         io.log(`${todo.length} session(s) to capture`);
         let total = 0, spent = 0;
+        const failed = [];
         for (const s of todo) {
-            const r = await captureOne(s.path, ctx, { ...o, quiet: true }, env, io);
-            total += r.staged; spent += r.cost;
+            // One bad session must not block the newer ones queued behind it (pending is oldest-first); it stays pending for the next run.
+            try {
+                const r = await captureOne(s.path, ctx, { ...o, quiet: true }, env, io);
+                total += r.staged; spent += r.cost;
+            } catch (e) {
+                failed.push(s.id);
+                io.log(`session ${s.id.slice(0, 8)} failed: ${String(e.message).slice(0, 200)}`);
+            }
         }
-        io.log(`backfill done: ${total} candidate(s) staged from ${todo.length} session(s), cost $${spent.toFixed(3)}`);
+        io.log(`backfill done: ${total} candidate(s) staged from ${todo.length - failed.length} of ${todo.length} session(s), cost $${spent.toFixed(3)}`);
+        if (failed.length) throw new Error(`${failed.length} of ${todo.length} session(s) failed (left pending): ${failed.map(f => f.slice(0, 8)).join(', ')}`);
     },
 
     async pending(a, ctx, env, io) { io.log(String(pendingSessions(ctx, Number(a.flags['older-than-min'] ?? 30)).length)); },
@@ -383,7 +427,7 @@ const commands = {
             if (fs.existsSync(dest)) { io.log(`exists, skipped: ${d.name}`); continue; }
             const type = { constraints: 'feedback', 'rejected-approaches': 'feedback', decisions: 'project' }[d.category] || 'reference';
             const desc = d.description.replace(/"/g, "'");
-            fs.writeFileSync(dest, `---\nname: ${d.name}\ndescription: "${desc}"\nmetadata:\n  type: ${type}\n  importedFrom: toolkit-engine ${d.file}\n---\n\n${d.body}\n`, { flag: 'wx' });
+            fs.writeFileSync(dest, `---\nname: ${d.name}\ndescription: "${desc}"\nmetadata:\n  type: ${type}\n  importedFrom: toolkit-engine ${d.file} ${d.sha.slice(0, 12)}\n---\n\n${d.body}\n`, { flag: 'wx' });
             const prior = fs.existsSync(indexPath) ? fs.readFileSync(indexPath, 'utf8') : '';
             fs.appendFileSync(indexPath, `${prior && !prior.endsWith('\n') ? '\n' : ''}- [${d.name}](${d.name}.md) — ${desc}\n`);
             io.log(`imported ${d.name}`);
@@ -412,7 +456,7 @@ const commands = {
         const cap = captureConfig(env), emb = rec.embedConfig(env), corpus = notes.loadCorpus({ memoryDir: ctx.memoryDir, engineRoot: ctx.engineRoot });
         const idx = rec.loadIndex(ctx.stateDir);
         const hosts = rec.readHosts(rec.hostsFileFor(ctx.stateDir)), t = Date.now();
-        const hostState = u => (Number.isFinite(hosts[u]) && t - hosts[u] < rec.HOST_RETRY_MS ? `${u} (failed ${Math.round((t - hosts[u]) / 1000)}s ago)` : u);
+        const hostState = u => { const f = rec.recentFailure(hosts, u, t); return f ? `${u} (${f.soft ? 'timed out' : 'failed'} ${Math.round((t - f.at) / 1000)}s ago)` : u; };
         const on = captureEnabled(env), rOff = !recallEnabled(env);
         io.log([
             `memory dir:        ${ctx.memoryDir}${env.MEMORY_DIR ? '  (MEMORY_DIR)' : '  (native auto-memory dir)'}`,
@@ -453,4 +497,4 @@ if (require.main === module) {
     run(process.argv.slice(2)).catch(e => { console.error(`memory-capture: ${e.message}`); process.exitCode = 1; });
 }
 
-module.exports = { run, parseArgs, contextFor, captureConfig, captureProviders, resolveKey, isSecret };
+module.exports = { run, parseArgs, contextFor, captureConfig, captureProviders, resolveKey, isSecret, isSecretFast, redactForProvider };

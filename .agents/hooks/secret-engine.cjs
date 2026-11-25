@@ -265,8 +265,9 @@ const VALUE_ALLOW_LINE = /^value-sha256:([0-9a-f]{64})(?:\s+#.*)?$/i;
 /**
  * The `.betterleaksignore` entry that pins one matched value: `value-sha256:<hex>` of the matched text with
  * surrounding quotes removed (two rules can report the same value with and without its quotes; see
- * normalizeRaw). The hash never reveals the value; it is printed in the git hooks' block report for generic
- * findings so the owner can copy it after reviewing the value.
+ * normalizeRaw). NEVER print or log it: an unsalted SHA-256 of a short value, beside the redacted preview,
+ * is an offline verifier for that value. It is computed in memory by the owner-run `secret-scanner.cjs --pin`
+ * command and written straight to .betterleaksignore, and the block reports print a location and a command only.
  */
 function valueAllowKey(secret) {
     const value = String(secret == null ? '' : secret).replace(/^["'`]+|["'`]+$/g, '');

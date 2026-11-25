@@ -72,6 +72,9 @@ The token belongs to the judge: it is emitted by evidence, not by opinion.
 | This test catches the bug | Inject exactly that one defect, see this test go red for that reason, restore, rebuild, green | A predicted list of reds; several defects injected at once |
 | The check covers this change | Name the gate that ran the check and show its output | A guard that runs only at a later step (CI, deploy, nightly): it is silent at the earlier gate |
 | The gate failed | The gate's verdict line says FAILED | A non-zero exit alone: KILLED and TIMED OUT runs say nothing about the code |
+| Story or epic gated and closed | A gate log line showing exit 0 on the named commit | A checklist tick, or a status header written while the gate was still running |
+| A reuse or skip decision is safe | Proof the inputs match the reused result (commit, config, environment); unknown means run | "Nothing relevant changed", or an inputs check that could not be read |
+| A guard or lint rule covers the class | One test per axis the class varies on: case, separator, derived form | One test on the literal that triggered the rule |
 | A sweep is complete | State the unit counted (files, call sites, rows, entry points) and that it is the unit the defect lives in | "All 40 files checked" when the defect lives per call site |
 | A delegated agent's work is lost | Its status or output shows it failed or stopped | No report yet: a late report is not a lost one, so check before redoing its work |
 | Guard/hook/gate/release path is safe | Adversarial test: malformed input, a thrown exception, and a failed sub-step each fail closed and exit non-zero | The happy-path test passed |

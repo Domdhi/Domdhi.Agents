@@ -382,9 +382,9 @@ describe('TODO scanning and parsing', () => {
             '',
             '| Epic | Name | Desc | Stories | Owner | Status |',
             '| ---- | ---- | ---- | ------- | ----- | ------ |',
-            '| 01 | Auth | login | 5 | dom | [x] |',
-            '| 02 | Billing | pay | 3 | dom | [>] |',
-            '| 03 | Reports | charts | 4 | dom | [ ] |',
+            '| 01 | Auth | login | 5 | alice | [x] |',
+            '| 02 | Billing | pay | 3 | alice | [>] |',
+            '| 03 | Reports | charts | 4 | alice | [ ] |',
         ].join('\n'));
         const { parseTodoFileStories } = loadMetrics(dir);
         const s = parseTodoFileStories(file);

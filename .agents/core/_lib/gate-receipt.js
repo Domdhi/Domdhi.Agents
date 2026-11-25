@@ -10,6 +10,13 @@
  * The one rule that governs the whole module: an unknown is never a pass. An unknown
  * closure, an uncomputable hash, a stale receipt, a failed, interrupted, invalid or flaky
  * project, a changed filter or mode, a missing file — every one of them means RUN.
+ *
+ * Reuse is an optimisation, so the closure only ever has to be a superset of what a result depends on, and anything
+ * not fully understood falls back to a wider key (the whole-tree hash) or to RUN. What the key cannot see, by design:
+ * the installed .NET SDK is folded in (`meta.sdk`, `dotnet --version`) and a floating package version makes the
+ * closure unknown, but the other environment inputs (the Node or tool versions, ignored local files such as
+ * appsettings.Local.json, anything a test reads outside the closure) are the owner's `inputs` responsibility.
+ * `maxAgeHours` and `forceRunEvery` bound the exposure.
  */
 
 const crypto = require('node:crypto');
@@ -120,10 +127,17 @@ function parseGateArgs(args) {
 
 // ── Config ──────────────────────────────────────────────────────────
 
-/** The receipts settings with defaults; a malformed value falls back to its default and is reported. */
+/**
+ * The receipts settings with defaults; a malformed value falls back to its default and is reported. `requireFullForPrInvalid`
+ * says the owner wrote something for the PR rule that is not a boolean (or a `receipts` that is not an object): the default
+ * `false` would then switch off a control they turned on, so the PR check treats it as required.
+ */
 function receiptsConfig(config) {
-    const raw = config && typeof config.receipts === 'object' && config.receipts !== null && !Array.isArray(config.receipts) ? config.receipts : {};
+    const rawValue = config ? config.receipts : undefined;
+    const isObject = typeof rawValue === 'object' && rawValue !== null && !Array.isArray(rawValue);
+    const raw = isObject ? rawValue : {};
     const warnings = [];
+    if (rawValue !== undefined && !isObject) warnings.push(`receipts ${JSON.stringify(rawValue)} is not an object; using the defaults`);
     const pick = (key, valid) => {
         if (raw[key] === undefined) return DEFAULT_RECEIPTS[key];
         if (valid(raw[key])) return raw[key];
@@ -134,6 +148,7 @@ function receiptsConfig(config) {
         maxAgeHours: pick('maxAgeHours', v => typeof v === 'number' && Number.isFinite(v) && v > 0),
         forceRunEvery: pick('forceRunEvery', v => Number.isSafeInteger(v) && v >= 1),
         requireFullForPr: pick('requireFullForPr', v => typeof v === 'boolean'),
+        requireFullForPrInvalid: (rawValue !== undefined && !isObject) || (raw.requireFullForPr !== undefined && typeof raw.requireFullForPr !== 'boolean'),
         warnings,
     };
 }
@@ -188,6 +203,11 @@ const READ_PATTERNS = [
     [/\b(?:FileInfo|DirectoryInfo)\b/, 'FileInfo/DirectoryInfo'],
     [/\b(?:GetFiles|EnumerateFiles|GetDirectories|EnumerateDirectories|EnumerateFileSystemEntries)\b/, 'file enumeration'],
     [/\b(?:Environment\.CurrentDirectory|GetCurrentDirectory)\b/, 'current directory'],
+    [/\b(?:XDocument|XmlDocument|XElement|XmlReader)\.(?:Load|Create)\b|\bnew\s+XmlTextReader\b/, 'XML load from a path'],
+    [/\bnew\s+(?:StreamReader|StreamWriter|FileStream|BinaryReader|BinaryWriter)\b/, 'stream opened on a path'],
+    [/\bAdd(?:Json|Xml|Ini|Yaml)File\b/, 'configuration file source'],
+    [/\bProcess\.Start\b|\bnew\s+ProcessStartInfo\b/, 'child process'],
+    [/\bAssembly\.(?:LoadFrom|LoadFile)\b/, 'assembly loaded from a path'],
 ];
 const ROOT_HELPER = /FindRepoRoot|SolutionRoot|GitRoot|RepoRoot|SolutionDir|"\.sln"|"src"/;
 
@@ -233,6 +253,12 @@ const join = (dir, rel) => normalizeRel(dir ? `${dir}/${rel}` : rel);
 const stripXmlComments = (text) => String(text).replace(/<!--[\s\S]*?-->/g, '');
 const ANCESTOR_FILES = ['Directory.Build.props', 'Directory.Build.targets', 'Directory.Build.rsp', 'Directory.Packages.props', 'global.json', 'NuGet.config', '.editorconfig'];
 const PATH_ITEMS = new Set(['compile', 'content', 'none', 'embeddedresource', 'additionalfiles', 'page', 'resource', 'applicationdefinition', 'analyzer', 'editorconfigfiles', 'analyzerconfigfiles', 'protobuf', 'codeanalysisdictionary']);
+/** Leaf elements whose text is a file path (an assembly hint, a rule set, a key file ...): a path reference like an item's Include. */
+const PATH_PROPS = new Set(['hintpath', 'codeanalysisruleset', 'assemblyoriginatorkeyfile', 'applicationicon', 'applicationmanifest', 'win32manifest', 'win32resource', 'documentationfile', 'packageicon', 'packagelicensefile', 'packagereadmefile']);
+/** Elements whose Version may float (`1.*`): a new package release then changes a result without changing a byte of the tree. */
+const FLOATING_PACKAGE = new Set(['packagereference', 'packageversion', 'globalpackagereference']);
+/** The ancestor files that are MSBuild XML: scanned for imports and path items like the project file. */
+const SCANNED_ANCESTORS = new Set(['directory.build.props', 'directory.build.targets', 'directory.packages.props']);
 
 /** Case-insensitive lookup over the snapshot with an exact match preferred; ambiguity is "not found". */
 function makeLookup(entries) {
@@ -290,7 +316,16 @@ function dotnetClosure({ entries, readText, projectPath }) {
     const visited = new Set();
     const projectQueue = [];
     const fileQueue = [];
+    const scanned = new Set();
     const addFile = (p) => files.set(p, entries.get(p).blob);
+    // An MSBuild file is scanned with the directory of the project it belongs to (that is what $(MSBuildProjectDirectory)
+    // and "inside the project directory" mean for it); each (file, project directory) pair is scanned once.
+    const queueScan = (file, projectDir) => {
+        const key = `${file}\0${projectDir}`;
+        if (scanned.has(key)) return;
+        scanned.add(key);
+        fileQueue.push({ file, projectDir });
+    };
     const root = lookup(normalizeRel(projectPath));
     if (!root) return { known: false, reason: `project file ${projectPath} is not in the tree` };
     projectQueue.push(root);
@@ -302,6 +337,19 @@ function dotnetClosure({ entries, readText, projectPath }) {
         const xml = stripXmlComments(text);
         if (!/<Project\b/i.test(xml)) return `${file} is not a parseable MSBuild file`;
         const baseDir = dirOf(file);
+        // One path reference found in `file`. A path inside the project directory is covered by the directory contents; one
+        // outside joins the closure, or makes it unknown when it cannot be resolved to a file in the tree.
+        const pathRef = (label, raw, a) => {
+            const r = resolveRef(raw, baseDir, projectDir);
+            if (r.unknown) return `${file}: ${label} ${r.unknown}`;
+            if (projectDir === '' || r.path === projectDir || r.path.startsWith(`${projectDir}/`)) return null;
+            if (r.wildcard) return `${file}: ${label} ${raw} is a wildcard outside the project directory`;
+            const found = lookup(r.path);
+            if (found) addFile(found);
+            else if (a.condition !== undefined) files.set(r.path, 'ABSENT');
+            else return `${file}: ${label} ${raw} is outside the project directory and not in the tree`;
+            return null;
+        };
         const tagRe = /<([A-Za-z_][\w.-]*)\b([^>]*?)\/?>/g;
         let m;
         while ((m = tagRe.exec(xml))) {
@@ -327,23 +375,41 @@ function dotnetClosure({ entries, readText, projectPath }) {
                     if (conditional) { files.set(r.path, 'ABSENT'); continue; }
                     return `${file}: Import ${a.project} is missing`;
                 }
-                if (!files.has(found)) { addFile(found); fileQueue.push(found); }
+                addFile(found);
+                queueScan(found, projectDir);
+                continue;
+            }
+            if (FLOATING_PACKAGE.has(name)) {
+                for (const key of ['version', 'versionoverride']) {
+                    if (a[key] !== undefined && a[key].includes('*')) return `${file}: ${m[1]} ${a.include || a.update || ''} uses the floating version ${a[key]}`;
+                }
                 continue;
             }
             if (!PATH_ITEMS.has(name)) continue;
             for (const key of ['include', 'update']) {
                 if (a[key] === undefined) continue;
-                const r = resolveRef(a[key], baseDir, projectDir);
-                if (r.unknown) return `${file}: ${m[1]} ${key} ${r.unknown}`;
-                // Items inside the project directory are covered by the directory contents.
-                const inside = projectDir === '' || r.path === projectDir || r.path.startsWith(`${projectDir}/`);
-                if (inside) continue;
-                if (r.wildcard) return `${file}: ${m[1]} ${key} ${a[key]} is a wildcard outside the project directory`;
-                const found = lookup(r.path);
-                if (found) addFile(found);
-                else if (a.condition !== undefined) files.set(r.path, 'ABSENT');
-                else return `${file}: ${m[1]} ${key} ${a[key]} is outside the project directory and not in the tree`;
+                // An item list (`a.cs;..\shared\b.cs`) is several paths; items inside the project directory are covered by its contents.
+                for (const part of a[key].split(';')) {
+                    if (part.trim() === '') continue;
+                    const failure = pathRef(`${m[1]} ${key}`, part, a);
+                    if (failure) return failure;
+                }
             }
+        }
+        // A package version written as a child element (<PackageReference Include="X"><Version>1.*</Version>).
+        const packageRe = /<(PackageReference|PackageVersion|GlobalPackageReference)\b[^>]*[^/>]>([\s\S]*?)<\/\1\s*>/gi;
+        let p;
+        while ((p = packageRe.exec(xml))) {
+            const child = p[2].match(/<Version(?:Override)?>([^<]*\*[^<]*)<\/Version(?:Override)?>/i);
+            if (child) return `${file}: ${p[1]} uses the floating version ${child[1].trim()}`;
+        }
+        // File-valued child elements (an assembly hint path, a rule set, a key file ...).
+        const propRe = /<([A-Za-z_][\w.-]*)\b([^>]*)>([^<]*)<\/\1\s*>/g;
+        let q;
+        while ((q = propRe.exec(xml))) {
+            if (!PATH_PROPS.has(q[1].toLowerCase()) || q[3].trim() === '') continue;
+            const failure = pathRef(q[1], q[3].trim(), attrs(q[2]));
+            if (failure) return failure;
         }
         return null;
     };
@@ -353,12 +419,30 @@ function dotnetClosure({ entries, readText, projectPath }) {
         const projectDir = dirOf(file);
         dirs.add(projectDir);
         addFile(file);
+        scanned.add(`${file}\0${projectDir}`);
         const failure = scanFile(file, projectDir);
         if (failure) return { known: false, reason: failure };
     }
+    // The configuration chain MSBuild/NuGet discovers by walking up from each project directory. The MSBuild files in it
+    // are scanned like the project file (their imports and path items join the closure); an absent one is recorded.
+    for (const dir of dirs) {
+        let walk = dir;
+        for (;;) {
+            for (const candidate of ANCESTOR_FILES) {
+                const target = walk === '' ? candidate : `${walk}/${candidate}`;
+                const found = lookup(target);
+                if (found) {
+                    files.set(found, entries.get(found).blob);
+                    if (SCANNED_ANCESTORS.has(candidate.toLowerCase())) queueScan(found, dir);
+                } else files.set(target, 'ABSENT');
+            }
+            if (walk === '') break;
+            walk = dirOf(walk);
+        }
+    }
     while (fileQueue.length) {
-        const file = fileQueue.shift();
-        const failure = scanFile(file, dirOf(file));
+        const { file, projectDir } = fileQueue.shift();
+        const failure = scanFile(file, projectDir);
         if (failure) return { known: false, reason: failure };
     }
 
@@ -369,18 +453,6 @@ function dotnetClosure({ entries, readText, projectPath }) {
             const rest = file.slice(prefix.length);
             if (rest.startsWith('bin/') || rest.startsWith('obj/')) continue;
             files.set(file, blob);
-        }
-        // The configuration chain MSBuild/NuGet discovers by walking up from each project directory.
-        let walk = dir;
-        for (;;) {
-            for (const candidate of ANCESTOR_FILES) {
-                const target = walk === '' ? candidate : `${walk}/${candidate}`;
-                const found = lookup(target);
-                if (found) files.set(found, entries.get(found).blob);
-                else files.set(target, 'ABSENT');
-            }
-            if (walk === '') break;
-            walk = dirOf(walk);
         }
     }
     for (const [file, { blob }] of entries) {
@@ -426,7 +498,7 @@ function declaredInputFiles(entries, inputs) {
  */
 function projectClosure({ project, snapshot, readText, meta }) {
     const inputs = project.inputs || [];
-    const metaText = JSON.stringify([meta.engine, meta.configHash, meta.filter, meta.mode, project.display]);
+    const metaText = JSON.stringify([meta.engine, meta.configHash, meta.filter, meta.mode, project.display, ...sdkPart(meta)]);
     if (inputs.includes('tree')) {
         return { known: true, hash: sha256('tree\0', snapshot.hash, '\0', metaText), fileCount: snapshot.entries.size, files: null };
     }
@@ -468,31 +540,108 @@ function solutionProjectPaths(text, solutionPath) {
     return found;
 }
 
+/** The SDK part of a reuse key: present only when the caller resolved one (`meta.sdk`), so keys without it keep their shape. */
+function sdkPart(meta) { return meta.sdk === undefined ? [] : [meta.sdk]; }
+
+const BUILD_VERBS = new Set(['build', 'publish', 'pack', 'msbuild', 'test']);
+const SOLUTION_FILE = /\.(?:sln|slnx)$/i;
+const PROJECT_FILE = /\.(?:cs|fs|vb)proj$/i;
+
+/** The argv lists a build leg runs ({ argv }, { command } or { legs }); null when any part is not plain words. */
+function legArgvs(leg) {
+    if (typeof leg === 'string') leg = { command: leg };
+    if (!leg || typeof leg !== 'object') return null;
+    if (Array.isArray(leg.legs)) {
+        const out = [];
+        for (const sub of leg.legs) {
+            const argvs = legArgvs(sub);
+            if (!argvs) return null;
+            out.push(...argvs);
+        }
+        return out.length ? out : null;
+    }
+    if (Array.isArray(leg.argv)) return leg.argv.length && leg.argv.every(a => typeof a === 'string') ? [leg.argv] : null;
+    // A shell string is read as words only when it has no quoting, chaining, redirection, expansion or escapes.
+    if (typeof leg.command === 'string' && leg.command.trim() !== '' && !/[&|;<>`$"'()\\*?\r\n]/.test(leg.command)) return [leg.command.trim().split(/\s+/)];
+    return null;
+}
+
 /**
- * The closure of the build: the union of every project's closure, the root solution(s) and the
- * build command. When a root solution exists, every project in it joins the closure (a build
- * builds the solution, not only the tested projects); one that cannot be resolved makes the
- * whole closure unknown, so the build runs.
+ * The solution or project files a build command builds, when that is fully understood: `dotnet build|publish|pack|msbuild|test`
+ * with explicit targets, or with none and exactly one root solution (else exactly one root project file). Anything else
+ * (npm, make, a shell line, another verb, an absolute path) is not understood, and the build is then keyed on the whole tree.
+ *
+ * @param {object} leg the gate config's `build` leg
+ * @param {Map<string,object>} entries the tree snapshot entries
+ * @returns {{understood:true, targets:string[]} | {understood:false, reason:string}}
  */
-function buildClosure({ projectClosures, snapshot, readText, meta, buildDisplay }) {
+function buildTargets(leg, entries) {
+    const argvs = legArgvs(leg);
+    if (!argvs) return { understood: false, reason: 'the build command is not a plain argv, command or list of legs' };
+    const targets = [];
+    for (const argv of argvs) {
+        const head = path.posix.basename(toPosix(argv[0])).replace(/\.exe$/i, '').toLowerCase();
+        if (head !== 'dotnet' || !BUILD_VERBS.has(String(argv[1] || '').toLowerCase())) {
+            return { understood: false, reason: `"${argv.join(' ')}" is not a dotnet build, publish, pack, msbuild or test call` };
+        }
+        const named = argv.slice(2).filter(t => !t.startsWith('-') && (SOLUTION_FILE.test(t) || PROJECT_FILE.test(t)));
+        if (named.some(t => t.startsWith('/') || /^[A-Za-z]:/.test(t))) return { understood: false, reason: `"${argv.join(' ')}" names a path outside the repository root` };
+        if (named.length) {
+            for (const t of named) {
+                const rel = normalizeRel(t);
+                if (rel === null) return { understood: false, reason: `"${argv.join(' ')}" names a path outside the repository root` };
+                targets.push(rel);
+            }
+            continue;
+        }
+        // No explicit target: dotnet takes the one solution (else the one project file) in the working directory.
+        const rootFiles = [...entries.keys()].filter(f => !f.includes('/'));
+        const solutions = rootFiles.filter(f => SOLUTION_FILE.test(f));
+        const implicit = solutions.length ? solutions : rootFiles.filter(f => PROJECT_FILE.test(f));
+        if (implicit.length !== 1) return { understood: false, reason: `"${argv.join(' ')}" names no target and the repository root does not hold exactly one solution or project file` };
+        targets.push(implicit[0]);
+    }
+    return { understood: true, targets };
+}
+
+/**
+ * The closure of the build: every test project's closure, plus what the build command builds. The build is keyed on what it
+ * builds only when that is understood (`buildTargets`): each target solution's projects, or the target project, joins the
+ * closure through `dotnetClosure`, and a target that cannot be resolved makes the whole closure unknown, so the build runs.
+ * For any other build command (npm, make, an unknown tool) nothing says which files it reads, so it is keyed on the whole
+ * tree: reused only when no file differs from the run it is reused from.
+ */
+function buildClosure({ projectClosures, snapshot, readText, meta, buildDisplay, buildLeg }) {
+    const wholeTree = (reason) => ({
+        known: true, wholeTree: reason, files: null,
+        hash: sha256('tree\0', snapshot.hash, '\0', JSON.stringify([meta.engine, meta.configHash, meta.mode, buildDisplay, ...sdkPart(meta)])),
+    });
     const files = new Map();
     for (const closure of projectClosures) {
         if (!closure.known) return { known: false, reason: 'a project closure is unknown' };
-        if (closure.files === null) return { known: true, hash: sha256('tree\0', snapshot.hash, '\0', JSON.stringify([meta.engine, meta.configHash, meta.mode, buildDisplay])), files: null };
+        if (closure.files === null) return wholeTree('a project is keyed on the whole tree');
         for (const [file, blob] of closure.files) files.set(file, blob);
     }
-    for (const [file, { blob }] of snapshot.entries) {
-        if (file.includes('/') || !/\.(?:sln|slnx)$/i.test(file)) continue;
-        files.set(file, blob);
-        const text = readText(file);
-        if (text === null || text === undefined) return { known: false, reason: `could not read ${file}` };
-        for (const projectPath of solutionProjectPaths(text, file)) {
+    const understood = buildTargets(buildLeg, snapshot.entries);
+    if (!understood.understood) return wholeTree(understood.reason);
+    const lookup = makeLookup(snapshot.entries);
+    for (const target of understood.targets) {
+        const found = lookup(target);
+        if (!found) return { known: false, reason: `build target ${target} is not in the tree` };
+        const projectPaths = [];
+        if (SOLUTION_FILE.test(found)) {
+            files.set(found, snapshot.entries.get(found).blob);
+            const text = readText(found);
+            if (text === null || text === undefined) return { known: false, reason: `could not read ${found}` };
+            projectPaths.push(...solutionProjectPaths(text, found));
+        } else projectPaths.push(found);
+        for (const projectPath of projectPaths) {
             const closure = dotnetClosure({ entries: snapshot.entries, readText, projectPath });
-            if (!closure.known) return { known: false, reason: `solution project ${projectPath}: ${closure.reason}` };
+            if (!closure.known) return { known: false, reason: `build target ${target}, project ${projectPath}: ${closure.reason}` };
             for (const [f, b] of closure.files) files.set(f, b);
         }
     }
-    return { known: true, hash: hashFiles(files, JSON.stringify([meta.engine, meta.configHash, meta.mode, buildDisplay, 'build'])), files };
+    return { known: true, hash: hashFiles(files, JSON.stringify([meta.engine, meta.configHash, meta.mode, buildDisplay, 'build', ...sdkPart(meta)])), files };
 }
 
 // ── Reuse decision and history (pure) ───────────────────────────────
@@ -645,6 +794,13 @@ function treeSnapshot(root) {
         if (!m) return { ok: false, reason: 'unreadable git status entry' };
         changed.add(m[3]);
         if (m[1] === 'R' || m[1] === 'C' || m[2] === 'R' || m[2] === 'C') { i += 1; if (fields[i]) changed.add(fields[i]); }
+    }
+    // `git status` never reports a path flagged assume-unchanged (lowercase tag) or skip-worktree (`S`), so an edit to one
+    // would leave its indexed blob in the hash. Hash those paths from disk too (an absent one counts as deleted).
+    const flagged = gitRun(root, ['ls-files', '-v', '-z']);
+    if (flagged === null) return { ok: false, reason: 'git ls-files -v failed' };
+    for (const record of flagged.split('\0')) {
+        if (record && (record[0] === 'S' || /[a-z]/.test(record[0]))) changed.add(record.slice(2));
     }
     const toHash = [];
     for (const rel of changed) {
@@ -979,10 +1135,42 @@ function runnerIdentity(root) {
     return found === 0 ? NO_RUNNER : hash.digest('hex');
 }
 
-/** sha256 of the gate engine (gate.js + this module), the toolkit version and the installed test runner. */
+const LOCAL_REQUIRE = /\brequire\(\s*(['"])(\.{1,2}\/[^'"]+)\1\s*\)/g;
+
+/**
+ * Every module that can decide a verdict: gate.js and, transitively, each module it requires by a relative path (found by
+ * reading the sources, so a lazily required one such as the owned-process-tree bridge is included). Returns
+ * Map<path, bytes>; throws when a file that exists cannot be read.
+ */
+function gateModuleClosure(coreDir) {
+    const modules = new Map();
+    const queue = [path.join(coreDir, 'gate.js'), path.join(coreDir, '_lib', 'gate-receipt.js')];
+    while (queue.length) {
+        const file = queue.shift();
+        if (modules.has(file)) continue;
+        const bytes = fs.readFileSync(file);
+        modules.set(file, bytes);
+        for (const m of bytes.toString('utf8').matchAll(LOCAL_REQUIRE)) {
+            const target = path.resolve(path.dirname(file), m[2]);
+            const found = [target, `${target}.js`, `${target}.cjs`, path.join(target, 'index.js')].find((candidate) => {
+                try { return fs.statSync(candidate).isFile(); } catch { return false; }
+            });
+            if (found) queue.push(found);
+        }
+    }
+    return modules;
+}
+
+/** sha256 of the gate engine (gate.js and every module it requires), the toolkit version and the installed test runner. */
 function engineIdentity(root, coreDir = CORE_DIR) {
-    let gate; let self;
-    try { gate = fs.readFileSync(path.join(coreDir, 'gate.js')); self = fs.readFileSync(path.join(coreDir, '_lib', 'gate-receipt.js')); } catch { return null; }
+    let modules;
+    try { modules = gateModuleClosure(coreDir); } catch { return null; }
+    const engine = crypto.createHash('sha256');
+    for (const file of [...modules.keys()].sort()) {
+        const bytes = modules.get(file);
+        engine.update(`${toPosix(path.relative(coreDir, file))}\0${bytes.length}\0`);
+        engine.update(bytes);
+    }
     let version = 'unknown';
     for (const rel of ['.claude/version.json', '.codex/version.json', '.agents/version.json']) {
         const data = readJson(path.join(root, rel));
@@ -990,19 +1178,46 @@ function engineIdentity(root, coreDir = CORE_DIR) {
     }
     const runner = runnerIdentity(root);
     if (runner === null) return null;
-    return sha256(gate, '\0', self, '\0', version, '\0', runner);
+    return sha256(engine.digest('hex'), '\0', version, '\0', runner);
 }
 
 const GATE_CONFIG_REL = path.join('.claude', 'gate.config.json');
 
-/** The explicit gate config (no auto-detection) and the hash of its exact bytes. */
+/**
+ * The explicit gate config (no auto-detection) and the hash of its exact bytes. A file that is present but is not a JSON
+ * object reads as `config: {}` with `parseError` set, so a caller that enforces a rule can tell "not configured" from "damaged".
+ */
 function readGateConfigFile(root) {
     const file = path.join(root, GATE_CONFIG_REL);
     let bytes;
-    try { bytes = fs.readFileSync(file); } catch { return { config: {}, hash: sha256('no gate config'), present: false }; }
-    let config = {};
-    try { const parsed = JSON.parse(bytes.toString('utf8')); if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) config = parsed; } catch { /* hash still covers the bytes */ }
-    return { config, hash: sha256(bytes), present: true };
+    try { bytes = fs.readFileSync(file); } catch { return { config: {}, hash: sha256('no gate config'), present: false, parseError: null }; }
+    let config = {}; let parseError = null;
+    try {
+        const parsed = JSON.parse(bytes.toString('utf8'));
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) config = parsed;
+        else parseError = 'the top level is not a JSON object';
+    } catch (error) { parseError = String(error && error.message).replace(/[\r\n]+/g, ' ').slice(0, 160); /* the hash still covers the bytes */ }
+    return { config, hash: sha256(bytes), present: true, parseError };
+}
+
+/**
+ * The working-tree paths that differ from HEAD (staged, unstaged and untracked-not-ignored), minus the gitignored
+ * state folder. The receipt describes the working tree, but a PR carries only commits, so a PR check needs this to be empty.
+ *
+ * @returns {{ok:true, paths:string[]} | {ok:false, reason:string}}
+ */
+function workingTreeChanges(root) {
+    const status = gitRun(root, ['status', '--porcelain=v1', '-z', '--untracked-files=all']);
+    if (status === null) return { ok: false, reason: 'git status failed' };
+    const paths = [];
+    const fields = status.split('\0');
+    for (let i = 0; i < fields.length; i++) {
+        const m = fields[i].match(/^(.)(.) ([\s\S]*)$/);
+        if (!m) { if (fields[i]) return { ok: false, reason: 'unreadable git status entry' }; continue; }
+        if (!m[3].startsWith(STATE_PREFIX)) paths.push(m[3]);
+        if (m[1] === 'R' || m[1] === 'C' || m[2] === 'R' || m[2] === 'C') i += 1;
+    }
+    return { ok: true, paths };
 }
 
 /**
@@ -1059,15 +1274,40 @@ function verifyReceiptEvidence({ root, receipt, codeHash, mode = 'normal' }) {
 }
 
 /**
- * The PR helper's gate check. `required` follows `receipts.requireFullForPr`; when it is not
- * set the check passes without looking.
+ * The PR helper's gate check. `required` follows `receipts.requireFullForPr`; when it is not set the check passes without
+ * looking. A control the owner turned on never switches off by accident: a gate config that is present but unparseable, or
+ * a `requireFullForPr` that is not a boolean, counts as required, with a warning. Because a PR carries commits and the
+ * receipt describes the working tree, the tree must also be clean (nothing staged, modified or untracked outside
+ * `docs/.output/.state/`); otherwise a file the receipt proved could be missing from the pushed commit.
+ *
+ * @returns {{required:boolean, ok:boolean, reasons:{check:string,message:string}[], warnings?:string[]}}
  */
 function checkReceiptForPr({ root }) {
-    const { config } = readGateConfigFile(root);
+    const { config, parseError } = readGateConfigFile(root);
     const settings = receiptsConfig(config);
-    if (!settings.requireFullForPr) return { required: false, ok: true, reasons: [] };
+    const warnings = settings.warnings.slice();
+    let required = settings.requireFullForPr;
+    if (parseError) {
+        required = true;
+        warnings.push(`${GATE_CONFIG_REL.replace(/\\/g, '/')} is present but unreadable (${parseError}); treating receipts.requireFullForPr as true until it is fixed`);
+    } else if (settings.requireFullForPrInvalid) {
+        required = true;
+        warnings.push('receipts.requireFullForPr is not a true/false value; treating it as true until it is fixed');
+    }
+    const withWarnings = (result) => (warnings.length ? { ...result, warnings } : result);
+    if (!required) return withWarnings({ required: false, ok: true, reasons: [] });
     const verdict = verifyReceiptForRoot({ root, mode: 'full' });
-    return { required: true, ok: verdict.ok, reasons: verdict.reasons };
+    const reasons = verdict.reasons.slice();
+    const changes = workingTreeChanges(root);
+    if (!changes.ok) reasons.push({ check: 'cleanTree', message: `could not read the working tree state: ${changes.reason}` });
+    else if (changes.paths.length) {
+        const shown = changes.paths.slice(0, 5).join(', ');
+        reasons.push({
+            check: 'cleanTree',
+            message: `working tree has uncommitted changes: the receipt does not describe the commit that would be pushed (${changes.paths.length} path(s): ${shown}${changes.paths.length > 5 ? ', ...' : ''})`,
+        });
+    }
+    return withWarnings({ required: true, ok: reasons.length === 0, reasons });
 }
 
 /** The command that produces a passing receipt, for the runtime that is asking. */
@@ -1081,5 +1321,5 @@ module.exports = {
     dotnetClosure, projectClosure, buildClosure, declaredInputFiles, globToRegExp, solutionProjectPaths,
     decideReuse, appendRecord, bumpReuse, evaluateReceipt, hashFiles,
     treeSnapshot, hashTreeEntries, codeTreeHash, isCodeHashExcluded, isUnderExcludedDocs, CODE_FILE_IN_DOCS, headSha, receiptPath, historyDir, readReceipt, writeReceipt, archivedReceipt, hasArchive, readHistory, writeHistory,
-    engineIdentity, runnerIdentity, NO_RUNNER, readGateConfigFile, verifyReceiptForRoot, verifyReceiptEvidence, checkReceiptForPr, short,
+    engineIdentity, runnerIdentity, NO_RUNNER, readGateConfigFile, verifyReceiptForRoot, verifyReceiptEvidence, checkReceiptForPr, workingTreeChanges, buildTargets, short,
 };

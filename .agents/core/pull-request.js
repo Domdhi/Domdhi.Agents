@@ -256,6 +256,7 @@ function preflight({ force } = {}) {
   //    (gate config receipts.requireFullForPr). --force never bypasses it: it only downgrades the
   //    best-effort base check above.
   const receiptCheck = checkReceiptForPr({ root: projectRoot() });
+  for (const warning of receiptCheck.warnings || []) console.error(`[pr] warning: ${warning}`);
   if (receiptCheck.required && !receiptCheck.ok) {
     console.error(`[pr] refusing: no valid full-gate receipt for this exact tree — ${receiptReasons(receiptCheck)}. Fix: ${fixCommand()}, then retry.`);
     process.exit(1);
@@ -307,6 +308,7 @@ function runCreate(opts, remote) {
   if (dryRun) {
     console.log(`[pr] --dry-run — host: ${remote.host}, branch: ${branch} → ${base}. Would run:\n`);
     const receiptCheck = checkReceiptForPr({ root: projectRoot() });
+    for (const warning of receiptCheck.warnings || []) console.log(`[pr] warning: ${warning}`);
     if (!receiptCheck.required) console.log('[pr] gate receipt check: not required (receipts.requireFullForPr is not true)\n');
     else if (receiptCheck.ok) console.log('[pr] gate receipt check: would pass (a valid full-gate receipt covers this exact tree)\n');
     else console.log(`[pr] gate receipt check: WOULD REFUSE — ${receiptReasons(receiptCheck)}. Fix: ${fixCommand()}\n`);

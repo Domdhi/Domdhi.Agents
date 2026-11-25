@@ -44,6 +44,19 @@ describe('notes sync at session end (separate opt-in: MEMORY_SYNC=on)', () => {
         expect(fs.existsSync(syncedFile('a.md'))).toBe(true);
         expect(spawn).not.toHaveBeenCalled();
     });
+    it('screens notes with the regex-only check: the engine spawn per note cannot run inside a hook', () => {
+        mkNote();
+        process.env.MEMORY_SYNC = 'on';
+        const cap = require('../../core/memory-capture');
+        const fast = vi.spyOn(cap, 'isSecretFast');
+        const slow = vi.spyOn(cap, 'isSecret').mockImplementation(() => { throw new Error('the engine check must not run in a hook'); });
+        try {
+            fire();
+            expect(fast).toHaveBeenCalled();
+            expect(slow).not.toHaveBeenCalled();
+            expect(fs.existsSync(syncedFile('a.md'))).toBe(true);
+        } finally { fast.mockRestore(); slow.mockRestore(); }
+    });
     it('does nothing when MEMORY_SYNC is off, and never fails the hook', () => {
         mkNote();
         expect(fire()).toBe(false);
@@ -68,6 +81,7 @@ describe('keyless provider and the recursion guard', () => {
         expect(hook.providerConfigured({ MEMORY_CAPTURE_PROVIDER: 'anthropic,openai' })).toBe(false);
         expect(hook.providerConfigured({ MEMORY_CAPTURE_PROVIDER: 'anthropic,openai', ANTHROPIC_API_KEY: 'k' })).toBe(true);
         expect(hook.providerConfigured({ MEMORY_CAPTURE_PROVIDER: 'openai,anthropic', MEMORY_CAPTURE_MODEL: 'm' })).toBe(true);
+        expect(hook.providerConfigured({ MEMORY_CAPTURE_PROVIDER: 'openai', MEMORY_CAPTURE_OPENAI_MODEL: 'm' })).toBe(true);
     });
     it('claude-cli needs no key, but is still opt-in: it starts exactly one detached child', () => {
         Object.assign(process.env, { MEMORY_CAPTURE: 'on', MEMORY_CAPTURE_PROVIDER: 'claude-cli' });

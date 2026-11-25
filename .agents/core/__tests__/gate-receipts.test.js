@@ -123,12 +123,15 @@ describe('closure and reuse (plan 1)', () => {
     t.write('Directory.Build.props', '<Project><PropertyGroup /></Project>\n');
     expect(t.ran(['full', 'test']).runs).toEqual(['build', 'A', 'B', 'C']);
 
-    // Edit a docs file: nothing in any closure changed, so everything is reused and the build is skipped.
+    // Edit a docs file: nothing in any project closure changed, so every project is reused. This fixture's build command
+    // (`node runner.js build`) is not a dotnet build the gate understands, so the build is keyed on the whole tree and runs
+    // again; an understood dotnet build is skipped here (see "the build key" below).
     t.write('docs/x.md', 'docs changed\n');
     const docsOnly = t.ran(['full', 'test']);
     expect(docsOnly.code, docsOnly.out).toBe(0);
-    expect(docsOnly.runs).toEqual([]);
-    expect(docsOnly.out).toContain('Build: SKIPPED');
+    expect(docsOnly.runs).toEqual(['build']);
+    expect(docsOnly.out).not.toContain('Build: SKIPPED');
+    expect(docsOnly.out).toMatch(/A: reused from receipt/);
     // ...and the receipt is for the docs change, so it verifies against that exact tree.
     expect(t.gate(['verify-receipt', '--mode', 'full']).code).toBe(0);
   });
@@ -140,9 +143,9 @@ describe('closure and reuse (plan 1)', () => {
     t.git('add', '-A'); t.git('commit', '-q', '-m', 'docs only');
     // The old receipt no longer matches HEAD...
     expect(t.gate(['verify-receipt', '--mode', 'full']).code).toBe(1);
-    // ...and a cheap full run (everything reused, build skipped) restores a verifiable receipt.
+    // ...and a cheap full run (every project reused; only the build, keyed on the whole tree, reruns) restores a verifiable receipt.
     const again = t.ran(['full', 'test']);
-    expect(again.runs).toEqual([]);
+    expect(again.runs).toEqual(['build']);
     expect(t.gate(['verify-receipt', '--mode', 'full']).code).toBe(0);
   });
 
@@ -556,6 +559,183 @@ describe('PR helper check (plan 9)', () => {
     expect(r.out).toContain('gate receipt check: not required');
     const live = runPr(t, ['create', '--title', 'feat: x', '--force']);
     expect(live.out).not.toContain('no valid full-gate receipt');
+  });
+
+  it('a receipt for a tree with an uncommitted file does not let the PR through: the push would lack that file (review G, MAJOR)', () => {
+    const t = prRepo({ receipts: { requireFullForPr: true } });
+    // The code is committed; a helper the tests need was never added. The gate passes on the dirty tree.
+    t.write('A/Helpers.cs', 'class Helpers {}\n');
+    expect(t.ran(['full', 'test']).code).toBe(0);
+    expect(t.gate(['verify-receipt', '--mode', 'full']).code).toBe(0);
+    const r = runPr(t, ['create', '--title', 'feat: x', '--force']);
+    expect(r.code).toBe(1);
+    expect(r.out).toContain('[pr] refusing: no valid full-gate receipt for this exact tree');
+    expect(r.out).toContain('working tree has uncommitted changes');
+    expect(r.out).toContain('A/Helpers.cs');
+    expect(runPr(t, ['create', '--title', 'feat: x', '--dry-run']).out).toContain('gate receipt check: WOULD REFUSE');
+    // Committed, and proven again on the committed tree, the check lets it through.
+    t.git('add', '-A'); t.git('commit', '-q', '-m', 'add helpers');
+    t.ran(['full', 'test']);
+    const clean = runPr(t, ['create', '--title', 'feat: x', '--force']);
+    expect(clean.out).not.toContain('no valid full-gate receipt');
+    expect(clean.out).toContain('body file not found');
+  });
+
+  it.each([
+    ['an unparseable gate config', '{ "receipts": { "requireFullForPr": true, } }'],
+    ['a requireFullForPr that is a string', JSON.stringify({ receipts: { requireFullForPr: 'true' } })],
+  ])('%s keeps the rule on, says so, and refuses without a receipt (review G, MINOR)', (_label, text) => {
+    const t = prRepo();
+    t.write('.claude/gate.config.json', text);
+    const r = runPr(t, ['create', '--title', 'feat: x', '--force']);
+    expect(r.code).toBe(1);
+    expect(r.out).toContain('[pr] warning:');
+    expect(r.out).toContain('treat');
+    expect(r.out).toContain('[pr] refusing: no valid full-gate receipt for this exact tree');
+    const dry = runPr(t, ['create', '--title', 'feat: x', '--dry-run']);
+    expect(dry.out).toContain('[pr] warning:');
+    expect(dry.out).toContain('gate receipt check: WOULD REFUSE');
+  });
+});
+
+// ── review G regressions (each fails on the code before the fix) ────
+
+/**
+ * A stand-in `dotnet` on PATH (POSIX only), so a build command the gate understands (`dotnet build <solution>`) can run
+ * without the SDK. `--version` prints the contents of sdk-version.txt; any other call logs "build" like the fake runner does.
+ */
+function dotnetStub(version = '8.0.100') {
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'gate-dotnet-')));
+  roots.push(dir);
+  fs.writeFileSync(path.join(dir, 'sdk-version.txt'), version);
+  fs.writeFileSync(path.join(dir, 'dotnet'), `#!/usr/bin/env node
+const fs = require('fs'); const path = require('path');
+if (process.argv[2] === '--version') { process.stdout.write(fs.readFileSync(path.join(__dirname, 'sdk-version.txt'), 'utf8')); process.exit(0); }
+const state = path.join(process.cwd(), 'docs', '.output', '.state');
+fs.mkdirSync(state, { recursive: true });
+fs.appendFileSync(path.join(state, 'runs.log'), 'build\\n');
+`, { mode: 0o755 });
+  return { env: { PATH: `${dir}${path.delimiter}${process.env.PATH}` }, setVersion: (v) => fs.writeFileSync(path.join(dir, 'sdk-version.txt'), v) };
+}
+const WEB_SLN = 'Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Web", "Web\\Web.csproj", "{W}"\n';
+const webRepo = () => makeRepo({
+  config: { build: { argv: ['dotnet', 'build', 'src/Web.sln'], timeout: 60000 } },
+  files: { 'src/Web.sln': WEB_SLN, 'src/Web/Web.csproj': proj(), 'src/Web/P.cs': 'class P {}\n' },
+});
+
+describe('the build key (review G, MAJOR)', () => {
+  it('a build command the gate does not understand reruns when any file changes, even one no test project reaches', () => {
+    const t = makeRepo({ files: { 'web/app.ts': 'export const a = 1;\n' } });
+    t.ran(['full', 'test']);
+    t.write('web/app.ts', 'export const a = (1 as any).broken;\n');
+    const r = t.ran(['full', 'test']);
+    expect(r.code, r.out).toBe(0);
+    expect(r.out).toMatch(/A: reused from receipt/);
+    expect(r.runs).toEqual(['build']);
+    expect(r.out).not.toContain('Build: SKIPPED');
+    // Nothing changed at all: the same tree is reused, build included.
+    expect(t.ran(['full', 'test']).runs).toEqual([]);
+  });
+
+  it.skipIf(!posix)('an understood dotnet build of a non-root solution is skipped until a project only the build reaches changes', () => {
+    const stub = dotnetStub();
+    const t = webRepo();
+    const run = (args) => t.ran(args, stub.env);
+    expect(run(['full', 'test']).runs).toEqual(['build', 'A', 'B', 'C']);
+    t.write('docs/x.md', 'docs edited\n');
+    const docs = run(['full', 'test']);
+    expect(docs.runs).toEqual([]);
+    expect(docs.out).toContain('Build: SKIPPED');
+    // src/Web is in no test project's closure, so every project is reused; the build must still rerun.
+    t.write('src/Web/P.cs', 'class P { int broken; }\n');
+    const web = run(['full', 'test']);
+    expect(web.code, web.out).toBe(0);
+    expect(web.runs).toEqual(['build']);
+    expect(web.out).not.toContain('Build: SKIPPED');
+    expect(t.gate(['verify-receipt', '--mode', 'full'], stub.env).code).toBe(0);
+  });
+
+  it.skipIf(!posix)('the installed .NET SDK is part of the key: a new SDK reruns every project and the build', () => {
+    const stub = dotnetStub('8.0.100');
+    const t = webRepo();
+    const run = (args) => t.ran(args, stub.env);
+    run(['full', 'test']);
+    expect(run(['full', 'test']).runs).toEqual([]);
+    stub.setVersion('8.0.101');
+    expect(run(['full', 'test']).runs).toEqual(['build', 'A', 'B', 'C']);
+    expect(run(['full', 'test']).runs).toEqual([]);
+  });
+});
+
+describe('--no-build results are never reusable (review G, MAJOR)', () => {
+  it('a project run against stale binaries is rerun by the next normal run', () => {
+    const t = makeRepo();
+    expect(t.ran(['test']).runs).toEqual(['build', 'A', 'B', 'C']);
+    t.write('B/B.cs', 'class B { int x; }\n');
+    // The fast tier runs A and B (their closures changed) without building: the tests may use old binaries.
+    expect(t.ran(['test', '--no-build']).runs).toEqual(['A', 'B']);
+    const normal = t.ran(['test']);
+    expect(normal.code, normal.out).toBe(0);
+    expect(normal.runs).toEqual(['build', 'A', 'B']);
+    expect(normal.out).toMatch(/A: running \(no receipt for this closure/);
+    expect(t.receipt().build).toMatchObject({ status: 'passed', reused: false });
+    expect(t.ran(['test']).runs).toEqual([]);
+  });
+
+  it('a --no-build run may still reuse a result that a real run produced for the same closure', () => {
+    const t = makeRepo();
+    t.ran(['test']);
+    expect(t.ran(['test', '--no-build']).runs).toEqual([]);
+  });
+});
+
+describe('the static-read veto covers every project in the closure (review G, MAJOR)', () => {
+  it('a helper project the test project references and that reads the repository vetoes reuse, naming the helper file', () => {
+    const t = makeRepo({
+      files: {
+        'A/A.csproj': proj('..\\B\\B.csproj', '..\\H\\H.csproj'), 'H/H.csproj': proj(),
+        'H/Repo.cs': 'class Repo {\n  string Spec() => File.ReadAllText("../docs/x.md");\n}\n',
+      },
+    });
+    t.ran(['full', 'test']);
+    const again = t.ran(['full', 'test']);
+    expect(again.out).toContain('A: running (static scan vetoed reuse: H/Repo.cs:2');
+    expect(again.runs).toEqual(['build', 'A']);
+    // The projects that do not reach the helper are still reused.
+    expect(again.out).toMatch(/C: reused from receipt/);
+  });
+});
+
+describe('gate.js stop does not signal a process that is not a gate (review G, MINOR)', () => {
+  it.skipIf(!posix)('a lock left by a killed gate whose PID now belongs to another process is reported, never signalled', async () => {
+    const t = makeRepo();
+    const bystander = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'], { stdio: 'ignore' });
+    try {
+      fs.mkdirSync(path.dirname(t.lockPath), { recursive: true });
+      fs.writeFileSync(t.lockPath, JSON.stringify({ pid: bystander.pid, started: new Date().toISOString(), protocol: 'domdhi-gate/uncontained-posix-v1', phase: 'idle' }));
+      const r = t.gate(['stop']);
+      expect(r.code).toBe(1);
+      expect(r.out).toContain('is not a gate');
+      expect(r.out).toContain('was not signalled');
+      expect(() => process.kill(bystander.pid, 0)).not.toThrow();
+      expect(bystander.exitCode).toBeNull();
+      expect(bystander.signalCode).toBeNull();
+      expect(fs.existsSync(t.lockPath)).toBe(true);
+    } finally { bystander.kill('SIGKILL'); }
+  });
+
+  it.skipIf(!posix)('stop returns only after the interrupted receipt is written and the lock is gone', async () => {
+    const t = makeRepo();
+    const child = spawn(process.execPath, [GATE, 'full', 'test'], { cwd: t.root, env: { ...process.env, CLAUDE_PROJECT_DIR: t.root, CI: '', RUNNER_SLEEP: 'A' }, stdio: 'ignore' });
+    const closed = new Promise(resolve => child.on('close', resolve));
+    for (let i = 0; i < 200 && !t.runs().includes('A'); i++) await new Promise(r => setTimeout(r, 50));
+    expect(t.runs()).toContain('A');
+    const stop = spawnSync(process.execPath, [GATE, 'stop'], { cwd: t.root, encoding: 'utf8', env: { ...process.env, CLAUDE_PROJECT_DIR: t.root }, timeout: 60000 });
+    expect(stop.status, stop.stdout + stop.stderr).toBe(0);
+    // At the moment `stop` says "stopped", the receipt is final and the lock is released (not merely rewritten).
+    expect(t.receipt().status).toBe('interrupted');
+    expect(fs.existsSync(t.lockPath)).toBe(false);
+    await closed;
   });
 });
 

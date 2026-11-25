@@ -852,7 +852,15 @@ function validate(o) {
     const root = path.resolve(typeof o.root === 'string' && o.root !== '' ? o.root : defaultRoot());
     if (!isDirectory(root)) throw bad(`root is not a directory: ${root}`);
     const skillDir = path.join(root, '.agents', 'skills', o.skill);
-    if (!isDirectory(skillDir)) throw bad(`unknown skill directory: .agents/skills/${o.skill}`);
+    if (!isDirectory(skillDir)) {
+        // A project-owned skill that exists only as a native projection has no canonical source for this
+        // pipeline to copy, render, scope or restore. Say so, and name the route that does apply.
+        const nativeOnly = ['.claude', '.codex'].map((rt) => `${rt}/skills/${o.skill}`).find((rel) => isDirectory(path.join(root, ...rel.split('/'))));
+        if (nativeOnly) {
+            throw bad(`unknown skill directory: .agents/skills/${o.skill} (${nativeOnly} is a project-owned native-only skill; the side door and the verdict route need a canonical .agents/skills/ source, so fix a typo or stale pointer there by a direct edit, per /sweep Phase 3)`);
+        }
+        throw bad(`unknown skill directory: .agents/skills/${o.skill}`);
+    }
 
     const mode = o.mode === undefined ? 'propose' : o.mode;
     if (!MODES.includes(mode)) throw bad(`--mode must be one of ${MODES.join(', ')}`);

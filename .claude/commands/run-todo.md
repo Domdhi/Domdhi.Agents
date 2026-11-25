@@ -251,7 +251,8 @@ node .claude/core/gate.js test
 ```
 
 - Uncommitted changes → identify whose they are: commit your own with exact paths; otherwise stop and ask. With `--no-ask`, do not ask: changes confined to the run's own paths (Headless contract, "The run's own state") are the run's own, so list them in the Resume Point and go on; a changed path outside them finishes `needs-human`, named in the intake line. Do not stash or reset a shared working tree (it clobbers concurrent work).
-- Build or full ordinary application test suite fails → **STOP**. Diagnose and resolve the broken baseline before implementation (with `--no-ask`, a baseline the run cannot resolve finishes `blocked`; a resume whose Resume Point lists `Partial work` skips the baseline for those stories instead and records `baseline: skipped, partial work of {stories}`, because the partial code is the cause). Persist the baseline command, scope, safety filters, source identity, counts, exit status and evidence path in the plan. Preserve the project's actual safety filters and environment prerequisites.
+- Build or full ordinary application test suite fails → **STOP**. Diagnose and resolve the broken baseline before implementation (with `--no-ask`, a baseline the run cannot resolve finishes `blocked`; a resume whose Resume Point lists `Partial work` skips the baseline for those stories instead and records `baseline: skipped, partial work of {stories}`, because the partial code is the cause). Persist the baseline command, scope, safety filters, source identity, counts, exit status and evidence path in the plan. Preserve the project's actual safety filters and environment prerequisites. The whole baseline, browser/E2E legs included, finishes before the first implementation dispatch: suites the writers run alongside it compete for CPU, and the resulting load timeouts make the baseline unreadable (observed 2026-11-23: two boot-time page-load timeouts in browser shards that ran beside three writers' full Vitest runs).
+- Record the baseline test gate's wall time beside the test leg's configured limit (`test.timeout` in the gate config, or the runner's own timeout). When the margin is thin, roughly under 25% of the limit, flag it in the plan and settle it before Wave 1: raise the limit in the committed config (an owner decision when the config is shared) or cut the suite's wall time. Waves add tests, so a baseline near the limit turns into gate timeouts mid-run, and a timed-out gate says nothing about the code.
 - If gate.js does not exist, use the project's actual runner and record its commands; do not invent a gate or report absent verification as PASS.
 
 ---
@@ -926,6 +927,8 @@ node .claude/core/ac-verify.js run --todo "{TODO_PATH}" --stories "{wave story I
 
 A non-zero exit means at least one bound criterion is unmet: those criteria are FAIL in the AC table below, with the record's digest as evidence. Fix the code (never the binding) and run it again before the wave proceeds.
 
+A binding that starts a server or browser (a Playwright spec, an E2E runner) gets none of the project's serialization from `ac-verify`, which runs each command directly: run `ac-verify.js` itself under the project's lock and with its port settings, for every command that executes bindings (`ac-verify.js red` at Step 2b, `run` here, and the Step 7 seal, which runs the bindings itself; for example `flock {lock file} env {PORT_VAR}={wave port} node .claude/core/ac-verify.js run …`). `ac-verify` drops only code-injection variables (`GIT_*`, `NODE_OPTIONS`, `npm_config_*` and the like, `CHILD_ENV_DROP`), so a port variable reaches the command. A bare run of a browser binding uses the default port without the lock, and collides with any other run (observed 2026-11-23).
+
 For waves of many XS stories, verify at wave level (batch-read the changed files and confirm all ACs in one pass); for S/M/L stories, verify each story individually with two-stage review.
 
 ### 6a. Spec Verification (did it build what was asked?)
@@ -1046,7 +1049,7 @@ Its findings join the fix batch.
 
 **Fixes follow the cost of leaving a finding.** The reference's judgment section decides what is real and what is polish.
 - A real problem is fixed before the next wave starts. Main Agent fixes the batch, proves each fix with a test or command, updates the Step 5 mapping, and reruns the affected checks and required build(s) once. A review fix is a code edit, so it needs a new `gate.js test` receipt (Step 5 item 5) and `ac-verify.js run` before the seal; it does not by itself call for a scheduled full-suite checkpoint, which keeps its own cadence. Recheck the AC and ship-token preconditions before committing.
-- Polish (naming, small refactors, wording) is logged as deferred and added to the Resume Point's deferred list; the mid-epic or final review fixes it. A coverage-only `TEST-GAP` finding follows the `code-review` skill's rule for it, keyed to the wave's tier in the plan's Wave Breakdown.
+- Polish (naming, small refactors, wording) is logged as deferred and added to the Resume Point's deferred list; the mid-epic or final review fixes it. A finding deferred while its risk is still reachable (a route, writer or caller that can hit the defect stays live until a later story or follow-up lands) gets a numbered row in the Resume Point's deferred list: `D{n}`, the finding, and the grep that finds every live site of it (`grep -rn '{pattern}' {paths}`). A note in prose is not a ledger row. A coverage-only `TEST-GAP` finding follows the `code-review` skill's rule for it, keyed to the wave's tier in the plan's Wave Breakdown.
 - A fix that grows past about 30 minutes or reaches across layers is a design change. Make it a mini-story of its own with the Release and Risk tier fields every story carries, tests first (Step 2b), added to the TODO and plan and run before the next wave. Ask the owner once if it needs a real decision; with `--no-ask`, record it as an open owner decision that blocks the stories it affects (Phase 0 Step 4) and finish `needs-human` when nothing un-gated is left.
 - A finding that changes what a later story must do goes into that story's AC in the TODO now, so the agent that builds it reads it. When `{TODO_PATH}` is outside the code-hash exclusions and the seal passes `--docs` for it, make that edit after the seal (see the seal note below).
 - One pass, no re-review ("One review pass, then done" in the `code-review` skill). For an open-ended classifier (regexes or word lists over free text), do not chase paraphrases: document the known gaps with one pinned test sentence each and quote the decisive sentences in the proof record.
@@ -1059,7 +1062,7 @@ node .claude/core/ship-check.js seal --todo "{TODO_PATH}" --stories "{wave story
 
 `{wave story IDs}` is comma-separated with no spaces, and it names the stories that finished the wave, each of which was frozen in Step 2c (the seal refuses one with no freeze baseline). Without `--docs` the seal's code hash excludes only `docs/.output/`, `docs/work/` and a direct-child `docs/TODO_*.md`. When `{TODO_PATH}` is anywhere else (a `docs/modules/**` TODO, say), or another document under `docs/` outside those folders will still change after the seal (8a's edits, a changelog, an architecture note), pass it: `--docs "{TODO_PATH},{other doc}"`. Without it, ticking the boxes in 8a is a code change after the seal and the commit is refused (`code-drift`). `--docs` takes documents only (no code file, no directory): those under `docs/` and the root `CLAUDE.md` or `AGENTS.md`, and a listed document must not change between the gate and the seal, though it may change after: for such a TODO, make the Step 7 edit to a later story's AC after sealing, not before.
 
-**Record it.** Write the review and each finding's resolution into a tracked findings report (`docs/.output/findings/reviews/`), and add the wave's decision-log entry to the plan's wave log (8d). A planned review that did not happen (skipped or replaced by a light read) is logged there with its reason, never left silent. While the Step 5 gate runs, the reviewer does only cheap, targeted reads, since heavy parallel commands cause load-induced timeouts.
+**Record it.** Every review the run dispatches (wave, security, mid-epic, final) is persisted as `docs/.output/findings/reviews/{YYMMDD-HHMM}-{slug}.md` with each finding's resolution; when the reviewing role is report-only and cannot write, the orchestrator writes its report to that path verbatim. A review that exists only in chat or in a summary is not recorded. Add the wave's decision-log entry to the plan's wave log (8d). A planned review that did not happen (skipped or replaced by a light read) is logged there with its reason, never left silent. While the Step 5 gate runs, the reviewer does only cheap, targeted reads, since heavy parallel commands cause load-induced timeouts.
 
 `TaskUpdate: "Wave {N}: Review" → completed`
 
@@ -1338,7 +1341,7 @@ Agent(
 )
 ```
 
-Main Agent checks the Resume Point's deferred list against the result and fixes every item and finding as in Step 7. Nothing leaves the run unfixed except for the `code-review` skill's three reasons: the finding is wrong, it is out of scope with a named follow-up, or it is a coverage-only `TEST-GAP` on a `standard`-tier scope (recorded, not written). Add the "Review — final" entry to the wave log, and log a planned review that did not run with its reason. Then run the convergence gates below, since they must follow the last fix.
+Main Agent checks the Resume Point's deferred list against the result and fixes every item and finding as in Step 7. For each numbered `D{n}` row, re-run its recorded grep and paste the result into the "Review — final" entry: a hit that is still live is an open finding, not a closed row. Nothing leaves the run unfixed except for the `code-review` skill's three reasons: the finding is wrong, it is out of scope with a named follow-up, or it is a coverage-only `TEST-GAP` on a `standard`-tier scope (recorded, not written). Add the "Review — final" entry to the wave log, and log a planned review that did not run with its reason. Then run the convergence gates below, since they must follow the last fix.
 
 ```bash
 node .claude/core/gate.js build
@@ -1362,7 +1365,9 @@ grep -c "\[ \]" {TODO_PATH}    # Should be 0 (or only blocked stories)
 
 Report any `[!]` blocked or `[~]` deferred stories.
 
-Before the TODO's Status line reads "Complete," confirm every item in its `## Validation` section (build/test/lint/docs/patterns) is checked with inline verification detail.
+Before the TODO's Status line reads "Complete," confirm every item in its `## Validation` section (build/test/lint/docs/patterns) is checked with inline verification detail. No Validation or Status box is ticked until the gate's log shows exit 0 for the commit it names; a tick or a header written while the gate is still running is not evidence.
+
+**Close-out fan-out.** Owner acceptance and deploy often land after the run, in their own commits, and the project's state is usually restated in more places than the TODO: the master index, the TODO header, backlog or roadmap tables, the module brief's status, the deploy doc, an acceptance record, product context, the architecture overview's status lines, and any ADR or data-model line that says "not deployed". List every such place in the Final Summary's `Next` section. The owner-acceptance commit and the deploy commit each update the whole list together (the deploy commit with the release date and the owner checks still open), then grep for the superseded status phrases (the old "not deployed" or "awaiting acceptance" wording, the previous epic range) and fix every hit. Prefer one home with links (the `documentation` skill); the list covers the copies that remain.
 
 `TaskUpdate: "Verify all stories" → completed`
 
@@ -1395,6 +1400,9 @@ In the plan file, flip `**Status:** planning` → `**Status:** complete` and app
 ### Full-Suite Checkpoints
 Copy the final rows of the plan's Full-Suite Checkpoint Evidence table (Baseline; Midpoint or "not applicable for ≤2 waves"; Final, with any same-source reuse justification).
 
+### Review Reports
+Every review report path the run wrote (`docs/.output/findings/reviews/…`), one per line. A summary that names reviewers but cites no report file is incomplete.
+
 ### Deferred and Skipped Reviews
 Every finding recorded as not fixed (wrong, out of scope with its named follow-up, or a coverage-only `TEST-GAP`) and every planned review that did not run, from the wave log, each with its reason, or "none". No polish finding is carried out of the run.
 
@@ -1416,7 +1424,7 @@ Every finding recorded as not fixed (wrong, out of scope with its named follow-u
 {Any blocked stories, deferred items, manual-only ACs needing UI testing}
 
 ### Next
-{Suggest /run-tests if manual ACs exist, or next TODO to execute}
+{Suggest /run-tests if manual ACs exist, or next TODO to execute; the close-out fan-out list (Step 2) for the acceptance and deploy commits}
 ```
 
 ### 5. Final handoff regeneration

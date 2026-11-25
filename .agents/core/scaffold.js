@@ -224,9 +224,24 @@ const MANAGED_END = '# === End Domdhi.Agents managed block ===';
 const STARTUP_START = '# === Domdhi.Agents managed block — do not edit between markers ===';
 const STARTUP_END = '# === End Domdhi.Agents managed block ===';
 
-/** Locate complete startup blocks outside Markdown examples before any write. */
+// The brands this toolkit's startup block has carried: the current one, and former names known only by the SHA-256 of
+// the brand (one-way, so a former private name never ships, not even encoded). A marker with any other brand belongs to
+// a different toolkit and is left alone. FORMER_STARTUP_BRAND_SHA256 is exported so tests can register a stand-in brand.
+const CURRENT_STARTUP_BRAND = 'Domdhi';
+const FORMER_STARTUP_BRAND_SHA256 = new Set(['667f90c3fcd0eb7759b79b89cc91ad161c58bf9cb266711440b2aaabb27305cd']);
+function isToolkitStartupBrand(brand) {
+    if (brand === CURRENT_STARTUP_BRAND) return true;
+    return FORMER_STARTUP_BRAND_SHA256.has(require('crypto').createHash('sha256').update(String(brand)).digest('hex'));
+}
+
+/**
+ * Locate complete startup blocks outside Markdown examples before any write.
+ * Returns { ranges, foreign }: the blocks of a toolkit brand (isToolkitStartupBrand), and the brands of other
+ * `<X>.Agents` blocks, which are plain text here (never replaced, never deleted).
+ */
 function startupBlockRanges(text, targetPath) {
     const ranges = [];
+    const foreign = new Set();
     let pending = null;
     let fence = null;
     let offset = 0;
@@ -241,7 +256,9 @@ function startupBlockRanges(text, targetPath) {
         } else {
             const start = /^# === ([A-Za-z0-9_-]+)\.Agents managed block — do not edit between markers ===$/.exec(line);
             const end = /^# === End ([A-Za-z0-9_-]+)\.Agents managed block ===$/.exec(line);
-            if (start) {
+            const brand = (start || end || [])[1];
+            if (brand && !isToolkitStartupBrand(brand)) foreign.add(brand);
+            else if (start) {
                 if (pending) throw new Error(`Corrupt managed block in ${targetPath}: nested start marker.`);
                 pending = { start: offset, brand: start[1] };
             } else if (end) {
@@ -254,7 +271,7 @@ function startupBlockRanges(text, targetPath) {
     }
     if (pending) throw new Error(`Corrupt managed block in ${targetPath}: start marker found but no valid end marker.`);
     if (fence) throw new Error(`Corrupt managed block in ${targetPath}: unclosed Markdown fence prevents safe startup block placement.`);
-    return ranges;
+    return { ranges, foreign };
 }
 
 /**
@@ -274,6 +291,7 @@ function startupBlockRanges(text, targetPath) {
  *
  * With `{ startup: true }`, normalize CRLF to LF and migrate all real Domdhi or
  * legacy startup blocks into one Domdhi block, retaining surrounding prose exactly.
+ * A block of any other `<X>.Agents` brand (another toolkit's) is left untouched, with a warning.
  * Generic managed blocks (including .gitignore) retain their legacy behavior.
  *
  * @param {string} targetPath
@@ -299,7 +317,10 @@ function applyManagedBlock(targetPath, templateContent, opts) {
     const original = fs.readFileSync(targetPath, 'utf8');
     const existing = startup ? original.replace(/\r\n/g, '\n') : original;
     if (startup) {
-        const ranges = startupBlockRanges(existing, targetPath);
+        const { ranges, foreign } = startupBlockRanges(existing, targetPath);
+        for (const brand of foreign) {
+            console.warn(`[scaffold] WARNING: ${targetPath} holds a "${brand}.Agents" managed block, which is not a brand this toolkit has used; leaving it untouched.`);
+        }
         if (ranges.length) {
             let newContent = '';
             let cursor = 0;
@@ -609,4 +630,7 @@ module.exports = {
     SKILL_TEMPLATE_MANIFEST,
     MANAGED_START,
     MANAGED_END,
+    CURRENT_STARTUP_BRAND,
+    FORMER_STARTUP_BRAND_SHA256,
+    isToolkitStartupBrand,
 };

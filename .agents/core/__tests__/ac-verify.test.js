@@ -729,6 +729,28 @@ describe('refusal: a test-name filter a nested package-manager script would drop
     expect(subject().refusalReason('npm run test -- x.js -t "AC1"', { root: repo.root })).toBeNull();
   });
 
+  // npm appends the arguments to the END of the script string, so only the last command segment can drop the filter.
+  it.each([
+    'npm run build && vitest run',
+    'tsc --noEmit; vitest run',
+    'npm run build || vitest run',
+    'cd src && npm run build && vitest run',
+  ])('accepts a single "--" when the package manager is not in the last command segment (%s)', (script) => {
+    const repo = makeRepo({ extra: { 'package.json': JSON.stringify({ scripts: { test: script } }) } });
+
+    expect(subject().refusalReason('npm run test -- x.js -t "AC1"', { root: repo.root })).toBeNull();
+  });
+
+  it.each([
+    'npm run build && npm run unit',
+    'cd src && npm run test',
+    'vitest run; pnpm -r test',
+  ])('still refuses the single "--" when the LAST command segment re-invokes a package manager (%s)', (script) => {
+    const repo = makeRepo({ extra: { 'package.json': JSON.stringify({ scripts: { test: script } }) } });
+
+    expect(subject().refusalReason('npm run test -- x.js -t "AC1"', { root: repo.root })).toMatch(/runs a package manager again/);
+  });
+
   it('accepts a nested script with no name filter', () => {
     const repo = makeRepo({ extra: nested });
     expect(subject().refusalReason('npm run test -- x.js', { root: repo.root })).toBeNull();
@@ -762,6 +784,24 @@ describe('list: parse-only view of the bindings', () => {
     expect(out.status).toBe(1);
     expect(out.json.stories.map(story => story.id)).toEqual(['T-1.1', 'T-1.2']);
     expect(out.json.refused).toBe(1);
+  });
+
+  it('flags a binding path that neither exists nor appears in any story Files, without refusing it', () => {
+    // x.js is in every fixture story's Files; sub/.keep exists; scripts/invented.mjs is neither.
+    const repo = makeRepo({ stories: { 'T-1.1': [
+      'Invented. verify: node scripts/invented.mjs',
+      'Planned. verify: node tests/x.test.js',
+      'Exists. verify: node sub/.keep',
+    ] } });
+    repo.write('docs/TODO_fixture.md', repo.text.replace('* `x.js`', '* `x.js`\n    * `tests/x.test.js` (create)'));
+
+    const result = subject().list({ root: repo.root, todo: repo.todoPath, stories: ['T-1.1'] });
+
+    expect(result).toMatchObject({ ok: true, exitCode: 0, refused: 0, missing: 1 });
+    const [invented, planned, existing] = result.stories[0].bindings;
+    expect(invented.missing).toEqual(['scripts/invented.mjs']);
+    expect(planned.missing).toBeUndefined();
+    expect(existing.missing).toBeUndefined();
   });
 
   it('exits 0 from the CLI when nothing is refused', () => {
@@ -1629,16 +1669,31 @@ describe('review fix M3 and F1: positive per-head allowlists', () => {
 
   it.each([
     'node a.js', 'node --no-warnings a.js arg --flag', 'node --test', 'node --test a.js', 'node --test --test-only a.js',
-    'node --test --test-name-pattern=adds a.js', 'node --test --test-name-pattern adds a.js', 'node --test --test-reporter=spec a.js',
+    'node --test --test-skip-pattern=slow a.js', 'node --test a.js --test-name-pattern adds', 'node --test --test-reporter=spec a.js',
     'node --test --test-reporter=dot', 'node --experimental-vm-modules a.js',
     'npm test', 'npm t', 'npm run build', 'npm run test:unit', 'npm run-script lint', 'npm test --silent', 'npm run build --if-present',
     'npm test -- --reporter=dot', 'npm run build -- -C elsewhere-is-a-script-argument',
     'pytest', 'pytest tests/a.py', 'pytest -q -x -k "a or b" tests', 'pytest -m slow --maxfail=2 --tb=short', 'pytest -- tests/a.py',
-    'go test ./...', 'go test -v -race -run TestX -count=1 -timeout 30s ./pkg', 'go vet ./...',
+    'go test ./...', 'go test -v -race -count=1 -timeout 30s ./pkg', 'go vet ./...',
     'cargo test', 'cargo check --workspace', 'cargo clippy --all-targets -- -D warnings', 'cargo test -p foo --no-fail-fast -- --nocapture --test-threads=1',
     'dotnet test', 'dotnet test x.sln --no-build --filter FullyQualifiedName~Foo -c Release -v minimal',
   ])('allows %s', (command) => {
     expect(subject().refusalReason(command, { root: root() }), command).toBeNull();
+  });
+
+  // node:test and `go test` report a name filter that matches nothing as a passing run, and the vacuous-run guard only
+  // understands vitest/jest summaries, so a mistyped name would be recorded met with no test run (sweep p1, theme F).
+  it.each([
+    ['node --test-name-pattern=x', 'node --test --test-name-pattern=adds a.js', /node --test-name-pattern.*no test.*node --test path/s],
+    ['node --test-name-pattern x', 'node --test --test-name-pattern adds a.js', /node --test-name-pattern.*no test/s],
+    ['node --test-name-pattern with no file', 'node --test --test-name-pattern=adds', /node --test-name-pattern/],
+    ['go test -run x', 'go test -run TestX ./pkg', /go test -run.*no test.*go test \.\/pkg/s],
+    ['go test -run=x', 'go test -v -race -run=TestX -count=1 ./pkg', /go test -run/],
+  ])('refuses %s: a filter that can match nothing and still pass', (_label, command, message) => {
+    const reason = subject().refusalReason(command, { root: root() });
+
+    expect(reason, command).toMatch(/^refused:/);
+    expect(reason).toMatch(message);
   });
 
   it('a run with node --import=data: refuses it and the inline code never runs', () => {
@@ -2791,6 +2846,54 @@ describe('SF-1.2 freeze/check/unfreeze', () => {
       expect(out.status).toBe(0);
       expect(out.json.ok).toBe(true);
       expect(out.json.stories).toMatchObject([{ id: 'T-1.1', status: 'nothing-to-freeze' }]);
+    });
+
+    it('check still passes a manual-only story after run left its empty record behind (the honest seal-then-verify flow)', () => {
+      const repo = freezeRepo({ stories: { 'T-1.1': { criteria: ['Docs read well. [manual]'], files: ['docs/guide.md'] } } });
+      const ran = runCli(repo);
+      expect(ran.status, `fixture run: ${ran.stdout}`).toBe(0);
+      expect(repo.records('T-1.1')).toEqual([]);
+
+      const out = checkCli(repo);
+
+      expect(out.status).toBe(0);
+      expect(out.json.stories).toMatchObject([{ id: 'T-1.1', status: 'nothing-to-freeze' }]);
+    });
+
+    it('check refuses a story whose baseline was deleted and whose bindings and test files were stripped, when a lock holder shows it was frozen', () => {
+      const repo = frozenRepo();
+      fs.rmSync(freezeFile(repo));
+      repo.write('docs/TODO_fixture.md', freezeTodo({ 'T-1.1': { criteria: ['Docs read well. [manual]'], files: ['docs/guide.md'] } }));
+
+      const out = checkCli(repo);
+
+      expect(out.status).not.toBe(0);
+      expect(codesOf(out)).toContain('BASELINE_MISSING');
+      expect(out.json.stories).not.toMatchObject([{ status: 'nothing-to-freeze' }]);
+    });
+
+    it('check refuses a stripped story whose earlier run left a record with bindings (no lock holder: a binding-only story)', () => {
+      const repo = freezeRepo({ stories: { 'T-1.1': { criteria: ['One. verify: node ok.js'], files: ['docs/guide.md'] } } });
+      expect(freezeCli(repo).status).toBe(0);
+      expect(runCli(repo).status).toBe(0);
+      fs.rmSync(freezeFile(repo));
+      repo.write('docs/TODO_fixture.md', freezeTodo({ 'T-1.1': { criteria: ['Docs read well. [manual]'], files: ['docs/guide.md'] } }));
+
+      const out = checkCli(repo);
+
+      expect(out.status).not.toBe(0);
+      expect(codesOf(out)).toContain('BASELINE_MISSING');
+    });
+
+    it('check refuses a stripped story whose record file cannot be read as an empty list', () => {
+      const repo = freezeRepo({ stories: { 'T-1.1': { criteria: ['Docs read well. [manual]'], files: ['docs/guide.md'] } } });
+      fs.mkdirSync(path.dirname(freezeFile(repo)), { recursive: true });
+      fs.writeFileSync(repo.recordFile('T-1.1'), '{not json');
+
+      const out = checkCli(repo);
+
+      expect(out.status).not.toBe(0);
+      expect(codesOf(out)).toContain('BASELINE_MISSING');
     });
 
     it.each([

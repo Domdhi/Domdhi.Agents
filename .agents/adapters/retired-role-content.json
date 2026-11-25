@@ -3,7 +3,32 @@
   "roles": {
     "ux-designer": {
       "soulZone": [
-        "5dba75043f0003089fa5c8ca7d81600fbcd27c2ee36d8cac2dedebdddf2cd685"
+        "5dba75043f0003089fa5c8ca7d81600fbcd27c2ee36d8cac2dedebdddf2cd685",
+        "9892b26b8f107eb0e30bdfde3cfa2806f819a97d6b22968055818f666e029935"
+      ],
+      "description": []
+    },
+    "architect": {
+      "soulZone": [
+        "abb4c1386fdc11c9ee8cf7b8bff529fd17018e71a8fd3464c0a96b1fa740ad1c"
+      ],
+      "description": []
+    },
+    "code-reviewer": {
+      "soulZone": [
+        "bc27d1bf172c925ce105b47882f6bbdc4564921526949ce249f4899521952f0a"
+      ],
+      "description": []
+    },
+    "general-purpose": {
+      "soulZone": [
+        "3033e499d4d2039e738208f174ff4548c0cd2c8080386cd31793515a9917acc4"
+      ],
+      "description": []
+    },
+    "security-auditor": {
+      "soulZone": [
+        "db57fb84fefa735d847b17135ede3b89aacccac64f891c5f43b33401e615e206"
       ],
       "description": []
     }

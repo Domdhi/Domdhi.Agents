@@ -159,3 +159,57 @@ describe('memory-manager deleteMemory', () => {
   });
 
 });
+
+describe('memory-manager deleteMemory refuses a referenced memory', () => {
+  it.each([
+    ['a [[wiki-link]] in prose', { description: 'See [[target-mem]] for the rule.' }],
+    ['a references[] entry', { description: 'x', references: ['target-mem'] }],
+    ['a related[] entry', { description: 'x', related: ['target-mem'] }],
+    ['a see_also { id } entry', { description: 'x', see_also: [{ category: 'patterns', id: 'target-mem' }] }],
+  ])('refuses when another memory cites it by %s, and lists the referrer', async (_name, content) => {
+    const m = makeManager();
+    await m.createMemory('patterns', 'target-mem', { description: 'the target' });
+    await m.createMemory('constraints', 'citing-mem', content);
+
+    const result = await m.deleteMemory('patterns', 'target-mem');
+
+    expect(result.deleted).toBe(false);
+    expect(result.referencedBy).toEqual(['constraints/citing-mem']);
+    expect(result.error).toMatch(/RESOLVED note/);
+    expect(await m.readMemory('patterns', 'target-mem')).not.toBeNull();
+  });
+
+  it('deletes a referenced memory with force', async () => {
+    const m = makeManager();
+    await m.createMemory('patterns', 'target-mem', { description: 'the target' });
+    await m.createMemory('patterns', 'citing-mem', { description: 'See [[target-mem]].' });
+
+    const result = await m.deleteMemory('patterns', 'target-mem', { force: true });
+
+    expect(result.deleted).toBe(true);
+  });
+
+  it('a memory citing a longer id with the same prefix is not a referrer', async () => {
+    const m = makeManager();
+    await m.createMemory('patterns', 'target-mem', { description: 'the target' });
+    await m.createMemory('patterns', 'other-mem', { description: 'See [[target-mem-two]].', see_also: ['target-mem-two'] });
+
+    expect((await m.deleteMemory('patterns', 'target-mem')).deleted).toBe(true);
+  });
+
+  it('CLI delete exits 1 naming the referrer, and --force deletes', async () => {
+    const m = makeManager();
+    await m.createMemory('patterns', 'target-mem', { description: 'the target' });
+    await m.createMemory('patterns', 'citing-mem', { description: 'See [[target-mem]].' });
+    closeManagers();
+    const env = { ...process.env, CLAUDE_PROJECT_DIR: tmp.root };
+    const opts = { cwd: tmp.root, env, encoding: 'utf-8', windowsHide: true, timeout: 15_000 };
+
+    const refused = spawnSync('node', [managerScript, 'delete', 'patterns', 'target-mem'], opts);
+    expect(refused.status).toBe(1);
+    expect(refused.stderr).toContain('patterns/citing-mem');
+
+    const forced = spawnSync('node', [managerScript, 'delete', 'patterns', 'target-mem', '--force'], opts);
+    expect(forced.status).toBe(0);
+  });
+});

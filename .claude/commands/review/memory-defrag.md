@@ -177,6 +177,7 @@ For each accepted proposal:
    ```bash
    node .claude/core/memory-manager.js delete {duplicate_category} {duplicate_id}
    ```
+   `delete` refuses while other memories reference the duplicate (`[[id]]`, `references`, `related`, `see_also`) and lists them. Repoint each listed reference to `{primary_id}` with `updateMemory`, then delete. Do not reach for `--force`: it leaves those links dangling.
 5. Append to the plan file's `## Review log`: `- [x] Proposal N MERGE — {primary_id} ← {duplicate_id} (commit pending)`
 
 #### SPLIT
@@ -189,7 +190,7 @@ For each accepted proposal:
    ```
 4. Either reduce source memory's content (if keeping the source) OR delete it (if retiring):
    - Reduce: `updateMemory` with the leftover content
-   - Retire: `delete <category> <source_id>`
+   - Retire: `delete <category> <source_id>`. When `delete` refuses because other memories reference the source, prefer a RESOLVED note over deleting it: keep the memory, reduce its content to one line saying it was split and naming the new ids, and let the references resolve through it.
 5. Append to review log.
 
 #### CROSS-REF

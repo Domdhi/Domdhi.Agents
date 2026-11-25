@@ -15,7 +15,12 @@
  *                                   reported and left alone (nothing is overwritten) unless the caller passes prefer=local|tracked
  * Sync never deletes. A note is retired by editing it (`invalid_at:` / `superseded_by:` frontmatter, which recall honors), and
  * that edit syncs like any other. Anything that looks like a secret is neither pushed nor pulled. A local file about to be
- * replaced by a pull is saved to `backupDir` first, so a stale base can never destroy the only copy.
+ * replaced by a pull is saved to `backupDir` first (always: the base can be stale or from another worktree, so "the local copy
+ * still equals the base" never proves the local copy is safe to lose).
+ *
+ * The local notes dir and the state dir are shared by every worktree of a repo, but the tracked mirror is per worktree (a
+ * linked worktree on an older branch holds an older mirror). The base is therefore kept PER TRACKED DIR: a base recorded from
+ * one worktree's mirror never decides what to do with another worktree's mirror.
  *
  * Pure helpers take injected fs-free inputs where possible; apply() is the only function that writes.
  */
@@ -114,7 +119,10 @@ function apply({ actions, local, tracked, base = {}, localDir, trackedDir, backu
             res.pushed.push(a.name);
         } else {
             if (!dryRun) {
-                if (local[a.name] && local[a.name].sha !== base[a.name] && backupDir) writeAtomic(path.join(backupDir, `${a.name.slice(0, -3)}.${local[a.name].sha.slice(0, 8)}.md`), local[a.name].text);
+                // Back up whenever a different local copy is about to be replaced. "Local still equals the base" does not make it
+                // safe to lose: a base recorded from another worktree's mirror can be newer than this mirror (the only copy of
+                // that newer text may be the local file).
+                if (local[a.name] && local[a.name].sha !== tracked[a.name].sha && backupDir) writeAtomic(path.join(backupDir, `${a.name.slice(0, -3)}.${local[a.name].sha.slice(0, 8)}.md`), local[a.name].text);
                 writeAtomic(path.join(localDir, a.name), tracked[a.name].text);
             }
             next[a.name] = tracked[a.name].sha;
@@ -125,11 +133,12 @@ function apply({ actions, local, tracked, base = {}, localDir, trackedDir, backu
     return res;
 }
 
-const baseFile = stateDir => path.join(stateDir, 'sync.json');
-function loadBase(stateDir) {
-    try { const j = JSON.parse(fs.readFileSync(baseFile(stateDir), 'utf8')); return j && typeof j.base === 'object' && j.base ? j.base : {}; } catch { return {}; }
+// One base per tracked dir (sync-<sha1 of the resolved path>.json). Without a tracked dir the legacy single `sync.json` is used.
+const baseFile = (stateDir, trackedDir) => path.join(stateDir, trackedDir ? `sync-${sha1(path.resolve(trackedDir)).slice(0, 12)}.json` : 'sync.json');
+function loadBase(stateDir, trackedDir) {
+    try { const j = JSON.parse(fs.readFileSync(baseFile(stateDir, trackedDir), 'utf8')); return j && typeof j.base === 'object' && j.base ? j.base : {}; } catch { return {}; }
 }
-function saveBase(stateDir, base) { writeAtomic(baseFile(stateDir), JSON.stringify({ at: new Date().toISOString(), base }, null, 1)); }
+function saveBase(stateDir, base, trackedDir) { writeAtomic(baseFile(stateDir, trackedDir), JSON.stringify({ at: new Date().toISOString(), base }, null, 1)); }
 
 /**
  * One full sync pass. Returns apply()'s result plus the plan.
@@ -138,10 +147,10 @@ function saveBase(stateDir, base) { writeAtomic(baseFile(stateDir), JSON.stringi
 function sync(o) {
     const { localDir, trackedDir, stateDir, direction = 'both', prefer = null, dryRun = false, isSecret } = o;
     const local = readNotes(localDir), tracked = readNotes(trackedDir);
-    const base = loadBase(stateDir);
+    const base = loadBase(stateDir, trackedDir);
     const actions = plan({ local, tracked, base, direction, prefer, isSecret });
     const res = apply({ actions, local, tracked, base, localDir, trackedDir, backupDir: path.join(stateDir, 'sync-backup'), dryRun });
-    if (!dryRun) saveBase(stateDir, res.base);
+    if (!dryRun) saveBase(stateDir, res.base, trackedDir);
     return { ...res, actions };
 }
 
@@ -159,4 +168,4 @@ function autoSync({ direction, fallbackDir, env = process.env, isSecret }) {
     } catch { return null; }
 }
 
-module.exports = { autoSync, isNoteFile, readNotes, plan, apply, sync, indexNewNotes, loadBase, saveBase };
+module.exports = { autoSync, isNoteFile, readNotes, plan, apply, sync, indexNewNotes, loadBase, saveBase, baseFile };

@@ -155,6 +155,19 @@ describe('memory-manager', () => {
       expect(onDisk.content.description).toBe('original');
     });
 
+    it('createMemory_idCollision_message_namesTheCollision_notARetiredGuard', async () => {
+      // The cap and memory-guard were retired; the refusal must not name a component that no longer exists.
+      const manager = makeManager();
+      await manager.createMemory('patterns', 'collide_msg', { description: 'original' });
+      const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+      try {
+        await manager.createMemory('patterns', 'collide_msg', { description: 'again' });
+        const said = log.mock.calls.map(c => c.join(' ')).join('\n');
+        expect(said).toContain('patterns/collide_msg already exists');
+        expect(said).not.toMatch(/Memory guard/i);
+      } finally { log.mockRestore(); }
+    });
+
     it('createMemory_idCollision_overwriteTrue_replacesContent', async () => {
       // F10: {overwrite:true} is the explicit opt-in for a sanctioned rewrite.
       const manager = makeManager();
@@ -598,6 +611,28 @@ describe('memory-manager', () => {
       // Assert
       expect(results.length).toBeGreaterThanOrEqual(1);
       expect(results[0].category).toBe('patterns');
+    });
+
+    it.skipIf(!hasSqlite)('searchMemories_sqlitePath_carriesOneLineSummary', async () => {
+      // A hit carries its description, collapsed to one line and capped, so a caller can judge it unread.
+      const manager = makeManager();
+      await manager.createMemory('patterns', 'summary_mem', { description: `uniquequokka  spans\nlines ${'x'.repeat(300)}` });
+
+      const [hit] = await manager.searchMemories('uniquequokka');
+
+      expect(hit.summary.startsWith('uniquequokka spans lines x')).toBe(true);
+      expect(hit.summary.length).toBe(200);
+      expect(hit.summary.endsWith('…')).toBe(true);
+    });
+
+    it('searchMemories_jsonFallback_summaryFallsBackToFirstProseField', async () => {
+      const manager = makeManager();
+      manager.initDb = () => false;
+      await manager.createMemory('decisions', 'summary_dec', { decision: 'uniquewombat chose X', rationale: 'because' });
+
+      const [hit] = await manager.searchMemories('uniquewombat');
+
+      expect(hit.summary).toBe('uniquewombat chose X');
     });
 
     it('searchMemories_jsonFallback_matchesSubstring', async () => {

@@ -112,6 +112,46 @@ describe('parseItems', () => {
         const txt = '[{"title":"a","text":"use {x} and \\"y\\"","evidence_quote":"q"},{"title":"b","te';
         expect(X.parseItems(txt)[0].text).toBe('use {x} and "y"');
     });
+    it('drops an item whose text is not a non-empty string, and blanks a non-string title or quote (a weak model answers arrays)', () => {
+        const txt = JSON.stringify([
+            { title: 'array', text: ['a', 'b'], evidence_quote: 'q' },
+            { title: 'object', text: { x: 1 }, evidence_quote: 'q' },
+            { title: 'number', text: 42, evidence_quote: 'q' },
+            { title: 'blank', text: '   ', evidence_quote: 'q' },
+            { title: ['t'], text: 'good text one', evidence_quote: ['q'] },
+            { title: 'ok', text: 'good text two', evidence_quote: 'q' },
+        ]);
+        const items = X.parseItems(txt);
+        expect(items.map(i => i.text)).toEqual(['good text one', 'good text two']);
+        expect(items[0]).toMatchObject({ title: '', evidence_quote: '' });
+        // the salvage path (truncated output) applies the same rule
+        const salvaged = X.parseItems(txt.slice(0, txt.lastIndexOf('}')));
+        expect(salvaged.map(i => i.text)).toEqual(['good text one']);
+    });
+    it('whatever a model answers, filterCandidates then candidateFile never throw', () => {
+        const r = X.renderSession(session([user('never run pkill -f on your own pattern, it kills the shell')]));
+        const cands = X.parseItems(JSON.stringify([
+            { title: 'array text', text: ['a', 'b'], evidence_quote: 'never run pkill -f on your own pattern, it kills the shell' },
+            { title: 'fine', text: 'pkill -f kills the shell that holds the pattern.', evidence_quote: 'never run pkill -f on your own pattern, it kills the shell' },
+        ]));
+        const { kept } = X.filterCandidates(cands, r, []);
+        expect(() => kept.map(c => X.candidateFile(c, 'sess'))).not.toThrow();
+        // a caller that bypasses parseItems is protected too
+        const direct = X.filterCandidates([{ title: 'x', text: ['a'], evidence_quote: 'q' }, { title: ['x'], text: 'y', evidence_quote: 'q' }], r, []);
+        expect(direct.kept).toEqual([]);
+        expect(direct.dropped.empty).toBe(2);
+    });
+});
+
+describe('similarity stop words', () => {
+    it('ships no personal account name: the running account name is the only name treated as noise', () => {
+        const me = String(require('node:os').userInfo().username || '').toLowerCase();
+        if (/^[a-z0-9_.-]{3,}$/.test(me)) {
+            // the account name alone is no evidence two memories are alike
+            expect(X.similar(`${me} alpha`, `${me} bravo`)).toBe(0);
+        }
+        expect(X.similar('zulu yankee', 'zulu xray')).toBeGreaterThan(0);
+    });
 });
 
 describe('candidateFile', () => {

@@ -266,6 +266,81 @@ describe('backfill and pending', () => {
         longSession('fresh');
         expect((await cli(['pending'])).stdout.trim()).toBe('0');
     });
+    it('a session that fails does not block the newer ones: they are captured, the exit code is 1, the failed one stays pending', async () => {
+        const s = await anthropic((body, calls) => (calls.length === 1 ? { status: 400, message: 'bad request' } : { items: [] }));
+        longSession('s-old');
+        longSession('s-new');
+        const ago = h => new Date(Date.now() - h * 3600 * 1000);
+        fs.utimesSync(path.join(sessionsDir, 's-old.jsonl'), ago(4), ago(4));
+        fs.utimesSync(path.join(sessionsDir, 's-new.jsonl'), ago(3), ago(3));
+        const r = await cli(['backfill'], { ANTHROPIC_API_KEY: 'k', ANTHROPIC_BASE_URL: s.url });
+        expect(r.code).toBe(1);
+        expect(r.stderr).toMatch(/1 of 2 session\(s\) failed .*s-old/);
+        expect(s.calls).toHaveLength(2);
+        expect(Object.keys(JSON.parse(fs.readFileSync(path.join(stateDir, 'ledger.json'), 'utf8')))).toEqual(['s-new']);
+        expect((await cli(['pending'])).stdout.trim()).toBe('1');
+    });
+    it('a model that answers text as an array neither crashes the capture nor blocks the session behind it', async () => {
+        const s = await anthropic(() => ({ items: [{ type: 'fact', title: 'array text', text: ['a', 'b'], evidence_quote: PKILL }, goodItems[0]] }));
+        longSession('sess-arr');
+        const r = await cli(['capture', '--session', 'sess-arr'], { ANTHROPIC_API_KEY: 'k', ANTHROPIC_BASE_URL: s.url });
+        expect(r.code).toBe(0);
+        expect(candidatesLeft()).toHaveLength(1);
+        expect(Object.keys(JSON.parse(fs.readFileSync(path.join(stateDir, 'ledger.json'), 'utf8')))).toEqual(['sess-arr']);
+    });
+});
+
+describe('secrets never leave the machine in the transcript', () => {
+    it('redacts a pasted key and a tool-call credential before the provider call, and still stages the clean memories', async () => {
+        const KEY = 'sk-ant-abcdefghijklmnopqrstuv';
+        const BEARER = 'Bearer abcdefghijklmnop1234567890zz';
+        const s = await anthropic(() => ({ items: [goodItems[0]] }));
+        writeSession('sess-s', [
+            user(PKILL + ' and please remember that for every later session we run, and also note export TOKEN=' + KEY),
+            { type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: `curl -H "Authorization: ${BEARER}" https://example.test/v1` } }] } },
+            user('also the standby box is dmo while cerebro is the primary server for all deployments'),
+        ]);
+        const r = await cli(['capture', '--session', 'sess-s'], { ANTHROPIC_API_KEY: 'k', ANTHROPIC_BASE_URL: s.url });
+        expect(r.code).toBe(0);
+        expect(s.calls).toHaveLength(1);
+        const sent = JSON.stringify(s.calls[0].body);
+        expect(sent).not.toContain(KEY);
+        expect(sent).not.toContain('abcdefghijklmnop1234567890zz');
+        expect(sent).toContain('REDACTED');
+        expect(candidatesLeft()).toHaveLength(1);
+    });
+    it('isSecretFast is the regex-only check the hooks use; isSecret adds the engine', () => {
+        const cap = require('../memory-capture');
+        expect(cap.isSecretFast('token: sk-ant-abcdefghijkl')).toBe(true);
+        expect(cap.isSecretFast('an ordinary note about pkill')).toBe(false);
+        expect(cap.redactForProvider('export TOKEN=sk-ant-abcdefghijklmnopqrstuv now')).not.toContain('sk-ant-abcdefghijklmnopqrstuv');
+        expect(cap.redactForProvider('nothing secret here')).toBe('nothing secret here');
+    });
+});
+
+describe('a mixed provider chain never sends one family\'s model name to the other', () => {
+    const { captureConfig } = require('../memory-capture');
+    it('the shared MEMORY_CAPTURE_MODEL applies only to the first provider\'s family', () => {
+        const env = { MEMORY_CAPTURE_PROVIDER: 'openai,anthropic', MEMORY_CAPTURE_MODEL: 'qwen3.5:9b' };
+        expect(captureConfig(env, 'openai').model).toBe('qwen3.5:9b');
+        const second = captureConfig(env, 'anthropic');
+        expect(second.alias).not.toBe('qwen3.5:9b');
+        expect(second.model).not.toBe('qwen3.5:9b');
+        const mirror = { MEMORY_CAPTURE_PROVIDER: 'claude-cli,openai', MEMORY_CAPTURE_MODEL: 'haiku' };
+        expect(captureConfig(mirror, 'claude-cli').alias).toBe('haiku');
+        expect(captureConfig(mirror, 'openai').model).toBe('');
+        expect(captureConfig(mirror, 'openai').ready).toBe(false);
+    });
+    it('per-provider variables win, and a same-family chain still shares MEMORY_CAPTURE_MODEL', () => {
+        const env = { MEMORY_CAPTURE_PROVIDER: 'openai,anthropic', MEMORY_CAPTURE_MODEL: 'qwen3.5:9b', MEMORY_CAPTURE_ANTHROPIC_MODEL: 'sonnet', MEMORY_CAPTURE_OPENAI_MODEL: 'llama3.1:8b' };
+        expect(captureConfig(env, 'openai').model).toBe('llama3.1:8b');
+        expect(captureConfig(env, 'anthropic').alias).toBe('sonnet');
+        const same = { MEMORY_CAPTURE_PROVIDER: 'claude-cli,anthropic', MEMORY_CAPTURE_MODEL: 'sonnet' };
+        expect(captureConfig(same, 'claude-cli').alias).toBe('sonnet');
+        expect(captureConfig(same, 'anthropic').alias).toBe('sonnet');
+        expect(captureConfig({ MEMORY_CAPTURE_PROVIDER: 'openai', MEMORY_CAPTURE_MODEL: 'm' }).model).toBe('m');
+        expect(captureConfig({}).alias).toBeTruthy();
+    });
 });
 
 describe('engine memories and recall', () => {

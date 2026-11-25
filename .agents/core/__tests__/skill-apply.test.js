@@ -3177,6 +3177,11 @@ describe('SF-4.10 dispositions: every outcome the helper can reach is recorded, 
     it.each([
         ['aMissingWorkspace', (sc) => ['alpha', '--date', L_DATE, '--root', sc.repo.root], /--run <workspace> is required/],
         ['anUnknownSkill', (sc) => ['zzz-no-such-skill', '--run', sc.ws, '--date', L_DATE, '--root', sc.repo.root], /unknown skill directory/],
+        ['aNativeOnlyProjectSkill', (sc) => {
+            fs.mkdirSync(path.join(sc.repo.root, '.claude', 'skills', 'native-only'), { recursive: true });
+            fs.writeFileSync(path.join(sc.repo.root, '.claude', 'skills', 'native-only', 'SKILL.md'), '# Native only\n');
+            return ['native-only', '--run', sc.ws, '--date', L_DATE, '--root', sc.repo.root];
+        }, /\.claude\/skills\/native-only is a project-owned native-only skill.*direct edit/],
         ['aBadMode', (sc) => ['alpha', '--run', sc.ws, '--mode', 'bogus', '--date', L_DATE, '--root', sc.repo.root], /--mode must be one of/],
         ['aMalformedDate', (sc) => ['alpha', '--run', sc.ws, '--date', 'yesterday', '--root', sc.repo.root], /--date must be a YYYY-MM-DD date/],
         ['anImpossibleCalendarDate', (sc) => ['alpha', '--run', sc.ws, '--date', '2026-02-30', '--root', sc.repo.root], /--date must be a YYYY-MM-DD date/],

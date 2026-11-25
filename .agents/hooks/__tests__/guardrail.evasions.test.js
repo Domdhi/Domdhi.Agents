@@ -169,7 +169,7 @@ describe('guardrail finding-1 — wrapper/path/bare-env × verb × protected-tar
   //    past until stripWrapperPrefix learned each wrapper's option grammar. ──
   const flagDecorated = [
     'env -i rm .env', 'env - rm .env', 'env -u PATH rm .env',
-    'env --ignore-environment rm .env', `env -C ${['', 'home', 'dom'].join('/')} rm .env`,
+    'env --ignore-environment rm .env', 'env -C /srv/app rm .env',
     'env --unset=PATH rm .env', 'env -i truncate -s0 .env',
     'nice --adjustment=10 rm .env', 'nice --adjustment 10 rm -rf .env',
     'timeout 5 rm .env', 'timeout -k 10 5 rm .env', 'timeout --signal=9 5 shred .env',

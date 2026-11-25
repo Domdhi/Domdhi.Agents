@@ -292,7 +292,7 @@ After the agent completes, verify:
 - Stories are in dependency-optimized order
 - Acceptance criteria match `backlog.md` (not invented): compare the criterion text before ` verify:` or before its `[manual]`/`[CI-pending]` tag
 - Every acceptance criterion is a checkbox bullet with a `verify:` binding or a `[manual]`/`[CI-pending]` tag (Tasks checkboxes are exempt): `awk '/^\*\*Acceptance Criteria:\*\*/{a=1;next} /^\*\*|^#|^---/{a=0} a && /^ *- \[ \] / && !/verify:|\[manual\]|\[CI-pending\]/' "{checklist}"` prints nothing
-- Binding policy: `node .claude/core/ac-verify.js list --todo "{checklist}"` exits 0. It parses only and runs nothing: every binding parses and its command would be accepted at `red` and `run`
+- Binding policy: `node .claude/core/ac-verify.js list --todo "{checklist}"` exits 0. It parses only and runs nothing: every binding parses and its command would be accepted at `red` and `run`, and no binding reports a `missing` path (a file that neither exists nor appears in any story's Files: rebind it, list it in the story that writes it, or tag the criterion `[manual]`)
 - No code blocks or implementation examples (WHAT, not HOW)
 - Required sections all present (Execution Log, Key Decisions, Validation, Work Doc References)
 - Every story has an Ownership line (production and test owners only, no reviewer) consistent with the repository's actual test-authorship rule

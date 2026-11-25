@@ -33,6 +33,8 @@ Do not trust a clean union merge of `.claude` files. After any union-merged sync
 
 ## Testing conventions
 
+The hands-on test patterns for this repository (ESM import bridge, tmp dirs, commands, coverage thresholds, mocking, subprocess tests) are in [testing.md](testing.md).
+
 ### Focused feedback and full checkpoints
 
 In this workshop, run exact focused test files with:
@@ -146,7 +148,7 @@ A Windows checkout with `core.autocrlf=true` and no override leaves `\r` on ever
 
 ### `fileURLToPath(import.meta.url)`, never `new URL(import.meta.url).pathname`
 
-On Windows the latter returns `/C:/Users/<name>/...` (leading slash), which `path.resolve` turns into the bogus `C:\C:\...`. **Rule:** always `import { fileURLToPath } from 'node:url'` and use `fileURLToPath(import.meta.url)`. *Field case:* `guardrail.test.js` failed to load its rules file with `ENOENT C:\C:\...`. (Also documented in `qa-engineer/SKILL.md`.)
+On Windows the latter returns `/C:/Users/<name>/...` (leading slash), which `path.resolve` turns into the bogus `C:\C:\...`. **Rule:** always `import { fileURLToPath } from 'node:url'` and use `fileURLToPath(import.meta.url)`. *Field case:* `guardrail.test.js` failed to load its rules file with `ENOENT C:\C:\...`. (Also documented in [testing.md](testing.md).)
 
 ### `fs.cpSync` onto an existing destination directory fails on Node 26
 

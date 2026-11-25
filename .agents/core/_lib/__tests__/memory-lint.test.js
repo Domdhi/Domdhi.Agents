@@ -184,3 +184,74 @@ describe('memory-lint corrected_in_place, structured form', () => {
     expect(r.checks.corrected_in_place.findings[0]?.marker).toBe(marker);
   });
 });
+
+describe('memory-lint bracketed list refs', () => {
+  it('strips [[…]] from see_also and references before the lookup and warns "use bare ids"', () => {
+    const memories = [
+      mem('known-target', { description: 'A real memory.' }),
+      mem('has-brackets', {
+        description: 'Lists written in the wiki-link form.',
+        see_also: ['[[known-target]]', { category: 'patterns', id: '[[known-target]]' }],
+        references: ['[[known-target]]'],
+      }),
+    ];
+
+    const { checks } = run(memories);
+
+    expect(checks.broken_refs.count).toBe(0);
+    expect(checks.bracketed_refs.count).toBe(3);
+    expect(checks.bracketed_refs.severity).toBe('warning');
+    expect(checks.bracketed_refs.findings[0].detail).toContain('use bare ids');
+  });
+
+  it('still flags a bracketed list entry whose bare id does not exist', () => {
+    const memories = [mem('lonely-one', { description: 'x', see_also: ['[[missing-id]]'] })];
+
+    const { checks } = run(memories);
+
+    expect(checks.broken_refs.count).toBe(1);
+    expect(checks.broken_refs.findings[0].referenced_id).toBe('missing-id');
+    expect(checks.bracketed_refs.count).toBe(1);
+  });
+
+  it('does not warn on bare ids', () => {
+    const memories = [
+      mem('known-target', { description: 'A real memory.' }),
+      mem('bare-refs', { description: 'x', see_also: ['known-target'], references: ['known-target'] }),
+    ];
+
+    expect(run(memories).checks.bracketed_refs.count).toBe(0);
+  });
+});
+
+describe('memory-lint score does not saturate', () => {
+  const old = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000).toISOString();
+  const orphan = (id) => {
+    const m = mem(id, { description: `Never recalled memory ${id}.` });
+    m.full.usage_count = 0;
+    m.full.updated = old;
+    return m;
+  };
+
+  it('treats zero-usage orphans as info and caps their deduction', () => {
+    const memories = Array.from({ length: 60 }, (_, i) => orphan(`orphan-memory-${i}`));
+
+    const { score, checks } = run(memories);
+
+    expect(checks.orphaned.severity).toBe('info');
+    expect(checks.orphaned.count).toBe(60);
+    expect(checks.orphaned.deduction).toBe(3);
+    expect(score).toBeGreaterThan(0);
+  });
+
+  it('moves when a real error is fixed, even beside many orphans', () => {
+    const orphans = Array.from({ length: 60 }, (_, i) => orphan(`orphan-memory-${i}`));
+    const broken = mem('has-dangling', { description: 'Related: [[missing-one]] and [[missing-two]]' });
+    const fixed = mem('has-dangling', { description: 'No dangling links now.' });
+
+    const before = run([...orphans, broken]).score;
+    const after = run([...orphans, fixed]).score;
+
+    expect(after - before).toBe(6);
+  });
+});

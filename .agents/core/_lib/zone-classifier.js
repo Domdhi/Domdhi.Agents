@@ -253,12 +253,52 @@ function classifySharedFile(relPath) {
     return 'unknown';
 }
 
+/**
+ * Paths no update ever writes because they are project-owned, machine-local or runtime state,
+ * relative to the project root. This is the one list the updater's retirement guard
+ * (shared-agents.js RETIRED_DENIED) and fleet's dirty-check and delivery snapshot both read, so a
+ * project-owned path added here is protected everywhere at once. Paths the updater DOES write but
+ * must never delete (settings.json, version.json, the render ledger) are not here: they stay in
+ * RETIRED_DENIED only.
+ */
+const LOCAL_STATE_PATTERNS = [
+    /^\.agents\/(?:intake|learning-intake)(?:\/|$)/,
+    /(?:^|\/)(?:agent-memory|\.state|\.output|node_modules|\.git)(?:\/|$)/,
+    /(?:^|\/)[^/]*\.local\.[^/]*$/,
+    /^\.(?:claude|codex)\/(?:update-config|shared-agents|push-guardrail)\.json$/,
+    /^\.agents\/gate\.config\.json$/,
+];
+
+/**
+ * True when `relPath` (relative to the project root, under .agents/, .claude/ or .codex/) is a path
+ * an update never writes: a LOCAL_STATE_PATTERNS match, or a project / project-exception zone file
+ * by the zone tables above. settings.json is in PROJECT_FILES but the updater merges the
+ * template-owned sections into it, so its changes are update output and it is not project-owned here.
+ */
+function isProjectOwnedPath(relPath) {
+    const rel = String(relPath).replace(/\\/g, '/');
+    if (LOCAL_STATE_PATTERNS.some(re => re.test(rel)) || WORKSHOP_ONLY_SHARED.has(rel)) return true;
+    const native = /^\.(?:claude|codex)\/(.+)$/.exec(rel);
+    if (native) {
+        if (native[1] === 'settings.json') return false;
+        const zone = classifyClaudeFile(native[1]);
+        return zone === 'project' || zone === 'project-exception';
+    }
+    if (rel.startsWith('.agents/')) {
+        const zone = classifySharedFile(rel);
+        return zone === 'project' || zone === 'project-exception';
+    }
+    return false;
+}
+
 module.exports = {
     globToRegex,
     matchesAnyGlob,
     classifyClaudeFile,
     classifySharedFile,
     WORKSHOP_ONLY_SHARED,
+    LOCAL_STATE_PATTERNS,
+    isProjectOwnedPath,
     // Expose zone data for orchestrator consumption
     TEMPLATE_GLOBS,
     PROJECT_FILES,

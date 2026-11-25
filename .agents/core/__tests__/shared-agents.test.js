@@ -1,5 +1,5 @@
 // SA-1: actual renderer/install boundary; source edits, output conflicts and paths.
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll, vi } from 'vitest';
 import { createRequire } from 'node:module';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -413,7 +413,13 @@ describe('native gate checkout boundary', () => {
 });
 
 describe('NA2.3 managed startup roots', () => {
-  const { applyManagedBlock } = require('../../../.agents/core/scaffold');
+  const { applyManagedBlock, FORMER_STARTUP_BRAND_SHA256 } = require('../../../.agents/core/scaffold');
+  // A stand-in former brand: the module knows former brands only by SHA-256, so the test registers one.
+  const legacy = 'Formerco';
+  const legacyHash = require('crypto').createHash('sha256').update(legacy).digest('hex');
+  beforeAll(() => { FORMER_STARTUP_BRAND_SHA256.add(legacyHash); });
+  afterAll(() => { FORMER_STARTUP_BRAND_SHA256.delete(legacyHash); });
+  const brands = [['current', 'Domdhi'], ['former', legacy]];
   const start = brand => `# === ${brand}.Agents managed block — do not edit between markers ===`;
   const end = brand => `# === End ${brand}.Agents managed block ===`;
   const block = (brand, body) => `${start(brand)}\n${body}\n${end(brand)}`;
@@ -427,7 +433,7 @@ describe('NA2.3 managed startup roots', () => {
   const expected = rel => `# ${rel} project rules  \n\n` + block('Domdhi', directive(rel)) + '\n\nKEEP_PROJECT_RULE\twith trailing spaces.  \n\n';
   const seedRoots = (root, brand) => roots.forEach(rel => put(root, rel, (`# ${rel} project rules  \n\n` + block(brand, 'STALE_STARTUP') + '\n\nKEEP_PROJECT_RULE\twith trailing spaces.  \n\n').replace(/\n/g, '\r\n')));
 
-  it.each(['Domdhi', 'Example'])('syncStartup_%sRoots_previewsWithoutWritesAndMigratesExactlyOnce', brand => {
+  it.each(brands)('syncStartup_%sBrandRoots_previewsWithoutWritesAndMigratesExactlyOnce', (_which, brand) => {
     put(tmp.root, '.agents/startup.md', 'Shared startup.\n');
     seedRoots(tmp.root, brand);
     const before = snapshot(tmp.root);
@@ -442,7 +448,7 @@ describe('NA2.3 managed startup roots', () => {
     expect(snapshot(tmp.root)).toEqual(after);
   });
 
-  it.each(['Domdhi', 'Example'])('syncStartup_%sEndOnlyInSecondRoot_abortsBothRootWrites', brand => {
+  it.each(brands)('syncStartup_%sBrandEndOnlyInSecondRoot_abortsBothRootWrites', (_which, brand) => {
     put(tmp.root, '.agents/startup.md', 'Shared startup.\n');
     seedRoots(tmp.root, 'Domdhi');
     put(tmp.root, 'AGENTS.md', '# KEEP_CORRUPT_PROJECT\r\n' + end(brand) + '\r\n');
@@ -457,7 +463,7 @@ describe('NA2.3 managed startup roots', () => {
   it('syncStartup_malformedSecondDuplicate_abortsPreviewBeforeReplacingFirstRoot', () => {
     put(tmp.root, '.agents/startup.md', 'Shared startup.\n');
     seedRoots(tmp.root, 'Domdhi');
-    fs.appendFileSync(path.join(tmp.root, 'AGENTS.md'), start('Example') + '\nKEEP_UNCLOSED_RULE\n');
+    fs.appendFileSync(path.join(tmp.root, 'AGENTS.md'), start(legacy) + '\nKEEP_UNCLOSED_RULE\n');
     const before = snapshot(tmp.root);
 
     expect(() => syncStartupInstructions(tmp.root, { applyManagedBlock })).toThrow(/corrupt managed block/i);
@@ -465,7 +471,7 @@ describe('NA2.3 managed startup roots', () => {
     expect(snapshot(tmp.root)).toEqual(before);
   });
 
-  it.each(['Domdhi', 'Example'])('installUpdate_%sRoots_preservesAdopterRulesWithoutImportingWorkshopProse', brand => {
+  it.each(brands)('installUpdate_%sBrandRoots_preservesAdopterRulesWithoutImportingWorkshopProse', (_which, brand) => {
     const source = path.join(tmp.root, 'source');
     const target = path.join(tmp.root, 'adopter with spaces');
     seed(source);
@@ -501,7 +507,7 @@ describe('NA2.3 managed startup roots', () => {
     put(source, '.agents/startup.md', '# Shared startup rules\n');
     expect(renderSharedAgents(source).conflicts).toEqual([]);
     expect(runInstall({ source, target }).ok).toBe(true);
-    roots.forEach(rel => put(target, rel, '# KEEP_BEFORE\n\n' + block('Domdhi', 'STALE_OLD') + '\n\nKEEP_BETWEEN  \n\n' + block('Example', 'STALE_NEW') + '\nKEEP_AFTER\n'));
+    roots.forEach(rel => put(target, rel, '# KEEP_BEFORE\n\n' + block('Domdhi', 'STALE_OLD') + '\n\nKEEP_BETWEEN  \n\n' + block(legacy, 'STALE_NEW') + '\nKEEP_AFTER\n'));
     const before = snapshot(target);
 
     expect(updatePilot(source, target, { dryRun: true }).errors).toBe(0);

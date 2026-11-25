@@ -387,19 +387,23 @@ function bypassAdvice(findings) {
     return 'If these are generic matches that the USER has reviewed and confirmed are not real secrets, the user (not the agent) may add\n' +
         'betterleaks:allow in a trailing comment on the SAME line (it covers that one secret, never the next line).\n' +
         'A .betterleaksignore entry is path:rule:line, applies to whole-file scans only, and one token can fire two rules.\n' +
-        'For a reviewed value already committed in history (a push blocked by an older commit), the user may instead add the\n' +
-        '"Allow:" line shown above (value-sha256:<hash>, optionally followed by "# reason") to .betterleaksignore in a new commit.\n' +
-        'It pins that one exact value for generic rules anywhere in the push, older commits included, never a location or any other\n' +
-        'value. Write it as UTF-8 (in PowerShell, Add-Content -Encoding utf8). The owner decides; never for a real key.\n';
+        'For a reviewed value already committed in history (a push blocked by an older commit), the user may instead run the\n' +
+        '"Pin:" command shown above in their own terminal. It reads the value from the file, appends its value-sha256 entry to\n' +
+        '.betterleaksignore and never prints the value or the hash; then stage and commit that file. The entry pins that one exact\n' +
+        'value for generic rules anywhere in the push, older commits included, never a location or any other value.\n' +
+        'The owner decides; never for a real key.\n';
 }
 
 /**
  * @param {object[]} findings
- * @param {{ valueKeys?: boolean }} [options] valueKeys: print each generic finding's `value-sha256:` entry (its
- *   `allowKey`, a hash that never reveals the value) as an "Allow:" line. Only the git hooks' block report asks
- *   for it, where the owner reviews the value; the Write/Edit feedback the agent reads never carries it.
+ * @param {{ pinHints?: boolean }} [options] pinHints: print each generic finding's `pinCommand` (the owner-run
+ *   `secret-scanner.cjs --pin <path>:<line>` command the scanner attached) as a "Pin:" line. Only the git hooks'
+ *   block report asks for it. The line carries a location and a command, never the value and never a digest of it:
+ *   an unsalted SHA-256 beside a redacted preview is an offline verifier for a short secret, and the hook's stderr
+ *   goes back into the agent transcript, CI logs and scrollback. The digest is computed inside the pin command
+ *   and written straight to .betterleaksignore.
  */
-function formatFindings(findings, { valueKeys = false } = {}) {
+function formatFindings(findings, { pinHints = false } = {}) {
     if (findings.length === 0) return null;
 
     const lines = [
@@ -415,7 +419,7 @@ function formatFindings(findings, { valueKeys = false } = {}) {
         lines.push(`  [${f.type}] ${f.name}`);
         lines.push(`    File:  ${f.file}${loc}`);
         lines.push(`    Match: ${f.match}`);
-        if (valueKeys && f.allowKey) lines.push(`    Allow: ${f.allowKey}`);
+        if (pinHints && f.allowKey && f.pinCommand) lines.push(`    Pin:   ${f.pinCommand}`);
         lines.push('');
     }
 

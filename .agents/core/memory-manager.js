@@ -22,7 +22,7 @@ const {
 const { parseFrontmatter: parseFm } = require('./_lib/frontmatter');
 const { resolveProjectRoot } = require('./_lib/project-root');
 const { memoryPaths } = require('./_lib/memory-paths');
-const { lintMemories: lintMemoriesLib } = require('./_lib/memory-lint');
+const { lintMemories: lintMemoriesLib, unbracketRefId } = require('./_lib/memory-lint');
 const {
     ingestAgentMemory: ingestAgentMemoryLib,
     typeToCategory: ingestTypeToCategory,
@@ -56,6 +56,30 @@ function clampImportance(v) {
     const n = parseInt(v, 10);
     if (!Number.isFinite(n)) return IMPORTANCE_DEFAULT;
     return Math.max(IMPORTANCE_MIN, Math.min(IMPORTANCE_MAX, n));
+}
+
+// Cross-reference lists (see_also, references, related) hold bare memory ids.
+// Authors often copy the prose wiki-link form ("[[other-id]]") into them, which
+// then never matches an id. Normalize to bare ids on write; returns a new
+// object and leaves the caller's content untouched.
+const REF_LIST_KEYS = ['see_also', 'references', 'related'];
+function normalizeRefLists(content) {
+    if (!content || typeof content !== 'object') return content;
+    let out = content;
+    for (const key of REF_LIST_KEYS) {
+        if (!Array.isArray(content[key])) continue;
+        const list = content[key].map((ref) => {
+            if (typeof ref === 'string') return unbracketRefId(ref);
+            if (ref && typeof ref === 'object' && typeof ref.id === 'string') {
+                const id = unbracketRefId(ref.id);
+                return id === ref.id ? ref : { ...ref, id };
+            }
+            return ref;
+        });
+        if (out === content) out = { ...content };
+        out[key] = list;
+    }
+    return out;
 }
 
 // MEM-11: collect every human-readable string VALUE from a content object,
@@ -94,6 +118,63 @@ const SAFE_ID_RE = /^[a-z0-9_][a-z0-9_-]*$/;
 
 function isSafeMemoryId(value) {
     return typeof value === 'string' && SAFE_ID_RE.test(value);
+}
+
+// Inbox drafts are named {YYYY-MM-DD}-{HHMM}-{short-kebab-slug}.json (the role Memory Inbox
+// Protocol). A stem outside that form is still a draft that can be discarded or promoted by its
+// exact name; it is only flagged. An inbox stem may never carry a path separator or "..".
+const INBOX_STEM_RE = /^\d{4}-\d{2}-\d{2}-\d{4}-[a-z0-9][a-z0-9-]*$/;
+const INBOX_NAME_RE = /^[A-Za-z0-9_][A-Za-z0-9_.-]*$/;
+
+/**
+ * Problems with one staged inbox draft (empty when it is valid): its file name, its JSON, its
+ * category and its suggested id. Pure, so it can run wherever a draft is read.
+ *
+ * @param {string} stem - the file name without `.json`
+ * @param {string} raw - the file's text
+ * @param {string[]} categories - the store's categories
+ * @returns {string[]}
+ */
+function validateInboxDraft(stem, raw, categories) {
+    const problems = [];
+    if (!INBOX_STEM_RE.test(stem)) problems.push(`file name "${stem}.json" is not {YYYY-MM-DD}-{HHMM}-{lowercase-kebab-slug}.json`);
+    let draft;
+    try {
+        draft = JSON.parse(raw);
+    } catch (e) {
+        problems.push(`malformed JSON: ${e.message}`);
+        return problems;
+    }
+    if (!draft || typeof draft !== 'object' || Array.isArray(draft)) {
+        problems.push('draft is not a JSON object');
+        return problems;
+    }
+    if (!categories.includes(draft.category)) problems.push(`category ${JSON.stringify(draft.category)} is not one of ${categories.join(', ')}`);
+    if (!isSafeMemoryId(draft.suggested_id)) problems.push(`suggested_id ${JSON.stringify(draft.suggested_id)} is not a lowercase kebab-case id`);
+    if (!draft.content || typeof draft.content !== 'object' || Array.isArray(draft.content)) problems.push('content is missing or not an object');
+    else if (typeof draft.content.description !== 'string' || !draft.content.description.trim()) problems.push('content.description is empty');
+    return problems;
+}
+
+/**
+ * A one-line summary of a memory's content for search output, so a caller can judge a hit
+ * without opening its JSON (observed 2026-11-23: an agent re-read each hit's file to see what it said).
+ * Takes the first prose field the memory types use, collapsed and cut at SUMMARY_CHARS.
+ */
+const SUMMARY_CHARS = 200;
+function summarizeContent(content) {
+    let c = content;
+    if (typeof c === 'string') { try { c = JSON.parse(c); } catch { /* plain text */ } }
+    let text = '';
+    if (typeof c === 'string') text = c;
+    else if (c && typeof c === 'object') {
+        for (const key of ['description', 'summary', 'pattern', 'decision', 'constraint', 'approach', 'title']) {
+            if (typeof c[key] === 'string' && c[key].trim()) { text = c[key]; break; }
+        }
+        if (!text) text = Object.values(c).find(v => typeof v === 'string' && v.trim()) || '';
+    }
+    text = text.replace(/\s+/g, ' ').trim();
+    return text.length > SUMMARY_CHARS ? `${text.slice(0, SUMMARY_CHARS - 1)}…` : text;
 }
 
 /**
@@ -477,7 +558,7 @@ class MemoryManager {
         if (!overwrite) {
             const existing = await this.readMemory(category, id);
             if (existing) {
-                console.log(`⛔ Memory guard: ${category}/${id} already exists — refusing to overwrite. Pass {overwrite:true} to replace it, or use updateMemory() to modify it.`);
+                console.log(`⛔ ${category}/${id} already exists — refusing to overwrite. Pass {overwrite:true} to replace it, or use updateMemory() to modify it.`);
                 return null;
             }
         }
@@ -492,7 +573,7 @@ class MemoryManager {
         // MEM-10: importance is a TOP-LEVEL field only. Clone the caller's content
         // (never mutate their input) and strip any `importance` key so it can't
         // drift out of sync with the promoted top-level value after a later update.
-        const storedContent = { ...content };
+        const storedContent = { ...normalizeRefLists(content) };
         delete storedContent.importance;
         const memory = {
             id,
@@ -696,7 +777,7 @@ class MemoryManager {
         if (!memory) return null;
 
         if (updates.content) {
-            memory.content = { ...memory.content, ...updates.content };
+            memory.content = { ...memory.content, ...normalizeRefLists(updates.content) };
         }
         if (updates.metadata) {
             memory.metadata = { ...memory.metadata, ...updates.metadata };
@@ -882,7 +963,8 @@ class MemoryManager {
                             // ME-2.2 — importance term (+4..+20) mirrors the JSON path
                             relevance: Math.abs(row.rank) * SCORING.FTS_RANK_MULTIPLIER + (row.confidence || 0) * SCORING.CONFIDENCE_MULTIPLIER + (row.usage_count || 0) * SCORING.USAGE_MULTIPLIER + importance * SCORING.IMPORTANCE_MULTIPLIER,
                             confidence: row.confidence ?? 1.0,
-                            decayed_confidence: this.calculateDecayedConfidence(mockMemory)
+                            decayed_confidence: this.calculateDecayedConfidence(mockMemory),
+                            summary: summarizeContent(row.content)
                         };
                     });
                     if (recordRecall) {
@@ -929,7 +1011,8 @@ class MemoryManager {
                         id: memory.id,
                         relevance: this.calculateRelevance(merged, searchTerm, content), // F45: reuse the stringify above
                         confidence: memory.metadata?.confidence ?? 1.0,
-                        decayed_confidence: this.calculateDecayedConfidence(merged)
+                        decayed_confidence: this.calculateDecayedConfidence(merged),
+                        summary: summarizeContent(memory.content)
                     });
                 }
             }
@@ -1624,6 +1707,26 @@ class MemoryManager {
         return path.basename(full, '.json');
     }
 
+    /**
+     * Resolve what a caller passed (an id, a bare `name.json`, or the path `inbox-list` printed) to the
+     * stem of a draft file in the inbox, or null. A lowercase memory-safe id resolves as before; any
+     * other name (a legacy uppercase draft) resolves only when a file of exactly that name exists in
+     * the inbox, so it can still be discarded or promoted. No separator or ".." is ever accepted.
+     */
+    async _resolveInboxStem(id) {
+        let stem = this._inboxStem(id);
+        if (typeof stem !== 'string') return null;
+        if (!/[\\/]/.test(stem) && stem.endsWith('.json')) stem = stem.slice(0, -'.json'.length);
+        if (isSafeMemoryId(stem)) return stem;
+        if (!INBOX_NAME_RE.test(stem) || stem.includes('..')) return null;
+        try {
+            const names = await fs.readdir(this._inboxDir());
+            return names.includes(`${stem}.json`) ? stem : null;
+        } catch {
+            return null;
+        }
+    }
+
     _inboxDir() {
         // Split store (ADR 0006 Amendment 2): the inbox is transient state, no
         // longer colocated under the tracked JSON source — it lives at
@@ -1652,9 +1755,13 @@ class MemoryManager {
             try {
                 const stat = await fs.stat(filePath);
                 const raw = await fs.readFile(filePath, 'utf-8');
-                const draft = JSON.parse(raw);
                 const id = file.replace(/\.json$/, '');
-                const description = draft.content?.description || '';
+                // Drafts are staged by a plain file write, so this is the first code that reads one:
+                // validate here and list a bad draft with its problems instead of hiding it.
+                const problems = validateInboxDraft(id, raw, this.categories);
+                let draft = {};
+                try { draft = JSON.parse(raw) || {}; } catch { /* reported in problems */ }
+                const description = typeof draft.content?.description === 'string' ? draft.content.description : '';
                 entries.push({
                     id,
                     file: filePath,
@@ -1664,9 +1771,10 @@ class MemoryManager {
                     suggested_id: draft.suggested_id,
                     flagged_by: draft.flagged_by,
                     flagged_at: draft.flagged_at,
+                    ...(problems.length ? { problems } : {}),
                 });
             } catch {
-                // Skip unreadable / malformed entries — surface in promote step
+                // Unreadable (permissions, a vanished file): nothing to list.
             }
         }
         // Lex-sort = chronological for {YYYY-MM-DD}-{HHMM}-{slug} naming
@@ -1684,14 +1792,15 @@ class MemoryManager {
      * @returns {Promise<{promoted: true, category, id} | {promoted: false, error}>}
      */
     async inboxPromote(id, opts = {}) {
-        id = this._inboxStem(id);
         // F42 (W2-1): `id` is a raw CLI-supplied inbox filename stem joined
-        // straight into path.join below — guard it against `../` traversal
-        // exactly like the memory-id entry points, else `inbox-promote
-        // ../../../secret` reads (and then unlinks) an arbitrary .json file.
-        if (!isSafeMemoryId(id)) {
-            return { promoted: false, error: `Invalid inbox id: ${id} (must be lowercase alnum, '_' or '-'; no path separators)` };
+        // straight into path.join below — _resolveInboxStem refuses `../`
+        // traversal and any separator, else `inbox-promote ../../../secret`
+        // reads (and then unlinks) an arbitrary .json file.
+        const stem = await this._resolveInboxStem(id);
+        if (stem === null) {
+            return { promoted: false, error: `Invalid inbox id: ${id} (use the id or file inbox-list printed; lowercase alnum, '_' or '-' for a new name; no path separators)` };
         }
+        id = stem;
         const filePath = path.join(this._inboxDir(), `${id}.json`);
         let raw;
         try {
@@ -1760,7 +1869,37 @@ class MemoryManager {
      * @param {string} id
      * @returns {Promise<{deleted: boolean, error?: string}>}
      */
-    async deleteMemory(category, id) {
+    /**
+     * Live memories that cite `id`: a `[[id]]` wiki-link anywhere in their content, or an
+     * entry in content.references / related / see_also (bare, bracketed, or { id }).
+     *
+     * @param {string} id
+     * @returns {Promise<string[]>} sorted "category/id" of each referrer (never `id` itself)
+     */
+    async findReferrers(id) {
+        const wiki = `[[${id}]]`;
+        const out = [];
+        for (const category of this.categories) {
+            const memories = await this.listMemories(category, { includeFull: true });
+            for (const m of memories) {
+                const full = m.full;
+                if (!full || full.id === id) continue;
+                const content = full.content || {};
+                const listed = REF_LIST_KEYS.some((key) => Array.isArray(content[key]) && content[key].some((ref) => {
+                    const refId = typeof ref === 'string' ? ref : ref?.id;
+                    return typeof refId === 'string' && unbracketRefId(refId) === id;
+                }));
+                if (listed || JSON.stringify(content).includes(wiki)) out.push(`${category}/${full.id}`);
+            }
+        }
+        return out.sort();
+    }
+
+    /**
+     * Delete a memory. Refuses while other live memories reference it (their links
+     * would dangle) unless `opts.force`; the refusal lists them in `referencedBy`.
+     */
+    async deleteMemory(category, id, opts = {}) {
         if (!this.categories.includes(category)) {
             return { deleted: false, error: `Invalid category: ${category}. Allowed: ${this.categories.join(', ')}` };
         }
@@ -1787,6 +1926,17 @@ class MemoryManager {
             return { deleted: false, error: `Memory not found: ${category}/${id}` };
         }
 
+        if (!opts.force) {
+            const referencedBy = await this.findReferrers(id);
+            if (referencedBy.length > 0) {
+                return {
+                    deleted: false,
+                    referencedBy,
+                    error: `${category}/${id} is referenced by ${referencedBy.length} memor${referencedBy.length === 1 ? 'y' : 'ies'} (${referencedBy.join(', ')}). Prefer a RESOLVED note (update its content) or supersede it; repoint those references first, or pass --force to delete anyway.`,
+                };
+            }
+        }
+
         try {
             await fs.unlink(filePath);
         } catch (e) {
@@ -1806,13 +1956,15 @@ class MemoryManager {
      * @returns {Promise<{discarded: boolean, error?: string}>}
      */
     async inboxDiscard(id) {
-        id = this._inboxStem(id);
         // F42 (W2-1): guard the raw CLI-supplied `id` before it reaches
         // path.join — an unguarded `../`-laden id deletes an arbitrary .json
-        // file outside the inbox root.
-        if (!isSafeMemoryId(id)) {
-            return { discarded: false, error: `Invalid inbox id: ${id} (must be lowercase alnum, '_' or '-'; no path separators)` };
+        // file outside the inbox root. An existing legacy (uppercase) draft
+        // name is accepted exactly as inbox-list printed it.
+        const stem = await this._resolveInboxStem(id);
+        if (stem === null) {
+            return { discarded: false, error: `Invalid inbox id: ${id} (use the id or file inbox-list printed; no path separators)` };
         }
+        id = stem;
         const filePath = path.join(this._inboxDir(), `${id}.json`);
         try {
             await fs.unlink(filePath);
@@ -1828,6 +1980,8 @@ class MemoryManager {
 
 module.exports = MemoryManager;
 module.exports.buildFtsQuery = buildFtsQuery;
+module.exports.normalizeRefLists = normalizeRefLists;
+module.exports.validateInboxDraft = validateInboxDraft;
 
 // Direct invocation forwards to the CLI module (Task #11 split).
 // Existing callers running `node .claude/core/memory-manager.js <cmd>` still work.

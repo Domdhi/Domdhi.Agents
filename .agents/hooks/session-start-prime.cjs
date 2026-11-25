@@ -514,7 +514,7 @@ function syncNote() {
     try {
         const fallbackDir = path.resolve(__dirname, '..', '..');
         if (!syncEnabled(process.env)) return '';
-        const flagged = require('../core/memory-capture').isSecret;
+        const flagged = require('../core/memory-capture').isSecretFast;
         const r = require('../core/_lib/memory-sync').autoSync({ direction: 'pull', fallbackDir, env: process.env, isSecret: flagged });
         if (!r || !r.conflicts.length) return '';
         const dir = runtimeOf(process.env) === 'codex' ? '.codex' : '.claude';

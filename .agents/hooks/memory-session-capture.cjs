@@ -38,7 +38,7 @@ const { scopeEscape, outsideScope } = require('../core/_lib/hook-spawners');
 function providerConfigured(env) {
     const chain = String(env.MEMORY_CAPTURE_PROVIDER || '').split(',').map(s => s.trim().toLowerCase().replace(/^claude$/, 'claude-cli')).filter(Boolean);
     if (!chain.length) chain.push('anthropic');
-    return chain.some(p => p === 'claude-cli' ? true : p === 'openai' ? Boolean(env.MEMORY_CAPTURE_MODEL) : Boolean(env.ANTHROPIC_API_KEY || env.MEMORY_CAPTURE_KEY_COMMAND));
+    return chain.some(p => p === 'claude-cli' ? true : p === 'openai' ? Boolean(env.MEMORY_CAPTURE_OPENAI_MODEL || env.MEMORY_CAPTURE_MODEL) : Boolean(env.ANTHROPIC_API_KEY || env.MEMORY_CAPTURE_KEY_COMMAND));
 }
 
 /** @returns {boolean} true when a capture child was started */
@@ -46,7 +46,7 @@ function processEvent(input, { env = process.env, fallbackDir = path.resolve(__d
     if (!isAtLeast('standard') || env.MEMORY_CAPTURE_INNER) return false;   // MEMORY_CAPTURE_INNER: we ARE the capture's own claude -p child
     if (syncEnabled(env)) {
         try {
-            const flagged = require('../core/memory-capture').isSecret;
+            const flagged = require('../core/memory-capture').isSecretFast;
             require('../core/_lib/memory-sync').autoSync({ direction: 'push', fallbackDir, env, isSecret: flagged });
         } catch { /* sync never fails a session end */ }
     }

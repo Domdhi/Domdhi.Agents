@@ -46,8 +46,8 @@ node .claude/core/memory-manager.js lint
 
 Capture the full output. The result is a JSON object. Parse:
 
-- `score`: integer 0–70
-- `checks`: object of 9 check results keyed by name, each `{ count, severity, findings[] }` (a check passes at `count: 0`). `corrected_in_place` flags bodies edited to say CORRECTED/OBSOLETE instead of being superseded; `id_drift` flags ids whose words no longer appear in the body; `schema_drift` flags a memory with neither `description` nor `summary` (startup and recall then show only its id) or an importance off the 1-5 scale; `broken_refs` covers `[[wiki-links]]`, `references[]` and `see_also[]`.
+- `score`: integer 0–70. Each finding deducts by severity (error 3, warning 2, info 1), capped per check (error 15, warning 7, info 3), so one large check (never-recalled orphans are `info`) cannot pin the score at 0; each check reports its `deduction`.
+- `checks`: object of 10 check results keyed by name, each `{ count, severity, findings[] }` (a check passes at `count: 0`). `corrected_in_place` flags bodies edited to say CORRECTED/OBSOLETE instead of being superseded; `id_drift` flags ids whose words no longer appear in the body; `schema_drift` flags a memory with neither `description` nor `summary` (startup and recall then show only its id) or an importance off the 1-5 scale; `broken_refs` covers `[[wiki-links]]`, `references[]` and `see_also[]`; `bracketed_refs` warns when a `references[]` or `see_also[]` entry is written as `[[id]]` instead of a bare id (the lookup strips the brackets, and create and update store bare ids).
 
 Track `lint_score` = `score` value.
 
@@ -96,7 +96,7 @@ If any condition above is not met, **persist before reporting:** Write the full 
 | Archive candidates (< 0.1) | {archive_count} |
 
 ### Lint Issues
-{If lint_score is 70, write: "No issues — all 9 checks passed."}
+{If lint_score is 70, write: "No issues — all 10 checks passed."}
 {If lint_score < 70, list each failing check with its description and the points deducted.}
 
 ### Stale Memories

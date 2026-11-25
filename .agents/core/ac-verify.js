@@ -319,6 +319,13 @@ function subcommandRefusal(head, rest, subcommands, spec) {
     return scanOptions(`${head} ${rest[0]}`, rest.slice(1), spec);
 }
 
+/**
+ * A name filter on node:test or `go test` that matches nothing still exits 0, and neither runner's summary shows it
+ * (node counts the file as the one passing test; go prints `ok ... [no tests to run]`), so `vacuousRun` cannot catch a
+ * typo'd name. The filter is refused instead, and the author binds a file (node) or a package (go) per criterion.
+ */
+const unverifiableFilterRefusal = (option, instead) => `refused: ${option} can match no test and the run still exits 0 with a passing summary, so a mistyped name would be recorded as met although no test ran; bind ${instead} instead`;
+
 /** node: safe flags first, then one script path (or none under `--test`); every later token is a script argument. */
 function nodeRefusal(rest) {
     let i = 0;
@@ -326,6 +333,7 @@ function nodeRefusal(rest) {
     while (i < rest.length && rest[i].startsWith('-')) {
         const taken = consumeOption('node', rest, i, NODE_SPEC);
         if (taken.reason) return taken.reason;
+        if (/^--test-name-pattern(?:=|$)/.test(rest[i])) return unverifiableFilterRefusal('node --test-name-pattern', 'a file that holds the one test (node --test path/to/ac1.test.js)');
         if (rest[i] === '--test') test = true;
         i = taken.next;
     }
@@ -354,13 +362,16 @@ function npmRefusal(rest, root) {
 const NAME_FILTER = /^(?:-t|--testNamePattern|--test-name-pattern|--grep)(?:=.*)?$/;
 // A script that hands its arguments to a second package-manager run (`cd src && npm run test`, `pnpm -r test`, ...).
 const REINVOKES_PACKAGE_MANAGER = /(?:^|[\s;&|(])(?:npm|pnpm|yarn|npx|bun)\s/;
+// npm appends the arguments to the END of the whole script string, so only its last command segment receives them.
+const lastCommandSegment = (script) => script.split(/&&|\|\||[;|&]/).map(segment => segment.trim()).filter(Boolean).pop() || '';
 
 /**
  * `npm run test -- file -t "name"` passes the filter to the script. When that script runs a package manager again
  * (`cd src && npm run test`), the inner run treats the filter as its own option and drops it: every test runs, passes,
  * and the criterion would be recorded met although the filter never applied. The filter must then sit behind a second
  * `--` (`npm run test -- file -- -t "name"`). Refused rather than warned, because the run itself cannot tell a dropped
- * filter from one that matched every test.
+ * filter from one that matched every test. Only the script's LAST command segment is judged: `npm run build && vitest
+ * run` hands the filter to vitest, and `cd src && npm run test` hands it to the inner npm.
  */
 function swallowedFilterRefusal(rest, scriptName, root) {
     const at = rest.findIndex(token => NAME_FILTER.test(token));
@@ -372,7 +383,7 @@ function swallowedFilterRefusal(rest, scriptName, root) {
         const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
         script = pkg && pkg.scripts && typeof pkg.scripts[scriptName] === 'string' ? pkg.scripts[scriptName] : null;
     } catch { return null; }
-    if (!script || !REINVOKES_PACKAGE_MANAGER.test(` ${script}`)) return null;
+    if (!script || !REINVOKES_PACKAGE_MANAGER.test(` ${lastCommandSegment(script)}`)) return null;
     return `refused: the "${scriptName}" script (${quoted(script)}) runs a package manager again, which drops ${quoted(rest[at])}, so every test would run and the filter would prove nothing; put the filter behind a second "--" (npm run ${scriptName} -- <file> -- ${rest[at]} ...)`;
 }
 
@@ -416,7 +427,8 @@ function refusalReason(command, { root } = {}) {
         npx: () => npxRefusal(rest, root),
         git: () => gitRefusal(rest),
         pytest: () => scanOptions('pytest', rest, PYTEST_SPEC),
-        go: () => subcommandRefusal('go', rest, GO_SUBCOMMANDS, GO_SPEC),
+        go: () => subcommandRefusal('go', rest, GO_SUBCOMMANDS, GO_SPEC)
+            || (rest.some(token => /^-run(?:=|$)/.test(token)) ? unverifiableFilterRefusal('go test -run', 'the package that holds the test (go test ./pkg)') : null),
         cargo: () => subcommandRefusal('cargo', rest, CARGO_SUBCOMMANDS, CARGO_SPEC),
         dotnet: () => subcommandRefusal('dotnet', rest, DOTNET_SUBCOMMANDS, DOTNET_SPEC),
     };
@@ -531,7 +543,10 @@ function execBinding(binding, { root, env, spawn, kill = killProcessGroup, child
 /**
  * Why a run whose exit code matched still proves nothing, or null. A test-runner summary with no passed and no failed
  * test means every test was skipped (a name filter that matched nothing exits 0 in vitest and jest) or none was
- * collected. Output without a test summary (typecheck, lint, a script) is never vacuous.
+ * collected. Output without a test summary (typecheck, lint, a script) is never vacuous. This understands
+ * vitest/jest-style summaries only: node:test and `go test` report a filter that matched nothing as a pass, so
+ * `refusalReason` refuses `node --test-name-pattern` and `go test -run` bindings up front (bind a file or a package).
+ * A runner reached through an npm script is not inspected, so a filter there is the author's to verify with `red`.
  */
 function vacuousRun(output, exit) {
     const tests = gate.parseTestOutput(stripAnsi(output), exit);
@@ -1172,10 +1187,34 @@ function executeFreeze(options) {
     })));
 }
 
-/** True when freeze would record nothing for the story: no verify: bindings and no test files (listed or missing). */
+/**
+ * True when something shows the story was frozen or run with bindings before: a non-empty ac-verify record
+ * (`run` writes `[]` for a story with no bindings, which an honest manual-only story leaves behind, so an empty list is
+ * not evidence) or a holder entry in the freeze-lock file. An unreadable record or lock file counts as evidence.
+ */
+function everFrozenEvidence(root, storyId) {
+    const record = path.join(recordDir(root), `${storyId}.json`);
+    const stat = fs.lstatSync(record, { throwIfNoEntry: false });
+    if (stat) {
+        if (!stat.isFile() || stat.size > BASELINE_MAX_BYTES) return true;
+        try {
+            const parsed = JSON.parse(fs.readFileSync(record, 'utf8'));
+            if (!Array.isArray(parsed) || parsed.length) return true;
+        } catch { return true; }
+    }
+    const lockRead = readLocks(root);
+    if (lockRead.error) return true;
+    return Object.values(lockRead.locks).some(entry => entry.holders.includes(storyId));
+}
+
+/**
+ * True when freeze would record nothing for the story (no verify: bindings and no test files, listed or missing) AND
+ * nothing shows it was ever frozen: otherwise a deleted baseline plus stripped bindings would pass as "nothing to hold".
+ */
 function nothingToFreeze(root, story, text) {
     if (story.bindings.length) return false;
     try {
+        if (everFrozenEvidence(root, story.id)) return false;
         const tests = storyTestFiles(root, fs.realpathSync(root), story, text);
         return !tests.errors.length && !Object.keys(tests.files).length && !tests.missing.length;
     } catch {
@@ -1275,6 +1314,44 @@ function executeUnfreeze(options) {
 /** Baseline the check files and `verify:` lines of the selected stories and lock the files against Write and Edit. */
 const freeze = (opts) => guardedFreezeVerb('freeze', executeFreeze, opts);
 
+/** Every story id the TODO declares in a header (`## Story X`, `**Story X**`); a heading such as `## Story Index` has no digit and is not one. */
+function storyIdsOf(text) {
+    return [...new Set(findHeaderStories(String(text).split(/\r?\n/)).stories.map(story => story.id).filter(id => /\d/.test(id)))];
+}
+
+/** Every file path any story of the TODO lists in its Files, normalized repo-relative (created or modified). */
+function plannedFiles(text) {
+    const planned = new Set();
+    for (const id of storyIdsOf(text)) {
+        const found = storyFiles(text, id);
+        for (const file of (found && found.files) || []) {
+            const normal = normalizeRel(file.path);
+            if (!normal.error && !normal.glob && !normal.directory) planned.add(normal.rel);
+        }
+    }
+    return planned;
+}
+
+/**
+ * The file paths a binding names that neither exist nor appear in any story's Files: a verify command that points at a
+ * script or test nobody writes (observed 2026-11-23: a /todo lead bound two criteria to invented scripts and `list`
+ * passed them). A warning, not a refusal: only tokens shaped like a file path (a `/` and an extension) are checked.
+ */
+function missingPaths(command, root, planned) {
+    const tokenized = tokenizeVerify(command);
+    if (!tokenized.ok || typeof root !== 'string' || !root) return [];
+    const missing = [];
+    for (const token of tokenized.tokens.slice(1)) {
+        const value = token.startsWith('-') ? (token.includes('=') ? token.slice(token.indexOf('=') + 1) : '') : token;
+        if (!/\//.test(value) || !/\.[A-Za-z0-9]+$/.test(value)) continue;
+        const normal = normalizeRel(value);
+        if (normal.error || normal.glob || normal.directory) continue;
+        if (planned.has(normal.rel) || fs.existsSync(path.join(root, normal.rel))) continue;
+        missing.push(normal.rel);
+    }
+    return missing;
+}
+
 /**
  * Parse only: every binding of the selected stories with the refusal it would get, or null. Nothing is executed and
  * nothing is written, so authors can check bindings while writing the TODO. Exits 0 only when no binding is refused.
@@ -1289,18 +1366,23 @@ function list(opts) {
             try { text = readTodoFile(path.resolve(options.root, options.todo)); } catch {
                 return failure([{ code: 'INVALID_TODO_FILE', message: 'The TODO must be an existing ordinary bounded UTF-8 file.' }]);
             }
-            // A heading such as `## Story Index` parses as a story named `Index`; real story ids carry a number.
-            stories = [...new Set(findHeaderStories(text.split(/\r?\n/)).stories.map(story => story.id).filter(id => /\d/.test(id)))];
+            stories = storyIdsOf(text);
             if (!stories.length) return { ok: true, exitCode: 0, errors: [], refused: 0, stories: [] };
         }
         const selection = loadSelection({ ...options, stories });
         if (selection.errors) return failure(selection.errors);
+        const planned = plannedFiles(selection.text);
         const listed = selection.stories.map(story => ({
             id: story.id, manual: story.manual,
-            bindings: story.bindings.map(binding => ({ ...binding, refusal: refusalReason(binding.command, { root: options.root }) })),
+            bindings: story.bindings.map(binding => {
+                const refusal = refusalReason(binding.command, { root: options.root });
+                const missing = refusal ? [] : missingPaths(binding.command, options.root, planned);
+                return { ...binding, refusal, ...(missing.length ? { missing } : {}) };
+            }),
         }));
         const refused = listed.reduce((count, story) => count + story.bindings.filter(binding => binding.refusal).length, 0);
-        return { ok: refused === 0, exitCode: refused ? 1 : 0, errors: [], refused, stories: listed };
+        const missing = listed.reduce((count, story) => count + story.bindings.filter(binding => binding.missing).length, 0);
+        return { ok: refused === 0, exitCode: refused ? 1 : 0, errors: [], refused, missing, stories: listed };
     } catch (error) {
         return failure([{ code: 'EXCEPTION', message: `ac-verify list failed: ${error && error.message ? error.message : String(error)}` }]);
     }
@@ -1351,5 +1433,5 @@ function main(argv = process.argv.slice(2)) {
     return result.ok ? 0 : (result.exitCode || 1);
 }
 
-module.exports = { run, red, freeze, check, unfreeze, list, tokenizeVerify, refusalReason, childEnvironment, resolveHead, killProcessGroup, missingModuleDigest, main };
+module.exports = { run, red, freeze, check, unfreeze, list, storyIdsOf, TAMPER_CODES, tokenizeVerify, refusalReason, childEnvironment, resolveHead, killProcessGroup, missingModuleDigest, main };
 if (require.main === module) process.exitCode = main();

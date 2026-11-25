@@ -280,10 +280,60 @@ describe('organize', () => {
             expect(stderrText()).not.toContain('[organize]');
         });
 
-        it('updateWorkRefs_fiveColumnTable_writesCanonicalRowAndSaysSo', () => {
-            const out = organizeWith(todo(FIVE));
+        it('updateWorkRefs_fiveColumnTable_refusesToWriteAndSaysSo', () => {
+            const content = todo(FIVE);
+            const out = organizeWith(content);
+            expect(out).toBe(content);
+            expect(stderrText()).toMatch(/has 5 column\(s\), not the canonical 4 .*plan row for "[^"]+" not recorded/);
+        });
+
+        it('updateWorkRefs_sectionWithoutATable_neverBorrowsALaterSectionsTable', () => {
+            const content = [
+                '# TODO: Project', '', '## Work Document References', '', 'Plans are tracked elsewhere for now.', '',
+                '## Story Index', '',
+                '| Story | Status |',
+                '|---|---|',
+                '| 1.1 | done |',
+                '',
+            ].join('\n');
+            const out = organizeWith(content);
+            expect(out).toBe(content);
+            expect(stderrText()).toMatch(/\[organize\] no usable "## Work Document References" table found in docs[\\/]TODO_Project\.md/);
+        });
+
+        it('updateWorkRefs_sectionWithoutATable_fourColumnTableInALaterSectionIsNotWrittenInto', () => {
+            const content = [
+                '# TODO: Project', '', '## Work Document References', '', 'None yet.', '',
+                '## Archive', '',
+                '| Date | Document | Story | Topic |',
+                '|------|----------|-------|-------|',
+                '',
+            ].join('\n');
+            const out = organizeWith(content);
+            expect(out).toBe(content);
+            expect(stderrText()).toContain('no usable "## Work Document References" table');
+        });
+
+        it('updateWorkRefs_tableInsideTheSectionIsStillUsedWhenALaterSectionAlsoHasOne', () => {
+            const content = [
+                todo(FOUR),
+                '## Story Index', '',
+                '| Story | Status |',
+                '|---|---|',
+                '| 1.1 | done |',
+                '',
+            ].join('\n');
+            const out = organizeWith(content);
+            const lines = out.split('\n');
+            const ruleAt = lines.findIndex(l => l.startsWith('|---'));
+            expect(lines[ruleAt + 1]).toContain('Phase 1');
+            expect(out).toContain('| 1.1 | done |');
+            expect(out.match(/Phase 1/g)).toHaveLength(1);
+        });
+
+        it('updateWorkRefs_lastSectionOfTheFile_isStillSearched', () => {
+            const out = organizeWith('# TODO: Project\n\n## Work Document References\n\n| Date | Document | Story | Topic |\n|---|---|---|---|');
             expect(out).toContain('Phase 1');
-            expect(stderrText()).toMatch(/has 5 column\(s\); writing the canonical 4-column row/);
         });
 
         it('updateWorkRefs_noWorkRefsTable_namesTheFileOnStderrInsteadOfDroppingSilently', () => {

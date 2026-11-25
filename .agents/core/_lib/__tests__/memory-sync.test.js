@@ -114,6 +114,38 @@ describe('three-way changes', () => {
     });
 });
 
+describe('a tracked mirror that lags the shared local dir (several worktrees, one local dir and one state dir)', () => {
+    it('keeps one base per tracked dir, so another worktree\'s base never turns a lagging mirror into a pull', () => {
+        const trackedMain = path.join(tmp.root, 'wt-main'), trackedOld = path.join(tmp.root, 'wt-old');
+        put(local, 'n.md', note('n', 'v1'));
+        S.sync({ localDir: local, trackedDir: trackedMain, stateDir: state });
+        put(trackedOld, 'n.md', note('n', 'v1'));            // the lagging worktree's committed mirror
+        put(local, 'n.md', note('n', 'v2 only here'));
+        S.sync({ localDir: local, trackedDir: trackedMain, stateDir: state, direction: 'push' });
+        expect(read(trackedMain, 'n.md')).toContain('v2 only here');
+
+        // The other worktree starts a session (pull). It has no base of its own: both sides differ, so this is a conflict.
+        const r = S.sync({ localDir: local, trackedDir: trackedOld, stateDir: state, direction: 'pull' });
+        expect(r.pulled).toEqual([]);
+        expect(r.conflicts.map(c => c.name)).toEqual(['n.md']);
+        expect(read(local, 'n.md')).toContain('v2 only here');
+        expect(S.baseFile(state, trackedMain)).not.toBe(S.baseFile(state, trackedOld));
+    });
+    it('saves the local copy before any pull that replaces it, even when the local copy equals the recorded base', () => {
+        const backupDir = path.join(tmp.root, 'backup');
+        const L = { 'n.md': { sha: 'sha-v2', text: note('n', 'v2') } };
+        const T = { 'n.md': { sha: 'sha-v1', text: note('n', 'v1') } };
+        put(local, 'n.md', L['n.md'].text);
+        const actions = S.plan({ local: L, tracked: T, base: { 'n.md': 'sha-v2' } });
+        expect(actions).toEqual([{ name: 'n.md', op: 'pull' }]);   // the stale-base pull the plan cannot tell apart
+        S.apply({ actions, local: L, tracked: T, base: { 'n.md': 'sha-v2' }, localDir: local, trackedDir: tracked, backupDir });
+        expect(read(local, 'n.md')).toContain('v1');
+        const saved = fs.readdirSync(backupDir);
+        expect(saved).toHaveLength(1);
+        expect(read(backupDir, saved[0])).toContain('v2');
+    });
+});
+
 describe('guards', () => {
     const isSecret = t => /sk-ant-[a-z0-9]{10,}/.test(t);
     it('does not push or pull a note that looks like a secret', () => {
@@ -133,6 +165,7 @@ describe('guards', () => {
         expect(fs.existsSync(path.join(tracked, 'a.md'))).toBe(false);
         expect(fs.existsSync(path.join(local, 'b.md'))).toBe(false);
         expect(fs.existsSync(path.join(state, 'sync.json'))).toBe(false);
+        expect(fs.existsSync(state) ? fs.readdirSync(state).filter(f => /^sync.*\.json$/.test(f)) : []).toEqual([]);
     });
     it('direction limits the pass', () => {
         put(local, 'a.md', note('a', 'x'));

@@ -36,6 +36,10 @@ Check unfinished plans (grep for `- [ ]` in each plan file).
 
 **Authorship reconciliation (session-handoff Step 1):** the log may contain commits you did not author (the user, or a parallel agent on another branch). Run `git show --stat <hash>` on any you don't recognize and capture its intent in Decisions & Context; inspect the changes rather than inferring authorship from the message. Don't write the handoff from conversation memory alone, or real session work is dropped.
 
+### 2b. File deferred work before writing the handoff
+
+A handoff is read once and then superseded, so an item that lives only there is lost. Before Step 3, file each item this session deferred or found and did not fix (review findings carried out of scope, follow-ups, known defects, unverified claims) into the active TODO as a story or checklist item, or, when there is no active TODO, into a new `docs/work/todo/{YYMMDD-HHMM}-TODO_followups.md` stub with one line per item (what, where, why it waits). The handoff then cites only that path and the item count, not the items. Nothing to file: say "no deferred items" in the handoff.
+
 ### 3. Write the handoff
 
 Resolve this run's handoff path once and reuse it:
@@ -93,6 +97,8 @@ Then run:
 
 ```bash
 git add "$HANDOFF"
+# The Step 2b follow-ups file or TODO edit, if any, by its exact path:
+# git add -- "docs/work/todo/{YYMMDD-HHMM}-TODO_followups.md"
 # After reviewing the session-created/changed intake configuration, stage only
 # the known existing ordinary files. Never use git add .agents/.
 for intake_file in .agents/intake/identity.json .agents/intake/policy.json .agents/learning-intake/identity.json .agents/learning-intake/policy.json; do

@@ -18,8 +18,9 @@ const CONSTANTS = require('./constants');
 const { createActiveDaysResolver } = require('./_lib/memory-decay');
 const { parseFrontmatter: parseFm } = require('./_lib/frontmatter');
 const { readConcepts } = require('./_lib/concept-reader');
-const { resolveProjectRoot } = require('./_lib/project-root');
+const { resolveProjectRoot, resolveWorktreeRoot } = require('./_lib/project-root');
 const { memoryPaths } = require('./_lib/memory-paths');
+const { isRealDoc, LEGACY_TO_CANONICAL } = require('./_lib/doc-drift');
 // CR-3.4 (F47/F48): loadHandCreatedMemories() must route through
 // MemoryManager's canonical supersession-aware read + decay chokepoint rather
 // than re-implementing them — that duplication is exactly how F47/F48 arose.
@@ -50,13 +51,33 @@ function isSafeSlug(value) {
 // they dominate the promotion scan; promoting one into the scaffold would write one
 // project's facts into the template that seeds every future project. The target is the
 // project's own generated architecture document instead.
+//
+// A category whose target is a planning document names it as `{ doc, note }` (doc is
+// relative to docs/). resolveSuggestedTarget() resolves it through doc-drift's legacy
+// alias map: an adopter on an older layout keeps `docs/_architecture.md` or
+// `docs/_project-architecture.md`, so the canonical path may not exist there. The
+// existing real document wins (canonical first); when none exists the suggestion is
+// omitted (null) rather than naming a file that is not there.
 const TARGET_SUGGESTIONS = {
     decisions: 'CLAUDE.md',
     patterns: 'relevant SKILL.md',
-    constraints: 'docs/architecture/overview.md (the project document, not the skill template)',
+    constraints: { doc: 'architecture/overview.md', note: '(the project document, not the skill template)' },
     workflows: 'agent frontmatter',
     'rejected-approaches': 'docs/.output/findings/investigations/ or CLAUDE.md dead-ends section'
 };
+
+function resolveSuggestedTarget(category, projectRoot) {
+    const suggestion = TARGET_SUGGESTIONS[category] || 'CLAUDE.md';
+    if (typeof suggestion === 'string') return suggestion;
+    const docsDir = path.join(projectRoot, 'docs');
+    const aliases = Object.entries(LEGACY_TO_CANONICAL)
+        .filter(([, canonical]) => canonical === suggestion.doc)
+        .map(([legacy]) => legacy);
+    for (const rel of [suggestion.doc, ...aliases]) {
+        if (isRealDoc(path.join(docsDir, rel))) return `docs/${rel} ${suggestion.note}`;
+    }
+    return null;
+}
 
 class MemoryPromoter {
     constructor() {
@@ -71,6 +92,8 @@ class MemoryPromoter {
         const paths = memoryPaths(fallbackDir);
         // Split store (ADR 0006 Am. 2): JSON categories under .memory/; derived
         // concept articles under .state/memory-concepts.
+        // Planning docs are tracked files, so they follow the CURRENT worktree.
+        this._docsRoot = resolveWorktreeRoot(fallbackDir);
         this.memoriesDir = paths.jsonRoot;
         this.conceptsDir = paths.conceptsDir;
         this._activeDaysResolver = createActiveDaysResolver({ projectRoot });
@@ -115,7 +138,7 @@ class MemoryPromoter {
                 decayedConfidence: Math.round(concept.decayedConfidence * 1000) / 1000,
                 sourceCount: concept.sources.length,
                 crossRefCount,
-                suggestedTarget: TARGET_SUGGESTIONS[concept.category] || 'CLAUDE.md'
+                suggestedTarget: resolveSuggestedTarget(concept.category, this._docsRoot)
             });
         }
 
@@ -138,7 +161,7 @@ class MemoryPromoter {
         console.log('|------|-------|----------|-------|------------|---------|------------|-----------------|');
         for (let i = 0; i < result.length; i++) {
             const c = result[i];
-            console.log(`| ${i + 1} | ${c.title} | ${c.category} | ${c.promotionScore} | ${c.decayedConfidence} | ${c.sourceCount} | ${c.crossRefCount} | ${c.suggestedTarget} |`);
+            console.log(`| ${i + 1} | ${c.title} | ${c.category} | ${c.promotionScore} | ${c.decayedConfidence} | ${c.sourceCount} | ${c.crossRefCount} | ${c.suggestedTarget ?? '—'} |`);
         }
 
         return result;
@@ -484,3 +507,4 @@ if (require.main === module) {
 }
 
 module.exports = MemoryPromoter;
+module.exports.resolveSuggestedTarget = resolveSuggestedTarget;

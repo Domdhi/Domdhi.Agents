@@ -886,6 +886,7 @@ describe('memory-promoter', () => {
     // A constraint is one project's hard-won specific. It must never be suggested for the
     // architecture skill's `<!-- @@template -->` scaffold, which seeds every NEW project.
     it('scan_constraintsTarget_isProjectDocumentNotSkillTemplate', async () => {
+      tmp.write('docs/architecture/overview.md', '# Architecture: Real Project\n');
       createConcept(tmp, 'constraints', 'c1', {
         title: 'C1',
         confidence: 0.8,
@@ -900,6 +901,55 @@ describe('memory-promoter', () => {
       expect(target).toContain('docs/architecture/overview.md');
       expect(target).not.toMatch(/^architecture\/overview\.md template$/);
       expect(target).not.toMatch(/assets\/overview\.md/);
+    });
+
+    // The suggested target resolves through doc-drift's legacy alias map: an adopter on
+    // an older layout has docs/_architecture.md, not docs/architecture/overview.md.
+    it('scan_constraintsTarget_prefersTheLegacyAliasThatExists', async () => {
+      tmp.write('docs/_project-architecture.md', '# Architecture\n');
+      createConcept(tmp, 'constraints', 'c1', {
+        title: 'C1',
+        confidence: 0.8,
+        sources: ['2026-04-01', '2026-04-10'],
+        usage_count: 3,
+      });
+      const promoter = new MemoryPromoter();
+
+      const result = await promoter.scan();
+
+      expect(result.find(r => r.slug === 'c1').suggestedTarget).toMatch(/^docs\/_project-architecture\.md /);
+    });
+
+    it('scan_constraintsTarget_prefersCanonicalOverLegacyWhenBothExist', async () => {
+      tmp.write('docs/architecture/overview.md', '# Architecture\n');
+      tmp.write('docs/_architecture.md', '# Old architecture\n');
+      createConcept(tmp, 'constraints', 'c1', {
+        title: 'C1',
+        confidence: 0.8,
+        sources: ['2026-04-01', '2026-04-10'],
+        usage_count: 3,
+      });
+      const promoter = new MemoryPromoter();
+
+      const result = await promoter.scan();
+
+      expect(result.find(r => r.slug === 'c1').suggestedTarget).toMatch(/^docs\/architecture\/overview\.md /);
+    });
+
+    it('scan_constraintsTarget_omittedWhenNoArchitectureDocExists', async () => {
+      // A template-marked scaffold is not a real document either.
+      tmp.write('docs/architecture/overview.md', '<!-- @@template -->\n# Architecture: {Project Name}\n');
+      createConcept(tmp, 'constraints', 'c1', {
+        title: 'C1',
+        confidence: 0.8,
+        sources: ['2026-04-01', '2026-04-10'],
+        usage_count: 3,
+      });
+      const promoter = new MemoryPromoter();
+
+      const result = await promoter.scan();
+
+      expect(result.find(r => r.slug === 'c1').suggestedTarget).toBeNull();
     });
 
     it('scan_respectsTopFlag_limitsResults', async () => {

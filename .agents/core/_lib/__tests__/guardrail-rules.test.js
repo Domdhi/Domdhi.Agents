@@ -475,7 +475,7 @@ describe('shipped rules — pattern-based process kills nudge', () => {
         'pkill -9f vitest',
         'pkill -f9 node',
         'pkill --full "npm test"',
-        'pkill -u dom -f node',
+        'pkill -u alice -f node',
         'sudo pkill -f node',
         '/usr/bin/pkill -f node',
         'busybox pkill -f node',
